@@ -1,128 +1,73 @@
-## 结论
+# 方案 A：Google Places API + AI 排序
 
-你判断得对：目前的问题不是你搜不到，而是当前 MVP 的 `searchRestaurants` 并没有真正连接 Google Maps / 网页搜索 / 店铺数据库。它只是让 AI 根据城市和料理类型直接生成候选餐厅，再用本地解析器校验。手动能搜到、AI 却显示无结果，主要来自两点：
+## 核心改动
 
-1. AI 本身没有稳定的实时餐厅检索能力，可能返回空、返回非预期结构，或返回被我们过滤掉的占位名称。
-2. 我们刚加的“不能显示推荐候选”校验是对的，但它会把 AI 不确定时生成的弱结果直接拦截，因此出现“没有返回可用餐厅”。
-
-## 目标调整
-
-把搜索链路改成：
+把 AI 从"店铺生成器"降级为"店铺评分器"，真实店铺数据由 Google Places API 提供。
 
 ```text
 用户需求
-  -> AI 结构化需求
-  -> 生成真实搜索 query
-  -> 搜索 / 获取候选餐厅
-  -> AI 只负责分析、打分、排序、总结
-  -> 展示结果
+  → AI 解析需求 (parseRequirements，保留)
+  → Google Places Text Search   ← 每个料理类型搜一次，返回真实候选
+  → AI 对候选打分+写理由         ← 输入是真实店列表，AI 不再编名字
+  → 前端用 place_id 拼正确链接
 ```
 
-而不是：
+## 实施步骤
 
-```text
-用户需求 -> AI 直接编餐厅 -> 前端展示
-```
+### 1. 用户准备 Google Places API Key
+- 去 Google Cloud Console → 启用 **Places API (New)**
+- 创建 API Key，建议加 HTTP referrer / API 限制
+- 通过 Lovable Cloud 加 secret：`GOOGLE_PLACES_API_KEY`
+- 计费：每月前 $200 免费额度（Text Search 约 $32/1000 次，足够日常使用）
 
-## 实施计划
+### 2. 新增 `src/lib/google-places.server.ts`
+封装 Places API (New) 调用：
+- `searchPlaces({ query, locationBias, language, maxResults })` → POST `https://places.googleapis.com/v1/places:searchText`
+- 用 `X-Goog-FieldMask` 只取需要的字段（控制费用）：
+  `places.id, places.displayName, places.formattedAddress, places.rating, places.userRatingCount, places.priceLevel, places.currentOpeningHours.openNow, places.regularOpeningHours, places.websiteUri, places.googleMapsUri, places.primaryTypeDisplayName, places.editorialSummary, places.location`
+- 返回标准化候选数组
 
-### 1. 明确结果来源状态
+### 3. 重写 `src/lib/echo.functions.ts` 中的 `searchRestaurants`
+新流程：
+1. 对 `data.cuisines` 每个料理类型并行调用 `searchPlaces`：
+   - query = `"${cuisine} restaurant ${city}"`（中文城市保留中文，AI 解析阶段已规范化）
+   - language = 根据城市猜（日本=ja，中国=zh-CN，其它=en）
+2. 把每类前 8-10 家候选喂给 AI，prompt 改为：
+   > "以下是 Google Places 返回的真实候选餐厅 (含 place_id, name, address, rating)。基于用户需求，为每家打 0-100 分，写 2-3 句中文匹配理由，列 pros/cons。**只能使用列表中的 place_id，禁止虚构。** 每组返回最匹配的 1-3 家。"
+3. AI 输出 schema 改为：`{ groups: [{ cuisine, picks: [{ placeId, matchScore, matchTier, aiSummary, pros[], cons[], matchDetails[] }] }] }`
+4. 后端用 `placeId` join 回 Places 数据，组装最终结果
 
-在结果数据里增加来源/置信度字段，用于区分：
+### 4. 链接生成（取代当前的搜索链接拼接）
+- 主链接：`googleMapsUri` （Places API 直接返回，100% 准确）
+- 备用：`websiteUri`（官网，如果有）
+- 日本店保留 Tabelog 站内搜索（用真实 displayName 当 query）
+- 中国店保留大众点评搜索
 
-- `verified_search`：来自真实搜索结果
-- `ai_enriched`：AI 只做分析和总结
-- `needs_review`：信息不完整，需要用户点平台链接确认
+### 5. 数据展示更新 (`src/routes/results.tsx`)
+- 新增字段：`address`、`googleMapsUri`、`primaryTypeDisplayName`
+- 卡片显示真实地址（让用户一眼判断是否在目标区域）
+- "图片"区改为：如果 Places 返回照片就显示真照片（可后续接 Places Photos API），否则保留 Google Images 搜索链接
 
-UI 上不需要复杂解释，但可以在卡片上显示“需确认实时信息”。
+### 6. 错误兜底
+- Places 搜不到 → 直接告诉用户「该城市无 ${cuisine} 候选」，不让 AI 编
+- Places 报错（quota / key 无效）→ 明确报错，不静默 fallback
+- 没设置 `GOOGLE_PLACES_API_KEY` → 给清晰的 setup 提示
 
-### 2. 改造 `searchRestaurants` 的职责
+## 不做的事（保持范围聚焦）
 
-保留现有 TanStack server function，但把它拆成三个步骤：
+- 不加缓存表（先跑通，看实际用量再决定是否启用 Lovable Cloud + 缓存表）
+- 不接 Places Photos API（多一次付费请求，先用真实地址 + Google Images 链接顶住）
+- 不动 `parseRequirements`、不动前端各步骤页面（confirm/cuisines/when/requirements）
 
-1. 根据城市、料理、预算、避雷条件生成搜索 query
-2. 获取候选餐厅列表
-3. 让 AI 对候选餐厅做匹配分析，而不是凭空生成餐厅
+## 影响文件清单
 
-现阶段如果没有外部搜索 API，可先使用 Google Maps 搜索链接作为候选入口，同时要求 AI 返回“具体店名 + 搜索链接 + 置信说明”，并禁止在没有店名时继续展示。
+- 新增 `src/lib/google-places.server.ts`
+- 改 `src/lib/echo.functions.ts`（重写 `searchRestaurants` 及相关 schema/normalize 函数）
+- 改 `src/routes/results.tsx`（显示地址、用真实链接）
+- 新增 secret：`GOOGLE_PLACES_API_KEY`
 
-### 3. 加入“候选不足”的可恢复体验
+## 需要你确认
 
-不要让 server function 抛错导致 blank screen。改成返回结构化状态：
-
-```ts
-{
-  groups: [],
-  error: "没有找到足够可靠的餐厅",
-  suggestions: ["扩大料理类型", "换成城市核心区域", "减少硬性条件"]
-}
-```
-
-前端在 `/confirm` 或 `/results` 显示友好提示，而不是 runtime error。
-
-### 4. 放宽解析器，但保留反幻觉过滤
-
-继续拒绝这些无效名称：
-
-- 推荐候选
-- 餐厅候选
-- Restaurant Candidate
-- 某某店
-
-但允许 AI 返回多种常见结构：
-
-- `{ groups: [...] }`
-- `{ restaurants: [...] }`
-- `{ 居酒屋: [...] }`
-- `{ recommendations: [...] }`
-
-如果解析失败，把原始失败转成前端可显示的业务错误，不抛出未捕获异常。
-
-### 5. 优化 prompt，让 AI 不假装实时搜索
-
-调整系统提示：
-
-- 明确“不要声称已经搜索全网”
-- 如果不确定，返回 `needsReview: true`
-- 店名必须是具体餐厅名
-- 所有平台链接用搜索链接，不伪造店铺详情页
-- 评分没有把握时返回 `null`，不要编分数
-
-### 6. 结果页显示真实搜索动作
-
-每张餐厅卡保留：
-
-- Google Maps 搜索
-- Google Search
-- Tabelog / 大众点评 / 美团搜索入口（按城市适配）
-
-这样用户能直接打开验证，产品逻辑也更诚实。
-
-## 技术变更范围
-
-主要修改：
-
-- `src/lib/echo.functions.ts`
-  - 返回 typed result，不再直接 throw 业务型“无结果”错误
-  - 增加候选解析和结果状态
-  - 优化 prompt 和 normalization
-
-- `src/routes/confirm.tsx`
-  - 接收搜索失败状态并显示在页面内
-  - 不让 server function 错误造成 blank screen
-
-- `src/routes/results.tsx`
-  - 支持空结果/候选不足提示
-  - 显示“需确认实时信息”的状态
-
-- `src/lib/store.ts`
-  - 如有需要，扩展结果类型以支持 `error` / `suggestions` / `sourceStatus`
-
-## 预期效果
-
-修完后：
-
-- 手动能搜到但 AI 不确定时，不会 blank screen。
-- 不会再展示“某城市 + 料理 + 推荐候选”这种假餐厅。
-- 用户会看到清晰提示和可点击的搜索入口。
-- Echo Eats 的定位更接近“AI 决策分析层”，而不是假装自己有完整地图数据库。
+你准备好 Google Places API Key 了吗？确认后我会：
+1. 调起 secret 输入框让你贴 key
+2. 立刻开始按上述步骤改代码
