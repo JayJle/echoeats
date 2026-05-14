@@ -46,14 +46,12 @@ type QueryState = {
   city: string;
   cuisines: string[];
   date: string;
-  time: string;
   freeText: string;
   parsed: ParsedRequirements | null;
   results: SearchResults | null;
   setCity: (v: string) => void;
   setCuisines: (v: string[]) => void;
   setDate: (v: string) => void;
-  setTime: (v: string) => void;
   setFreeText: (v: string) => void;
   setParsed: (v: ParsedRequirements | null) => void;
   setResults: (v: SearchResults | null) => void;
@@ -66,14 +64,12 @@ export const useQueryStore = create<QueryState>()(
       city: "",
       cuisines: [],
       date: "",
-      time: "",
       freeText: "",
       parsed: null,
       results: null,
       setCity: (v) => set({ city: v }),
       setCuisines: (v) => set({ cuisines: v }),
       setDate: (v) => set({ date: v }),
-      setTime: (v) => set({ time: v }),
       setFreeText: (v) => set({ freeText: v }),
       setParsed: (v) => set({ parsed: v }),
       setResults: (v) => set({ results: v }),
@@ -82,7 +78,6 @@ export const useQueryStore = create<QueryState>()(
           city: "",
           cuisines: [],
           date: "",
-          time: "",
           freeText: "",
           parsed: null,
           results: null,
