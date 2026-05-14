@@ -336,13 +336,16 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 
 铁律：
 - **只能使用候选列表里的 placeId**，禁止虚构 placeId、禁止编造店名。
-- 每组按匹配度从高到低输出 1-3 家。如果某组所有候选都明显不匹配硬条件，可以返回空 picks 数组。
+- **硬条件是入选门槛**：对每个候选，先逐条核对 hardFilters。任何一条不满足或无法从候选数据确认满足，必须设置 hardFilterPass=false，并在 hardFilterViolations 列出违反/无法确认的硬条件原文。**hardFilterPass=false 的候选不要放进 picks**。
+- 如果某组所有候选都无法通过硬条件，请返回空 picks 数组，绝不"将就"输出。
+- 仅当 hardFilterPass=true 时才输出该候选；每组按匹配度从高到低输出 1-3 家。
+- 价格判断：候选的 priceLevel（$/$$/$$$/$$$$）若明显高于用户预算上限，视为违反硬条件。无 priceLevel 信息时，若用户给了明确预算上限，视为无法确认 → hardFilterPass=false。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。
 - aiSummary: 2-3 句中文，结合用户偏好与候选的评分/位置/类型说明匹配理由。
 - pros/cons: 各 2-4 条简短中文。
 - matchDetails: 3-6 条短描述，每条带 status (ok/warn)。
 
-输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
+输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterPass": true, "hardFilterViolations": [], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
 
     let ranking: z.infer<typeof AiRankingSchema>;
     try {
