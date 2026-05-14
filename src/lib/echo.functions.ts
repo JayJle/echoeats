@@ -373,17 +373,6 @@ function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
     { platform: "Yelp", score: null },
   ];
 }
-  const score = p.rating != null
-    ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
-    : null;
-  return [
-    { platform: "Google Maps", score },
-    { platform: "Tabelog", score: null },
-    { platform: "Yelp", score: null },
-    { platform: "大众点评", score: null },
-    { platform: "美团", score: null },
-  ];
-}
 
 const SearchResponseSchema = z.object({
   groups: ResultsSchema.shape.groups,
