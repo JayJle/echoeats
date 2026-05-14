@@ -318,6 +318,7 @@ const ResultsSchema = z.object({
     z.object({
       cuisine: z.string(),
       restaurants: z.array(RestaurantSchema),
+      partialRestaurants: z.array(RestaurantSchema).optional(),
     }),
   ),
 });
@@ -333,8 +334,15 @@ const AiPickSchema = z.object({
   matchDetails: z
     .array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) }))
     .default([]),
-  hardFilterPass: z.boolean(),
-  hardFilterViolations: z.array(z.string()).default([]),
+  hardFilterChecks: z
+    .array(
+      z.object({
+        filter: z.string(),
+        status: z.enum(["ok", "unknown", "fail"]),
+        note: z.string().optional(),
+      }),
+    )
+    .default([]),
 });
 
 const AiRankingSchema = z.object({
