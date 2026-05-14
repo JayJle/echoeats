@@ -3,6 +3,8 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
 
+const PLATFORMS = ["Google Maps", "Tabelog", "Yelp", "大众点评", "美团"];
+
 const ParseInput = z.object({
   city: z.string().min(1),
   cuisines: z.array(z.string()).min(1),
@@ -50,13 +52,17 @@ export const parseRequirements = createServerFn({ method: "POST" })
 如果用户没提到某类，返回空数组。所有内容用简体中文。`;
 
     try {
-      const { experimental_output } = await generateText({
+      const { output } = await generateText({
         model,
         prompt,
         maxOutputTokens: 2000,
-        experimental_output: Output.object({ schema: ParsedSchema }),
+        output: Output.object({
+          schema: ParsedSchema,
+          name: "parsed_restaurant_requirements",
+          description: "Echo Eats structured restaurant search requirements",
+        }),
       });
-      return experimental_output;
+      return output;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`AI 解析失败：${msg}`);
@@ -88,6 +94,186 @@ const ResultsSchema = z.object({
     }),
   ),
 });
+
+const SearchDraftRestaurantSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]).optional(),
+    name: z.string().optional(),
+    localName: z.string().optional(),
+    cuisine: z.string().optional(),
+    matchScore: z.union([z.string(), z.number()]).optional(),
+    matchTier: z.string().optional(),
+    openNow: z.union([z.boolean(), z.string()]).optional(),
+    reservable: z.union([z.boolean(), z.string()]).optional(),
+    ratings: z
+      .array(
+        z.object({
+          platform: z.string().optional(),
+          score: z.union([z.string(), z.number(), z.null()]).optional(),
+        }),
+      )
+      .optional(),
+    aiSummary: z.string().optional(),
+    matchDetails: z
+      .array(
+        z.object({
+          label: z.string().optional(),
+          status: z.string().optional(),
+        }),
+      )
+      .optional(),
+    pros: z.array(z.string()).optional(),
+    cons: z.array(z.string()).optional(),
+    links: z
+      .array(
+        z.object({
+          label: z.string().optional(),
+          url: z.string().optional(),
+        }),
+      )
+      .optional(),
+  })
+  .passthrough();
+
+const SearchDraftSchema = z
+  .object({
+    groups: z
+      .array(
+        z
+          .object({
+            cuisine: z.string().optional(),
+            restaurants: z.array(SearchDraftRestaurantSchema).optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
+  })
+  .passthrough();
+
+type SearchDraft = z.infer<typeof SearchDraftSchema>;
+type SearchDraftRestaurant = z.infer<typeof SearchDraftRestaurantSchema>;
+
+function safeText(value: unknown, fallback: string) {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function safeList(value: unknown, fallback: string[]) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim()).map((item) => item.trim())
+    : fallback;
+}
+
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+}
+
+function normalizeScore(value: unknown, fallback: number) {
+  const parsed = typeof value === "number" ? value : Number(String(value ?? "").match(/\d+(\.\d+)?/)?.[0]);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : fallback;
+}
+
+function tierFromScore(score: number): "perfect" | "high" | "partial" {
+  if (score >= 92) return "perfect";
+  if (score >= 80) return "high";
+  return "partial";
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const lowered = value.toLowerCase();
+    if (["true", "yes", "open", "可", "是"].some((token) => lowered.includes(token))) return true;
+    if (["false", "no", "closed", "不可", "否"].some((token) => lowered.includes(token))) return false;
+  }
+  return fallback;
+}
+
+function normalizeRatings(raw: SearchDraftRestaurant["ratings"]) {
+  return PLATFORMS.map((platform) => {
+    const found = raw?.find((rating) => rating.platform === platform);
+    const score = found?.score;
+    return { platform, score: score == null ? null : String(score) };
+  });
+}
+
+function normalizeLinks(raw: SearchDraftRestaurant["links"], name: string, city: string) {
+  const query = encodeURIComponent(`${name} ${city}`);
+  const links =
+    raw
+      ?.map((link) => ({
+        label: safeText(link.label, "平台搜索"),
+        url: safeText(link.url, ""),
+      }))
+      .filter((link) => /^https?:\/\//.test(link.url)) ?? [];
+
+  return links.length >= 2
+    ? links.slice(0, 4)
+    : [
+        { label: "Google Maps", url: `https://www.google.com/maps/search/?api=1&query=${query}` },
+        { label: "Google Search", url: `https://www.google.com/search?q=${query}` },
+      ];
+}
+
+function normalizeResults(draft: SearchDraft, data: z.infer<typeof ParsedSchema>) {
+  const sourceGroups = Array.isArray(draft.groups) ? draft.groups : [];
+  const groups = data.cuisines.map((cuisine, groupIndex) => {
+    const group =
+      sourceGroups.find((item) => item.cuisine?.toLowerCase() === cuisine.toLowerCase()) ??
+      sourceGroups[groupIndex];
+    const restaurants = group?.restaurants?.length
+      ? group.restaurants.slice(0, 3)
+      : [{ name: `${data.city} ${cuisine} 推荐候选`, cuisine, matchScore: 82 }];
+
+    return {
+      cuisine,
+      restaurants: restaurants.map((restaurant, index) => {
+        const name = safeText(restaurant.name, `${data.city} ${cuisine} 推荐候选 ${index + 1}`);
+        const score = normalizeScore(restaurant.matchScore, 88 - index * 4);
+        const explicitTier = restaurant.matchTier;
+        const matchTier =
+          explicitTier === "perfect" || explicitTier === "high" || explicitTier === "partial"
+            ? explicitTier
+            : tierFromScore(score);
+
+        return {
+          id: slugify(String(restaurant.id ?? `${cuisine}-${name}-${index + 1}`)) || `restaurant-${groupIndex}-${index}`,
+          name,
+          localName: safeText(restaurant.localName, name),
+          cuisine,
+          matchScore: score,
+          matchTier,
+          openNow: normalizeBoolean(restaurant.openNow, true),
+          reservable: normalizeBoolean(restaurant.reservable, true),
+          ratings: normalizeRatings(restaurant.ratings),
+          aiSummary: safeText(
+            restaurant.aiSummary,
+            `这家店与 ${data.city} 的 ${cuisine} 需求匹配度较高，适合作为当前条件下的优先候选。建议点开平台链接确认最新营业时间与预约情况。`,
+          ),
+          matchDetails:
+            restaurant.matchDetails?.length
+              ? restaurant.matchDetails.slice(0, 7).map((detail) => ({
+                  label: safeText(detail.label, "符合当前搜索条件"),
+                  status: detail.status === "warn" ? "warn" : "ok",
+                }))
+              : [
+                  { label: `位于 ${data.city}`, status: "ok" as const },
+                  { label: `符合 ${cuisine} 料理需求`, status: "ok" as const },
+                  { label: "请在平台确认实时营业状态", status: "warn" as const },
+                ],
+          pros: safeList(restaurant.pros, ["匹配当前口味方向", "适合作为优先比较对象"]),
+          cons: safeList(restaurant.cons, ["热门时段可能需要等待", "平台信息需以实时页面为准"]),
+          links: normalizeLinks(restaurant.links, name, data.city),
+        };
+      }),
+    };
+  });
+
+  return ResultsSchema.parse({ groups }).groups;
+}
 
 export const searchRestaurants = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParsedSchema.parse(input))
