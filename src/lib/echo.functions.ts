@@ -114,6 +114,91 @@ import {
   type PlaceCandidate,
 } from "./google-places.server";
 
+// Perplexity 真实网评摘要
+type ReviewSummary = {
+  reviewHighlights: string[];
+  commonComplaints: string[];
+  sentiment: "positive" | "mixed" | "negative" | "unknown";
+  sourceCount: number;
+};
+
+async function fetchReviewSummary(
+  name: string,
+  city: string,
+  apiKey: string,
+): Promise<ReviewSummary | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 9000);
+  try {
+    const res = await fetch("https://api.perplexity.ai/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: "sonar",
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是餐厅口碑分析助手。基于真实网友评价（大众点评/小红书/Tabelog/Google/Yelp 等）总结。只输出 JSON。",
+          },
+          {
+            role: "user",
+            content: `查询「${name}」（位于 ${city}）的真实顾客评价。从大众点评、小红书、Tabelog、Google Reviews、Yelp 等平台找资料，总结：
+- reviewHighlights: 3-5 条真实网友提到的优点（具体菜品/服务/氛围/性价比，简体中文，每条 ≤ 25 字）
+- commonComplaints: 0-3 条网友普遍提到的缺点/吐槽（如有）
+- sentiment: 整体口碑 positive/mixed/negative
+- sourceCount: 找到的有效来源数量（整数）
+
+如果找不到该店，sourceCount 设为 0、其它数组为空。只输出 JSON 对象。`,
+          },
+        ],
+        max_tokens: 600,
+        temperature: 0.2,
+        search_recency_filter: "year",
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "review_summary",
+            schema: {
+              type: "object",
+              properties: {
+                reviewHighlights: { type: "array", items: { type: "string" } },
+                commonComplaints: { type: "array", items: { type: "string" } },
+                sentiment: { type: "string", enum: ["positive", "mixed", "negative", "unknown"] },
+                sourceCount: { type: "number" },
+              },
+              required: ["reviewHighlights", "commonComplaints", "sentiment", "sourceCount"],
+            },
+          },
+        },
+      }),
+    });
+    if (!res.ok) {
+      console.warn(`[Perplexity] ${name}: HTTP ${res.status}`);
+      return null;
+    }
+    const json = await res.json();
+    const content = json?.choices?.[0]?.message?.content;
+    if (!content) return null;
+    const parsed = JSON.parse(content);
+    return {
+      reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
+      commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
+      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
+      sourceCount: Number(parsed.sourceCount) || 0,
+    };
+  } catch (e) {
+    console.warn(`[Perplexity] ${name}:`, e instanceof Error ? e.message : e);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 const RestaurantSchema = z.object({
   id: z.string(),
   name: z.string(),
