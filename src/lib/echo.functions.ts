@@ -499,7 +499,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             query: `${cuisine} ${data.city}`,
             language,
             region,
-            maxResults: 10,
+            maxResults: 15,
           });
           return { cuisine, places, error: null as string | null };
         } catch (e) {
@@ -586,7 +586,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const hardFiltersList = data.hardFilters;
     const hardFiltersJson = JSON.stringify(hardFiltersList);
 
-    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，为每组挑出最匹配的 1-3 家，并给出打分和理由。
+    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，为每组挑出最匹配的 3-8 家，并给出打分和理由。
 
 用户需求：
 - 城市：${data.city}
@@ -652,7 +652,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         const aiGroup =
           ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
           ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 6);
+        const picks = (aiGroup?.picks ?? []).slice(0, 12);
 
         type Bucket = "ok" | "partial" | null;
 
@@ -725,8 +725,8 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           })
           .filter((r): r is NonNullable<typeof r> => Boolean(r));
 
-        const restaurants = built.filter((b) => b.bucket === "ok").map((b) => b.restaurant).slice(0, 3);
-        const partialRestaurants = built.filter((b) => b.bucket === "partial").map((b) => b.restaurant).slice(0, 3);
+        const restaurants = built.filter((b) => b.bucket === "ok").map((b) => b.restaurant).slice(0, 8);
+        const partialRestaurants = built.filter((b) => b.bucket === "partial").map((b) => b.restaurant).slice(0, 6);
 
         if (!restaurants.length && !partialRestaurants.length) return null;
         return {
