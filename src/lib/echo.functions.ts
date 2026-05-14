@@ -153,6 +153,12 @@ const SearchDraftSchema = z
 type SearchDraft = z.infer<typeof SearchDraftSchema>;
 type SearchDraftRestaurant = z.infer<typeof SearchDraftRestaurantSchema>;
 
+function toSearchDraft(value: unknown): SearchDraft {
+  const candidate = Array.isArray(value) ? { groups: value } : value;
+  const parsed = SearchDraftSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : {};
+}
+
 function safeText(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
@@ -316,8 +322,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         model,
         prompt,
         maxOutputTokens: 8000,
-        output: Output.object({
-          schema: SearchDraftSchema,
+        output: Output.json({
           name: "restaurant_recommendation_groups",
           description: "Grouped Echo Eats restaurant recommendations that can be normalized before display",
         }),
@@ -325,7 +330,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       if (finishReason === "length") {
         throw new Error("AI 输出被截断，请减少料理类型数量后重试");
       }
-      return normalizeResults(output, data);
+      return normalizeResults(toSearchDraft(output), data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`AI 推荐失败：${msg}`);
