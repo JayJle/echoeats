@@ -1,73 +1,57 @@
-# 方案 A：Google Places API + AI 排序
+## 问题
 
-## 核心改动
+用户在 Step 4 自然语言输入里写明的「必须 / 一定 / 不能超过 / 限定 X 以内」等强制要求，目前 `parseRequirements` 经常把它们放进 `softPreferences`，导致后续搜索/排序没有把它当硬条件处理。
 
-把 AI 从"店铺生成器"降级为"店铺评分器"，真实店铺数据由 Google Places API 提供。
+例：
+- "预算 15000 日元以内" → 应进 hardFilters，实际常进 softPreferences
+- "必须能预约" / "一定要有包间" → 同上
+- "不要游客店" → 应进 negativeFilters（已 OK，但边界模糊）
 
-```text
-用户需求
-  → AI 解析需求 (parseRequirements，保留)
-  → Google Places Text Search   ← 每个料理类型搜一次，返回真实候选
-  → AI 对候选打分+写理由         ← 输入是真实店列表，AI 不再编名字
-  → 前端用 place_id 拼正确链接
-```
+## 方案
 
-## 实施步骤
+只改 `src/lib/echo.functions.ts` 里 `parseRequirements` 的 prompt，不动表单/UI/搜索逻辑。
 
-### 1. 用户准备 Google Places API Key
-- 去 Google Cloud Console → 启用 **Places API (New)**
-- 创建 API Key，建议加 HTTP referrer / API 限制
-- 通过 Lovable Cloud 加 secret：`GOOGLE_PLACES_API_KEY`
-- 计费：每月前 $200 免费额度（Text Search 约 $32/1000 次，足够日常使用）
+### 1. 在 prompt 里加入明确的「硬条件识别规则」
 
-### 2. 新增 `src/lib/google-places.server.ts`
-封装 Places API (New) 调用：
-- `searchPlaces({ query, locationBias, language, maxResults })` → POST `https://places.googleapis.com/v1/places:searchText`
-- 用 `X-Goog-FieldMask` 只取需要的字段（控制费用）：
-  `places.id, places.displayName, places.formattedAddress, places.rating, places.userRatingCount, places.priceLevel, places.currentOpeningHours.openNow, places.regularOpeningHours, places.websiteUri, places.googleMapsUri, places.primaryTypeDisplayName, places.editorialSummary, places.location`
-- 返回标准化候选数组
+给 AI 一份判定清单，让它把以下信号一律归为 hardFilters：
 
-### 3. 重写 `src/lib/echo.functions.ts` 中的 `searchRestaurants`
-新流程：
-1. 对 `data.cuisines` 每个料理类型并行调用 `searchPlaces`：
-   - query = `"${cuisine} restaurant ${city}"`（中文城市保留中文，AI 解析阶段已规范化）
-   - language = 根据城市猜（日本=ja，中国=zh-CN，其它=en）
-2. 把每类前 8-10 家候选喂给 AI，prompt 改为：
-   > "以下是 Google Places 返回的真实候选餐厅 (含 place_id, name, address, rating)。基于用户需求，为每家打 0-100 分，写 2-3 句中文匹配理由，列 pros/cons。**只能使用列表中的 place_id，禁止虚构。** 每组返回最匹配的 1-3 家。"
-3. AI 输出 schema 改为：`{ groups: [{ cuisine, picks: [{ placeId, matchScore, matchTier, aiSummary, pros[], cons[], matchDetails[] }] }] }`
-4. 后端用 `placeId` join 回 Places 数据，组装最终结果
+- 含强制词：**必须 / 一定 / 务必 / 只要 / 仅 / 不能 / 不要 / 禁止 / 拒绝 / 不接受**
+- 含数值上下限：**X 以内 / 不超过 X / 至少 X / 最多 X / X 以上**（预算、人数、距离、评分、步行分钟数等）
+- 含明确可验证属性：**可预约 / 接受信用卡 / 有包间 / 无烟 / 适合婴儿车 / 营业到 X 点 / 步行 X 分钟内**
+- 用户用「要」「需要」「得」陈述的具体可验证条件
 
-### 4. 链接生成（取代当前的搜索链接拼接）
-- 主链接：`googleMapsUri` （Places API 直接返回，100% 准确）
-- 备用：`websiteUri`（官网，如果有）
-- 日本店保留 Tabelog 站内搜索（用真实 displayName 当 query）
-- 中国店保留大众点评搜索
+反过来，归 softPreferences 的只有：
+- 模糊形容（"氛围好"、"舒服"、"地道"、"环境不错"）
+- 用户用"最好/希望/偏好/优先"等弱化词表达的条件
 
-### 5. 数据展示更新 (`src/routes/results.tsx`)
-- 新增字段：`address`、`googleMapsUri`、`primaryTypeDisplayName`
-- 卡片显示真实地址（让用户一眼判断是否在目标区域）
-- "图片"区改为：如果 Places 返回照片就显示真照片（可后续接 Places Photos API），否则保留 Google Images 搜索链接
+否定句（"不要 X" / "避免 X" / "拒绝 X"）→ negativeFilters。
 
-### 6. 错误兜底
-- Places 搜不到 → 直接告诉用户「该城市无 ${cuisine} 候选」，不让 AI 编
-- Places 报错（quota / key 无效）→ 明确报错，不静默 fallback
-- 没设置 `GOOGLE_PLACES_API_KEY` → 给清晰的 setup 提示
+### 2. 拆分歧义：硬条件 vs 否定
 
-## 不做的事（保持范围聚焦）
+明确告诉 AI：
+- "不要游客店" / "避免连锁" → negativeFilters
+- "必须能预约" / "预算 ≤ 15000 日元" → hardFilters
+- 不要把同一条同时塞进两边
 
-- 不加缓存表（先跑通，看实际用量再决定是否启用 Lovable Cloud + 缓存表）
-- 不接 Places Photos API（多一次付费请求，先用真实地址 + Google Images 链接顶住）
-- 不动 `parseRequirements`、不动前端各步骤页面（confirm/cuisines/when/requirements）
+### 3. 加 few-shot 示例
 
-## 影响文件清单
+在 prompt 里给 2-3 个对照例子，覆盖：
+- 预算上限 → hardFilter
+- "可以预约" vs "必须能预约" → soft vs hard
+- "最好有蟹刺身" → dishPreferences + soft，而不是 hard
 
-- 新增 `src/lib/google-places.server.ts`
-- 改 `src/lib/echo.functions.ts`（重写 `searchRestaurants` 及相关 schema/normalize 函数）
-- 改 `src/routes/results.tsx`（显示地址、用真实链接）
-- 新增 secret：`GOOGLE_PLACES_API_KEY`
+### 4. 可选：让 AI 输出每条 hardFilter 的原文出处
 
-## 需要你确认
+让它在输出里用"用户原话片段 → 标准化条件"的格式（例："预算 15000 日元以内 → 人均预算 ≤ 15000 JPY"），便于后续排序阶段在 prompt 里更准确地引用。
 
-你准备好 Google Places API Key 了吗？确认后我会：
-1. 调起 secret 输入框让你贴 key
-2. 立刻开始按上述步骤改代码
+## 改动范围
+
+- 文件：`src/lib/echo.functions.ts`
+- 函数：`parseRequirements` 的 prompt 字符串
+- 不改 schema、不改 UI、不改 `searchRestaurants`
+
+## 不在范围
+
+- 不改前端表单（Step 4 已经能输入自由文本）
+- 不动 Google Places 调用
+- 不调整排序逻辑（排序阶段已经把 hardFilters 写进 prompt 给 Gemini，只要识别准确这里就生效）
