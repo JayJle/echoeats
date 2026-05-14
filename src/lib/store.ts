@@ -17,6 +17,10 @@ export type Restaurant = {
   name: string;
   localName: string;
   cuisine: string;
+  address: string;
+  googleMapsUri: string;
+  websiteUri: string | null;
+  primaryType: string | null;
   matchScore: number;
   matchTier: "perfect" | "high" | "partial";
   openNow: boolean;
