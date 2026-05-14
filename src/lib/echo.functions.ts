@@ -420,7 +420,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       if (finishReason === "length") {
         throw new Error("AI 输出被截断，请减少料理类型数量后重试");
       }
-      return normalizeResults(toSearchDraft(output), data);
+      return normalizeResults(toSearchDraft(output, data.cuisines), data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`AI 推荐失败：${msg}`);
