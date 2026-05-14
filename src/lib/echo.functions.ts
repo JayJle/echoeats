@@ -154,11 +154,13 @@ async function fetchReviewSummary(
 - commonComplaints: 0-3 条网友普遍提到的缺点/吐槽（如有）
 - sentiment: 整体口碑 positive/mixed/negative
 - sourceCount: 找到的有效来源数量（整数）
+- dianpingRating: 仅当你在大众点评店铺页或小红书帖子中**直接看到**该店的点评评分（0-5 分，例如 4.5）时返回该数字，最多保留一位小数。**找不到必须返回 null**，禁止根据"好评多/口碑好"等模糊信号自己估算或编造。
+- dianpingRatingSource: 评分来源——"dianping"（来自大众点评）/"xiaohongshu_mention"（小红书帖子提到的点评分）/"other"（其它来源）/"unknown"（找不到，此时 dianpingRating 必须为 null）。
 
-如果找不到该店，sourceCount 设为 0、其它数组为空。只输出 JSON 对象。`,
+如果找不到该店，sourceCount 设为 0、其它数组为空、dianpingRating=null、dianpingRatingSource="unknown"。只输出 JSON 对象。`,
           },
         ],
-        max_tokens: 600,
+        max_tokens: 700,
         temperature: 0.2,
         search_recency_filter: "year",
         response_format: {
@@ -172,8 +174,20 @@ async function fetchReviewSummary(
                 commonComplaints: { type: "array", items: { type: "string" } },
                 sentiment: { type: "string", enum: ["positive", "mixed", "negative", "unknown"] },
                 sourceCount: { type: "number" },
+                dianpingRating: { type: ["number", "null"] },
+                dianpingRatingSource: {
+                  type: "string",
+                  enum: ["dianping", "xiaohongshu_mention", "other", "unknown"],
+                },
               },
-              required: ["reviewHighlights", "commonComplaints", "sentiment", "sourceCount"],
+              required: [
+                "reviewHighlights",
+                "commonComplaints",
+                "sentiment",
+                "sourceCount",
+                "dianpingRating",
+                "dianpingRatingSource",
+              ],
             },
           },
         },
@@ -187,11 +201,23 @@ async function fetchReviewSummary(
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return null;
     const parsed = JSON.parse(content);
+    const rawRating = parsed.dianpingRating;
+    const rating =
+      typeof rawRating === "number" && rawRating >= 0 && rawRating <= 5
+        ? Math.round(rawRating * 10) / 10
+        : null;
+    const ratingSource = ["dianping", "xiaohongshu_mention", "other", "unknown"].includes(
+      parsed.dianpingRatingSource,
+    )
+      ? parsed.dianpingRatingSource
+      : "unknown";
     return {
       reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
       commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
       sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
       sourceCount: Number(parsed.sourceCount) || 0,
+      dianpingRating: rating,
+      dianpingRatingSource: rating == null ? "unknown" : ratingSource,
     };
   } catch (e) {
     console.warn(`[Perplexity] ${name}:`, e instanceof Error ? e.message : e);
