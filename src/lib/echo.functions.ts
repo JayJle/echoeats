@@ -434,9 +434,9 @@ const SearchResponseSchema = z.object({
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
 const FALLBACK_SUGGESTIONS = [
-  "尝试更具体的料理类型（如把"日料"换成"寿司"或"居酒屋"）",
+  "尝试更具体的料理类型（如把「日料」换成「寿司」或「居酒屋」）",
   "扩大或更换城市（用城市核心区域名）",
-  "在"其它需求"里加上具体菜品或预算，让 AI 更聚焦",
+  "在「其它需求」里加上具体菜品或预算，让 AI 更聚焦",
   "减少同时搜索的料理类型数量",
 ];
 
