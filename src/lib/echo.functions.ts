@@ -233,14 +233,18 @@ function normalizeResults(draft: SearchDraft, data: z.infer<typeof ParsedSchema>
     const group =
       sourceGroups.find((item) => item.cuisine?.toLowerCase() === cuisine.toLowerCase()) ??
       sourceGroups[groupIndex];
-    const restaurants = group?.restaurants?.length
-      ? group.restaurants.slice(0, 3)
-      : [{ name: `${data.city} ${cuisine} 推荐候选`, cuisine, matchScore: 82 }];
+    if (!group?.restaurants?.length) {
+      throw new Error(`AI 没有为「${cuisine}」返回具体餐厅，请调整条件后重试`);
+    }
+    const restaurants = group.restaurants.slice(0, 3);
 
     return {
       cuisine,
       restaurants: restaurants.map((restaurant, index) => {
-        const name = safeText(restaurant.name, `${data.city} ${cuisine} 推荐候选 ${index + 1}`);
+        const name = safeText(restaurant.name, "");
+        if (!name || /推荐候选|candidate/i.test(name)) {
+          throw new Error(`AI 返回了无效餐厅名称，请重新搜索`);
+        }
         const score = normalizeScore(restaurant.matchScore, 88 - index * 4);
         const explicitTier = restaurant.matchTier;
         const matchTier =
