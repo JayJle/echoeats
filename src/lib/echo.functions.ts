@@ -384,6 +384,8 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 
         const restaurants = picks
           .map((pick, idx) => {
+            // 严格执行硬条件门槛：AI 标记不通过的直接剔除
+            if (data.hardFilters.length > 0 && pick.hardFilterPass === false) return null;
             const entry = placeById.get(pick.placeId);
             if (!entry) return null; // AI 编了 placeId，过滤掉
             const p = entry.place;
