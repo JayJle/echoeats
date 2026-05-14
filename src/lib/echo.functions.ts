@@ -491,24 +491,34 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const language = guessLanguageCode(data.city);
     const region = guessRegionCode(data.city);
 
-    // 1. 并行调用 Google Places：每个料理一次 Text Search
+    // 1. 并行调用 Google Places：每个料理两条查询（主 + 本地语义变体），按 placeId 去重
+    const semanticSuffix = (() => {
+      if (language === "ja") return "おすすめ";
+      if (language === "zh-CN" || language === "zh-TW") return "推荐";
+      return "best";
+    })();
     const placeResults = await Promise.all(
       data.cuisines.map(async (cuisine) => {
-        try {
-          const places = await searchPlaces({
-            query: `${cuisine} ${data.city}`,
-            language,
-            region,
-            maxResults: 15,
-          });
-          return { cuisine, places, error: null as string | null };
-        } catch (e) {
-          return {
-            cuisine,
-            places: [] as PlaceCandidate[],
-            error: e instanceof Error ? e.message : String(e),
-          };
+        const queries =
+          semanticSuffix === "best"
+            ? [`${cuisine} ${data.city}`, `best ${cuisine} ${data.city}`]
+            : [`${cuisine} ${data.city}`, `${cuisine} ${data.city} ${semanticSuffix}`];
+        const settled = await Promise.allSettled(
+          queries.map((query) =>
+            searchPlaces({ query, language, region, maxResults: 20 }),
+          ),
+        );
+        const merged = new Map<string, PlaceCandidate>();
+        let firstError: string | null = null;
+        for (const s of settled) {
+          if (s.status === "fulfilled") {
+            for (const p of s.value) if (!merged.has(p.placeId)) merged.set(p.placeId, p);
+          } else if (!firstError) {
+            firstError = s.reason instanceof Error ? s.reason.message : String(s.reason);
+          }
         }
+        const places = Array.from(merged.values());
+        return { cuisine, places, error: places.length ? null : firstError };
       }),
     );
 
