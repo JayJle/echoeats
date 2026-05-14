@@ -113,6 +113,11 @@ import {
   searchPlaces,
   type PlaceCandidate,
 } from "./google-places.server";
+import {
+  isMainlandChinaCity,
+  searchDianpingCuisine,
+  type DianpingReview,
+} from "./dianping.server";
 
 // Perplexity 真实网评摘要
 type ReviewSummary = {
@@ -415,7 +420,13 @@ function buildLinks(p: PlaceCandidate, city: string) {
   }
 
   links.push({ label: "Google Maps", url: p.googleMapsUri });
-  if (p.websiteUri) links.push({ label: "官网", url: p.websiteUri });
+  if (p.websiteUri) {
+    const isDianpingShop = /dianping\.com\/shop\//i.test(p.websiteUri);
+    links.push({
+      label: isDianpingShop ? "大众点评店铺页" : "官网",
+      url: p.websiteUri,
+    });
+  }
 
   if (!isCN) {
     // 非中文城市也加小红书（很多海外城市国人口碑在小红书）
@@ -480,53 +491,109 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     if (!aiKey) {
       return { groups: [], error: "服务未配置 AI 凭据", suggestions: [] };
     }
-    if (!process.env.GOOGLE_PLACES_API_KEY) {
+    const useDianping = isMainlandChinaCity(data.city);
+    const pplxKey = process.env.PERPLEXITY_API_KEY;
+
+    if (!useDianping && !process.env.GOOGLE_PLACES_API_KEY) {
       return {
         groups: [],
         error: "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
         suggestions: [],
       };
     }
+    if (useDianping && !pplxKey) {
+      return {
+        groups: [],
+        error: "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
+        suggestions: [],
+      };
+    }
 
-    const language = guessLanguageCode(data.city);
-    const region = guessRegionCode(data.city);
+    const reviewById = new Map<string, ReviewSummary>();
+    let placeResults: Array<{
+      cuisine: string;
+      places: PlaceCandidate[];
+      error: string | null;
+    }>;
 
-    // 1. 并行调用 Google Places：每个料理两条查询（主 + 本地语义变体），按 placeId 去重
-    const semanticSuffix = (() => {
-      if (language === "ja") return "おすすめ";
-      if (language === "zh-CN" || language === "zh-TW") return "推荐";
-      return "best";
-    })();
-    const placeResults = await Promise.all(
-      data.cuisines.map(async (cuisine) => {
-        const queries =
-          semanticSuffix === "best"
-            ? [`${cuisine} ${data.city}`, `best ${cuisine} ${data.city}`]
-            : [`${cuisine} ${data.city}`, `${cuisine} ${data.city} ${semanticSuffix}`];
-        const settled = await Promise.allSettled(
-          queries.map((query) =>
-            searchPlaces({ query, language, region, maxResults: 20 }),
-          ),
-        );
-        const merged = new Map<string, PlaceCandidate>();
-        let firstError: string | null = null;
-        for (const s of settled) {
-          if (s.status === "fulfilled") {
-            for (const p of s.value) if (!merged.has(p.placeId)) merged.set(p.placeId, p);
-          } else if (!firstError) {
-            firstError = s.reason instanceof Error ? s.reason.message : String(s.reason);
+    if (useDianping) {
+      // 国内城市：大众点评一手数据流（候选 + 网评一次拿到）
+      const firecrawlKey = process.env.FIRECRAWL_API_KEY ?? null;
+      const settled = await Promise.all(
+        data.cuisines.map(async (cuisine) => {
+          try {
+            const items = await searchDianpingCuisine({
+              city: data.city,
+              cuisine,
+              hardFilters: data.hardFilters,
+              perplexityKey: pplxKey!,
+              firecrawlKey,
+            });
+            const places: PlaceCandidate[] = [];
+            for (const it of items) {
+              places.push(it.candidate);
+              if (it.review) {
+                reviewById.set(it.candidate.placeId, it.review as ReviewSummary);
+              }
+            }
+            return {
+              cuisine,
+              places,
+              error: places.length ? null : "大众点评未返回候选",
+            };
+          } catch (e) {
+            return {
+              cuisine,
+              places: [] as PlaceCandidate[],
+              error: e instanceof Error ? e.message : String(e),
+            };
           }
-        }
-        const places = Array.from(merged.values());
-        return { cuisine, places, error: places.length ? null : firstError };
-      }),
-    );
+        }),
+      );
+      placeResults = settled;
+    } else {
+      // 海外城市：Google Places + Perplexity 网评（原流程）
+      const language = guessLanguageCode(data.city);
+      const region = guessRegionCode(data.city);
+
+      const semanticSuffix = (() => {
+        if (language === "ja") return "おすすめ";
+        if (language === "zh-CN" || language === "zh-TW") return "推荐";
+        return "best";
+      })();
+      placeResults = await Promise.all(
+        data.cuisines.map(async (cuisine) => {
+          const queries =
+            semanticSuffix === "best"
+              ? [`${cuisine} ${data.city}`, `best ${cuisine} ${data.city}`]
+              : [`${cuisine} ${data.city}`, `${cuisine} ${data.city} ${semanticSuffix}`];
+          const settled = await Promise.allSettled(
+            queries.map((query) =>
+              searchPlaces({ query, language, region, maxResults: 20 }),
+            ),
+          );
+          const merged = new Map<string, PlaceCandidate>();
+          let firstError: string | null = null;
+          for (const s of settled) {
+            if (s.status === "fulfilled") {
+              for (const p of s.value) if (!merged.has(p.placeId)) merged.set(p.placeId, p);
+            } else if (!firstError) {
+              firstError = s.reason instanceof Error ? s.reason.message : String(s.reason);
+            }
+          }
+          const places = Array.from(merged.values());
+          return { cuisine, places, error: places.length ? null : firstError };
+        }),
+      );
+    }
 
     const placesError = placeResults.find((r) => r.error)?.error;
     if (placesError && placeResults.every((r) => !r.places.length)) {
       return {
         groups: [],
-        error: `Google Places 调用失败：${placesError}`,
+        error: useDianping
+          ? `大众点评检索失败：${placesError}`
+          : `Google Places 调用失败：${placesError}`,
         suggestions: FALLBACK_SUGGESTIONS,
       };
     }
@@ -535,16 +602,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     if (allHaveZero) {
       return {
         groups: [],
-        error: `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
+        error: useDianping
+          ? `大众点评在「${data.city}」没找到符合的餐厅候选`
+          : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
         suggestions: FALLBACK_SUGGESTIONS,
       };
     }
 
-    // 2. AI 排序：用 placeId 引用真实候选
-    // 1.5 Perplexity 真实网评摘要：每组取 Google 评分前 10 家并行获取
-    const pplxKey = process.env.PERPLEXITY_API_KEY;
-    const reviewById = new Map<string, ReviewSummary>();
-    if (pplxKey) {
+    // 海外城市：再走 Perplexity 网评摘要（国内已在大众点评流程里拿到）
+    if (!useDianping && pplxKey) {
       const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
       for (const r of placeResults) {
         const top = [...r.places]
