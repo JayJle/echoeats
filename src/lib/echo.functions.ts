@@ -415,6 +415,26 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
 
     // 2. AI 排序：用 placeId 引用真实候选
+    // 1.5 Perplexity 真实网评摘要：每组取 Google 评分前 5 家并行获取
+    const pplxKey = process.env.PERPLEXITY_API_KEY;
+    const reviewById = new Map<string, ReviewSummary>();
+    if (pplxKey) {
+      const tasks: Array<Promise<void>> = [];
+      for (const r of placeResults) {
+        const top = [...r.places]
+          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+          .slice(0, 5);
+        for (const p of top) {
+          tasks.push(
+            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => {
+              if (s && s.sourceCount > 0) reviewById.set(p.placeId, s);
+            }),
+          );
+        }
+      }
+      await Promise.all(tasks);
+    }
+
     const candidatesForPrompt = placeResults
       .filter((r) => r.places.length)
       .map((r) => ({
@@ -429,6 +449,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           openNow: p.openNow,
           primaryType: p.primaryType,
           editorialSummary: p.editorialSummary,
+          realWorldReviews: reviewById.get(p.placeId) ?? null,
         })),
       }));
 
@@ -443,7 +464,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 - 硬条件：${data.hardFilters.join("；") || "无"}
 - 偏好：${data.softPreferences.join("；") || "无"}
 - 避雷：${data.negativeFilters.join("；") || "无"}
-- 菜品偏好：${data.dishPreferences.join("；") || "无"}
+- 菜品偏好：${data.dishPreferences.join("、") || "无"}
 
 候选数据（JSON）：
 ${JSON.stringify(candidatesForPrompt, null, 2)}
@@ -454,9 +475,10 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 - 如果某组所有候选都无法通过硬条件，请返回空 picks 数组，绝不"将就"输出。
 - 仅当 hardFilterPass=true 时才输出该候选；每组按匹配度从高到低输出 1-3 家。
 - 价格判断：候选的 priceLevel（$/$$/$$$/$$$$）若明显高于用户预算上限，视为违反硬条件。无 priceLevel 信息时，若用户给了明确预算上限，视为无法确认 → hardFilterPass=false。
+- **realWorldReviews 优先**：当候选有 realWorldReviews（来自大众点评/小红书/Tabelog 等真实网评）时，**优先依据它判断匹配度**，而不是只看 Google 评分；commonComplaints 命中用户硬条件或避雷项 → hardFilterPass=false 或大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
+- **pros/cons 必须取真实素材**：有 realWorldReviews 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（如 commonComplaints 为空则 cons 用候选其它弱点）。禁止"环境不错""值得一试"等空话。
+- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。
-- aiSummary: 2-3 句中文，结合用户偏好与候选的评分/位置/类型说明匹配理由。
-- pros/cons: 各 2-4 条简短中文。
 - matchDetails: 3-6 条短描述，每条带 status (ok/warn)。
 
 输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterPass": true, "hardFilterViolations": [], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
