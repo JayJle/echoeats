@@ -541,24 +541,30 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
 
     // 2. AI 排序：用 placeId 引用真实候选
-    // 1.5 Perplexity 真实网评摘要：每组取 Google 评分前 5 家并行获取
+    // 1.5 Perplexity 真实网评摘要：每组取 Google 评分前 10 家并行获取
     const pplxKey = process.env.PERPLEXITY_API_KEY;
     const reviewById = new Map<string, ReviewSummary>();
     if (pplxKey) {
-      const tasks: Array<Promise<void>> = [];
+      const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
       for (const r of placeResults) {
         const top = [...r.places]
           .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-          .slice(0, 5);
+          .slice(0, 10);
         for (const p of top) {
           tasks.push(
-            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => {
-              if (s && s.sourceCount > 0) reviewById.set(p.placeId, s);
-            }),
+            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
+              id: p.placeId,
+              summary: s,
+            })),
           );
         }
       }
-      await Promise.all(tasks);
+      const settled = await Promise.allSettled(tasks);
+      for (const s of settled) {
+        if (s.status === "fulfilled" && s.value.summary && s.value.summary.sourceCount > 0) {
+          reviewById.set(s.value.id, s.value.summary);
+        }
+      }
     }
 
     const candidatesForPrompt = placeResults
