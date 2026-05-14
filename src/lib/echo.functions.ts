@@ -9,7 +9,6 @@ const ParseInput = z.object({
   city: z.string().min(1),
   cuisines: z.array(z.string()).min(1),
   date: z.string().min(1),
-  time: z.string().min(1),
   freeText: z.string().default(""),
 });
 
