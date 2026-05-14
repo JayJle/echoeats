@@ -140,17 +140,26 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
       <div className="p-6 flex items-start justify-between gap-4">
         <div>
           <div className="text-xs text-muted-foreground">#{index}</div>
-          <h3 className="mt-0.5 text-xl font-semibold tracking-tight">{displayName}</h3>
-          {alternateName && <p className="text-sm text-muted-foreground">{alternateName}</p>}
+          <h3 className="mt-0.5 text-xl font-semibold tracking-tight">
+            <a
+              href={r.googleMapsUri}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-primary transition-colors"
+            >
+              {displayName}
+            </a>
+          </h3>
+          {r.primaryType && (
+            <p className="text-xs text-muted-foreground mt-0.5">{r.primaryType}</p>
+          )}
+          {r.address && (
+            <p className="mt-1 text-sm text-muted-foreground">📍 {r.address}</p>
+          )}
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             {r.openNow && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
                 ✓ 当前营业
-              </span>
-            )}
-            {r.reservable && (
-              <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
-                ✓ 可预约
               </span>
             )}
             {r.needsReview && (
@@ -175,7 +184,7 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
 
       <div className="px-6 pb-2">
         <a
-          href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(displayName)}`}
+          href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(displayName + " " + (r.address || ""))}`}
           target="_blank"
           rel="noreferrer"
           className="block aspect-[16/9] rounded-lg bg-gradient-to-br from-accent to-secondary flex items-center justify-center text-xs text-muted-foreground hover:opacity-80 transition"
