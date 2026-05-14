@@ -98,7 +98,7 @@ const ResultsSchema = z.object({
 const SearchDraftRestaurantSchema = z
   .object({
     id: z.union([z.string(), z.number()]).optional(),
-    name: z.string().optional(),
+    name: z.string().min(1),
     localName: z.string().optional(),
     cuisine: z.string().optional(),
     matchScore: z.union([z.string(), z.number()]).optional(),
@@ -137,16 +137,14 @@ const SearchDraftRestaurantSchema = z
 
 const SearchDraftSchema = z
   .object({
-    groups: z
-      .array(
-        z
-          .object({
-            cuisine: z.string().optional(),
-            restaurants: z.array(SearchDraftRestaurantSchema).optional(),
-          })
-          .passthrough(),
-      )
-      .optional(),
+    groups: z.array(
+      z
+        .object({
+          cuisine: z.string().min(1),
+          restaurants: z.array(SearchDraftRestaurantSchema).min(1),
+        })
+        .passthrough(),
+    ),
   })
   .passthrough();
 
@@ -156,7 +154,10 @@ type SearchDraftRestaurant = z.infer<typeof SearchDraftRestaurantSchema>;
 function toSearchDraft(value: unknown): SearchDraft {
   const candidate = Array.isArray(value) ? { groups: value } : value;
   const parsed = SearchDraftSchema.safeParse(candidate);
-  return parsed.success ? parsed.data : {};
+  if (!parsed.success) {
+    throw new Error("AI 没有返回可用餐厅，请换一个城市或减少料理类型后重试");
+  }
+  return parsed.data;
 }
 
 function safeText(value: unknown, fallback: string) {
@@ -232,14 +233,18 @@ function normalizeResults(draft: SearchDraft, data: z.infer<typeof ParsedSchema>
     const group =
       sourceGroups.find((item) => item.cuisine?.toLowerCase() === cuisine.toLowerCase()) ??
       sourceGroups[groupIndex];
-    const restaurants = group?.restaurants?.length
-      ? group.restaurants.slice(0, 3)
-      : [{ name: `${data.city} ${cuisine} 推荐候选`, cuisine, matchScore: 82 }];
+    if (!group?.restaurants?.length) {
+      throw new Error(`AI 没有为「${cuisine}」返回具体餐厅，请调整条件后重试`);
+    }
+    const restaurants = group.restaurants.slice(0, 3);
 
     return {
       cuisine,
       restaurants: restaurants.map((restaurant, index) => {
-        const name = safeText(restaurant.name, `${data.city} ${cuisine} 推荐候选 ${index + 1}`);
+        const name = safeText(restaurant.name, "");
+        if (!name || /推荐候选|candidate/i.test(name)) {
+          throw new Error(`AI 返回了无效餐厅名称，请重新搜索`);
+        }
         const score = normalizeScore(restaurant.matchScore, 88 - index * 4);
         const explicitTier = restaurant.matchTier;
         const matchTier =
@@ -304,7 +309,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
 要求：
 - 按"料理类型"分组（每个用户输入的料理类型一组）。
-- 每组返回 1-3 家真实存在或合理虚构的当地知名餐厅候选，按 matchScore 降序。
+- 每组返回 1-3 家具体餐厅，必须给出真实餐厅名或看起来像真实店铺的完整店名，按 matchScore 降序。
+- 禁止使用"推荐候选"、"餐厅候选"、"Restaurant Candidate"、"某某店"这类占位名称。
 - name 用英文/罗马字，localName 用本地语言（日本=日文，中国=中文）。
 - matchScore 0-100。matchTier：>=92 perfect, >=80 high, 其余 partial。
 - ratings 包含 Google Maps / Tabelog / Yelp / 大众点评 / 美团 五项；不存在的平台 score 设为 null。日本店通常无大众点评/美团数据，中国店通常无 Tabelog。分数为字符串如 "4.5 / 5" 或 "3.68 / 5"。
