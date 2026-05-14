@@ -113,6 +113,11 @@ import {
   searchPlaces,
   type PlaceCandidate,
 } from "./google-places.server";
+import {
+  isMainlandChinaCity,
+  searchDianpingCuisine,
+  type DianpingReview,
+} from "./dianping.server";
 
 // Perplexity 真实网评摘要
 type ReviewSummary = {
