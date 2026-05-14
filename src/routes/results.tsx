@@ -174,16 +174,14 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
       </div>
 
       <div className="px-6 pb-2">
-        <div className="grid grid-cols-3 gap-2">
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="aspect-[4/3] rounded-lg bg-gradient-to-br from-accent to-secondary flex items-center justify-center text-xs text-muted-foreground"
-            >
-              {["菜品", "环境", "门面"][i]}
-            </div>
-          ))}
-        </div>
+        <a
+          href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(displayName)}`}
+          target="_blank"
+          rel="noreferrer"
+          className="block aspect-[16/9] rounded-lg bg-gradient-to-br from-accent to-secondary flex items-center justify-center text-xs text-muted-foreground hover:opacity-80 transition"
+        >
+          🔍 在 Google 图片中查看「{displayName}」
+        </a>
       </div>
 
       <div className="px-6 py-4 border-t border-border">
