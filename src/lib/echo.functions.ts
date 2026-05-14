@@ -318,20 +318,39 @@ function normalizeRatings(raw: SearchDraftRestaurant["ratings"]) {
   });
 }
 
-function buildSearchLinks(name: string, city: string) {
-  const query = encodeURIComponent(`${name} ${city}`);
-  const looksJapanese = /[\u3040-\u30ff]/.test(name) || /tokyo|kyoto|osaka|japan|日本|东京|京都|大阪/i.test(city);
-  const looksChinese = /[\u4e00-\u9fff]/.test(name) && !looksJapanese;
-  const links = [
-    { label: "Google Maps", url: `https://www.google.com/maps/search/?api=1&query=${query}` },
-    { label: "Google 搜索", url: `https://www.google.com/search?q=${query}` },
+function buildSearchLinks(name: string, localName: string, city: string) {
+  // Prefer the original local-language name for searches — translated/romanized
+  // names often miss on Google Maps / Tabelog / 大众点评.
+  const primary = localName && localName !== name ? localName : name;
+  const primaryQuery = encodeURIComponent(`${primary} ${city}`);
+  const altQuery = encodeURIComponent(`${name} ${city}`);
+  const looksJapanese =
+    /[\u3040-\u30ff]/.test(primary) ||
+    /tokyo|kyoto|osaka|japan|日本|东京|京都|大阪/i.test(city);
+  const looksChinese = /[\u4e00-\u9fff]/.test(primary) && !looksJapanese;
+  const links: { label: string; url: string }[] = [
+    { label: "Google Maps", url: `https://www.google.com/maps/search/?api=1&query=${primaryQuery}` },
+    { label: "Google 搜索", url: `https://www.google.com/search?q=${primaryQuery}` },
   ];
+  if (primary !== name) {
+    links.push({ label: "Google 搜索（英文名）", url: `https://www.google.com/search?q=${altQuery}` });
+  }
   if (looksJapanese) {
-    links.push({ label: "Tabelog 搜索", url: `https://tabelog.com/rstLst/?sw=${query}` });
+    // site:tabelog.com 搜索更稳定,直接命中店铺详情页
+    links.push({
+      label: "Tabelog 搜索",
+      url: `https://www.google.com/search?q=${encodeURIComponent(`site:tabelog.com ${primary} ${city}`)}`,
+    });
   }
   if (looksChinese) {
-    links.push({ label: "大众点评搜索", url: `https://www.dianping.com/search/keyword/0/0_${query}` });
-    links.push({ label: "美团搜索", url: `https://www.meituan.com/s/${query}` });
+    links.push({
+      label: "大众点评搜索",
+      url: `https://www.google.com/search?q=${encodeURIComponent(`site:dianping.com ${primary} ${city}`)}`,
+    });
+    links.push({
+      label: "美团搜索",
+      url: `https://www.google.com/search?q=${encodeURIComponent(`site:meituan.com ${primary} ${city}`)}`,
+    });
   }
   return links;
 }
