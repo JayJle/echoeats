@@ -491,24 +491,34 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const language = guessLanguageCode(data.city);
     const region = guessRegionCode(data.city);
 
-    // 1. 并行调用 Google Places：每个料理一次 Text Search
+    // 1. 并行调用 Google Places：每个料理两条查询（主 + 本地语义变体），按 placeId 去重
+    const semanticSuffix = (() => {
+      if (language === "ja") return "おすすめ";
+      if (language === "zh-CN" || language === "zh-TW") return "推荐";
+      return "best";
+    })();
     const placeResults = await Promise.all(
       data.cuisines.map(async (cuisine) => {
-        try {
-          const places = await searchPlaces({
-            query: `${cuisine} ${data.city}`,
-            language,
-            region,
-            maxResults: 15,
-          });
-          return { cuisine, places, error: null as string | null };
-        } catch (e) {
-          return {
-            cuisine,
-            places: [] as PlaceCandidate[],
-            error: e instanceof Error ? e.message : String(e),
-          };
+        const queries =
+          semanticSuffix === "best"
+            ? [`${cuisine} ${data.city}`, `best ${cuisine} ${data.city}`]
+            : [`${cuisine} ${data.city}`, `${cuisine} ${data.city} ${semanticSuffix}`];
+        const settled = await Promise.allSettled(
+          queries.map((query) =>
+            searchPlaces({ query, language, region, maxResults: 20 }),
+          ),
+        );
+        const merged = new Map<string, PlaceCandidate>();
+        let firstError: string | null = null;
+        for (const s of settled) {
+          if (s.status === "fulfilled") {
+            for (const p of s.value) if (!merged.has(p.placeId)) merged.set(p.placeId, p);
+          } else if (!firstError) {
+            firstError = s.reason instanceof Error ? s.reason.message : String(s.reason);
+          }
         }
+        const places = Array.from(merged.values());
+        return { cuisine, places, error: places.length ? null : firstError };
       }),
     );
 
@@ -531,24 +541,30 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
 
     // 2. AI 排序：用 placeId 引用真实候选
-    // 1.5 Perplexity 真实网评摘要：每组取 Google 评分前 5 家并行获取
+    // 1.5 Perplexity 真实网评摘要：每组取 Google 评分前 10 家并行获取
     const pplxKey = process.env.PERPLEXITY_API_KEY;
     const reviewById = new Map<string, ReviewSummary>();
     if (pplxKey) {
-      const tasks: Array<Promise<void>> = [];
+      const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
       for (const r of placeResults) {
         const top = [...r.places]
           .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-          .slice(0, 5);
+          .slice(0, 10);
         for (const p of top) {
           tasks.push(
-            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => {
-              if (s && s.sourceCount > 0) reviewById.set(p.placeId, s);
-            }),
+            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
+              id: p.placeId,
+              summary: s,
+            })),
           );
         }
       }
-      await Promise.all(tasks);
+      const settled = await Promise.allSettled(tasks);
+      for (const s of settled) {
+        if (s.status === "fulfilled" && s.value.summary && s.value.summary.sourceCount > 0) {
+          reviewById.set(s.value.id, s.value.summary);
+        }
+      }
     }
 
     const candidatesForPrompt = placeResults
@@ -586,7 +602,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const hardFiltersList = data.hardFilters;
     const hardFiltersJson = JSON.stringify(hardFiltersList);
 
-    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，为每组挑出最匹配的 3-8 家，并给出打分和理由。
+    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何硬条件被证伪，都应纳入）**，并给出打分和理由。
 
 用户需求：
 - 城市：${data.city}
@@ -607,6 +623,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
     - "fail" = 明确证实不满足
   note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
 - **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
+- **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用（例：editorialSummary 写明"仅晚市营业"但用户要求午餐；commonComplaints 明确提到"不接受预约"但用户要求可预约）。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。宁可放进 partial 让用户自己核实，也不要错杀。
 - 价格判断（重要）：
     1. 若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
     2. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
@@ -624,7 +641,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       const result = await generateText({
         model,
         prompt,
-        maxOutputTokens: 6000,
+        maxOutputTokens: 10000,
         output: Output.object({
           schema: AiRankingSchema,
           name: "echo_eats_ranking",
@@ -652,7 +669,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         const aiGroup =
           ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
           ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 12);
+        const picks = (aiGroup?.picks ?? []).slice(0, 20);
 
         type Bucket = "ok" | "partial" | null;
 
@@ -725,8 +742,18 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           })
           .filter((r): r is NonNullable<typeof r> => Boolean(r));
 
-        const restaurants = built.filter((b) => b.bucket === "ok").map((b) => b.restaurant).slice(0, 8);
-        const partialRestaurants = built.filter((b) => b.bucket === "partial").map((b) => b.restaurant).slice(0, 6);
+        const sortByScore = (a: { restaurant: { matchScore: number } }, b: { restaurant: { matchScore: number } }) =>
+          b.restaurant.matchScore - a.restaurant.matchScore;
+        const restaurants = built
+          .filter((b) => b.bucket === "ok")
+          .sort(sortByScore)
+          .map((b) => b.restaurant)
+          .slice(0, 15);
+        const partialRestaurants = built
+          .filter((b) => b.bucket === "partial")
+          .sort(sortByScore)
+          .map((b) => b.restaurant)
+          .slice(0, 15);
 
         if (!restaurants.length && !partialRestaurants.length) return null;
         return {
