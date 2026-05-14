@@ -21,6 +21,7 @@ export type Restaurant = {
   matchTier: "perfect" | "high" | "partial";
   openNow: boolean;
   reservable: boolean;
+  needsReview: boolean;
   ratings: { platform: string; score: string | null }[];
   aiSummary: string;
   matchDetails: { label: string; status: "ok" | "warn" }[];
@@ -31,6 +32,12 @@ export type Restaurant = {
 
 export type ResultsGroup = { cuisine: string; restaurants: Restaurant[] };
 
+export type SearchResults = {
+  groups: ResultsGroup[];
+  error: string | null;
+  suggestions: string[];
+};
+
 type QueryState = {
   city: string;
   cuisines: string[];
@@ -38,14 +45,14 @@ type QueryState = {
   time: string;
   freeText: string;
   parsed: ParsedRequirements | null;
-  results: ResultsGroup[] | null;
+  results: SearchResults | null;
   setCity: (v: string) => void;
   setCuisines: (v: string[]) => void;
   setDate: (v: string) => void;
   setTime: (v: string) => void;
   setFreeText: (v: string) => void;
   setParsed: (v: ParsedRequirements | null) => void;
-  setResults: (v: ResultsGroup[] | null) => void;
+  setResults: (v: SearchResults | null) => void;
   reset: () => void;
 };
 
