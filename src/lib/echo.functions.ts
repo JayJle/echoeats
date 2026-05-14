@@ -53,6 +53,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
       const { experimental_output } = await generateText({
         model,
         prompt,
+        maxOutputTokens: 2000,
         experimental_output: Output.object({ schema: ParsedSchema }),
       });
       return experimental_output;
@@ -123,11 +124,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 只返回 JSON。`;
 
     try {
-      const { experimental_output } = await generateText({
+      const { experimental_output, finishReason } = await generateText({
         model,
         prompt,
+        maxOutputTokens: 8000,
         experimental_output: Output.object({ schema: ResultsSchema }),
       });
+      if (finishReason === "length") {
+        throw new Error("AI 输出被截断，请减少料理类型数量后重试");
+      }
       return experimental_output.groups;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
