@@ -447,7 +447,8 @@ function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
       ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
       : null;
   const priceFromReview = formatPriceFromReview(review);
-  const priceScore = priceFromReview ?? priceLevelLabel(p.priceLevel);
+  // 仅展示从网评直接抓到的人均；Google priceLevel ($/$$) 太粗，不展示以免误导。
+  const priceScore = priceFromReview ?? null;
   return [
     { platform: "Google Maps", score },
     { platform: "大众点评", score: dpScore },
