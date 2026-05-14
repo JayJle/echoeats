@@ -120,6 +120,8 @@ type ReviewSummary = {
   commonComplaints: string[];
   sentiment: "positive" | "mixed" | "negative" | "unknown";
   sourceCount: number;
+  dianpingRating: number | null;
+  dianpingRatingSource: "dianping" | "xiaohongshu_mention" | "other" | "unknown";
 };
 
 async function fetchReviewSummary(
@@ -152,11 +154,13 @@ async function fetchReviewSummary(
 - commonComplaints: 0-3 条网友普遍提到的缺点/吐槽（如有）
 - sentiment: 整体口碑 positive/mixed/negative
 - sourceCount: 找到的有效来源数量（整数）
+- dianpingRating: 仅当你在大众点评店铺页或小红书帖子中**直接看到**该店的点评评分（0-5 分，例如 4.5）时返回该数字，最多保留一位小数。**找不到必须返回 null**，禁止根据"好评多/口碑好"等模糊信号自己估算或编造。
+- dianpingRatingSource: 评分来源——"dianping"（来自大众点评）/"xiaohongshu_mention"（小红书帖子提到的点评分）/"other"（其它来源）/"unknown"（找不到，此时 dianpingRating 必须为 null）。
 
-如果找不到该店，sourceCount 设为 0、其它数组为空。只输出 JSON 对象。`,
+如果找不到该店，sourceCount 设为 0、其它数组为空、dianpingRating=null、dianpingRatingSource="unknown"。只输出 JSON 对象。`,
           },
         ],
-        max_tokens: 600,
+        max_tokens: 700,
         temperature: 0.2,
         search_recency_filter: "year",
         response_format: {
@@ -170,8 +174,20 @@ async function fetchReviewSummary(
                 commonComplaints: { type: "array", items: { type: "string" } },
                 sentiment: { type: "string", enum: ["positive", "mixed", "negative", "unknown"] },
                 sourceCount: { type: "number" },
+                dianpingRating: { type: ["number", "null"] },
+                dianpingRatingSource: {
+                  type: "string",
+                  enum: ["dianping", "xiaohongshu_mention", "other", "unknown"],
+                },
               },
-              required: ["reviewHighlights", "commonComplaints", "sentiment", "sourceCount"],
+              required: [
+                "reviewHighlights",
+                "commonComplaints",
+                "sentiment",
+                "sourceCount",
+                "dianpingRating",
+                "dianpingRatingSource",
+              ],
             },
           },
         },
@@ -185,11 +201,23 @@ async function fetchReviewSummary(
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return null;
     const parsed = JSON.parse(content);
+    const rawRating = parsed.dianpingRating;
+    const rating =
+      typeof rawRating === "number" && rawRating >= 0 && rawRating <= 5
+        ? Math.round(rawRating * 10) / 10
+        : null;
+    const ratingSource = ["dianping", "xiaohongshu_mention", "other", "unknown"].includes(
+      parsed.dianpingRatingSource,
+    )
+      ? parsed.dianpingRatingSource
+      : "unknown";
     return {
       reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
       commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
       sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
       sourceCount: Number(parsed.sourceCount) || 0,
+      dianpingRating: rating,
+      dianpingRatingSource: rating == null ? "unknown" : ratingSource,
     };
   } catch (e) {
     console.warn(`[Perplexity] ${name}:`, e instanceof Error ? e.message : e);
@@ -329,16 +357,20 @@ function buildLinks(p: PlaceCandidate, city: string) {
   return links.slice(0, 6);
 }
 
-function candidateRatings(p: PlaceCandidate) {
-  const score = p.rating != null
-    ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
-    : null;
+function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
+  const score =
+    p.rating != null
+      ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
+      : null;
+  const dpScore =
+    review?.dianpingRating != null
+      ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
+      : null;
   return [
     { platform: "Google Maps", score },
+    { platform: "大众点评", score: dpScore },
     { platform: "Tabelog", score: null },
     { platform: "Yelp", score: null },
-    { platform: "大众点评", score: null },
-    { platform: "美团", score: null },
   ];
 }
 
@@ -557,7 +589,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null,
-              ratings: candidateRatings(p),
+              ratings: candidateRatings(p, reviewById.get(p.placeId) ?? null),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
