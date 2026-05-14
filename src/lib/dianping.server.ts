@@ -65,7 +65,8 @@ async function fetchDianpingShopsViaPerplexity(opts: {
       signal: controller.signal,
       body: JSON.stringify({
         model: "sonar",
-        search_domain_filter: ["dianping.com"],
+        // 不限制 search_domain_filter — 大众点评本身反爬严格，Perplexity 索引很少；
+        // 改为优先大众点评 + 美食榜单/小红书等中文媒体兜底
         search_recency_filter: "year",
         max_tokens: 3500,
         temperature: 0.2,
@@ -73,11 +74,11 @@ async function fetchDianpingShopsViaPerplexity(opts: {
           {
             role: "system",
             content:
-              "你是大众点评数据采集助手。只能基于大众点评（dianping.com）真实页面信息回答，不许编造。只输出 JSON。",
+              "你是中文美食信息采集助手。优先采用大众点评（dianping.com）数据；若大众点评页面无法访问，可以参考美团、小红书、知乎、橘子娱乐、Time Out、米其林指南等可信中文来源。不许凭空编造店名。只输出 JSON。",
           },
           {
             role: "user",
-            content: `在大众点评上检索「${opts.city}」的「${opts.cuisine}」餐厅，返回 12-15 家热门、口碑较好的店。${hardFiltersText}
+            content: `检索「${opts.city}」的「${opts.cuisine}」餐厅，返回 12-15 家本地真实存在、口碑较好的店。优先用大众点评数据，找不到时可参考其它中文美食媒体。${hardFiltersText}
 
 每家店给出（**所有字段必须直接来自大众点评页面，不要凭推测**）：
 - name: 店名（中文原名）
@@ -152,14 +153,32 @@ async function fetchDianpingShopsViaPerplexity(opts: {
     }
     const json = await res.json();
     const content = json?.choices?.[0]?.message?.content;
-    if (!content) return [];
+    if (!content) {
+      console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: empty content`);
+      return [];
+    }
     let parsed: { shops?: unknown };
     try {
       parsed = JSON.parse(content);
     } catch {
+      const m = content.match(/\{[\s\S]*\}/);
+      if (m) {
+        try {
+          parsed = JSON.parse(m[0]);
+        } catch {
+          console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: JSON parse fail. content=${content.slice(0, 300)}`);
+          return [];
+        }
+      } else {
+        console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: no JSON. content=${content.slice(0, 300)}`);
+        return [];
+      }
+    }
+    if (!parsed?.shops || !Array.isArray(parsed.shops)) {
+      console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: no shops. parsed=${JSON.stringify(parsed).slice(0, 300)}`);
       return [];
     }
-    if (!parsed?.shops || !Array.isArray(parsed.shops)) return [];
+    console.log(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: got ${parsed.shops.length} shops`);
     const out: RawShop[] = [];
     for (const raw of parsed.shops) {
       if (!raw || typeof raw !== "object") continue;
