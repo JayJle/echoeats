@@ -159,7 +159,9 @@ function safeText(value: unknown, fallback: string) {
 
 function safeList(value: unknown, fallback: string[]) {
   return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string" && item.trim()).map((item) => item.trim())
+    ? value
+        .filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+        .map((item) => item.trim())
     : fallback;
 }
 
