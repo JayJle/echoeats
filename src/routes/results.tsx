@@ -36,6 +36,8 @@ function ResultsPage() {
 
   if (!results || !parsed) return null;
 
+  const isEmpty = results.groups.length === 0;
+
   return (
     <div className="min-h-screen bg-background">
       <header className="px-6 py-5 flex items-center justify-between border-b border-border/60">
@@ -66,20 +68,51 @@ function ResultsPage() {
           </div>
         </div>
 
-        <div className="space-y-10">
-          {results.map((group) => (
-            <section key={group.cuisine}>
-              <h2 className="mb-4 text-lg font-semibold tracking-tight border-l-4 border-primary pl-3">
-                {group.cuisine}
-              </h2>
-              <div className="space-y-5">
-                {group.restaurants.map((r, i) => (
-                  <RestaurantCard key={r.id} index={i + 1} r={r} />
+        {results.error && (
+          <div className="mb-6 bg-warning/10 border border-warning/30 rounded-2xl p-5">
+            <p className="text-sm font-medium text-foreground">{results.error}</p>
+            {results.suggestions.length > 0 && (
+              <ul className="mt-3 space-y-1.5 text-sm text-muted-foreground">
+                {results.suggestions.map((s, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className="text-primary">·</span>
+                    <span>{s}</span>
+                  </li>
                 ))}
-              </div>
-            </section>
-          ))}
-        </div>
+              </ul>
+            )}
+            <p className="mt-3 text-xs text-muted-foreground">
+              Echo Eats 是 AI 决策层，不直接抓取地图数据。如果 AI 对某个城市/料理把握不大，会诚实说"没把握"，而不是编造店铺。
+            </p>
+          </div>
+        )}
+
+        {isEmpty ? (
+          <div className="bg-card border border-border rounded-2xl p-8 text-center">
+            <p className="text-base font-medium">没有可展示的餐厅</p>
+            <p className="mt-2 text-sm text-muted-foreground">
+              请回到上一步调整需求后重新搜索。
+            </p>
+            <Button asChild className="mt-5">
+              <Link to="/confirm">返回编辑需求</Link>
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-10">
+            {results.groups.map((group) => (
+              <section key={group.cuisine}>
+                <h2 className="mb-4 text-lg font-semibold tracking-tight border-l-4 border-primary pl-3">
+                  {group.cuisine}
+                </h2>
+                <div className="space-y-5">
+                  {group.restaurants.map((r, i) => (
+                    <RestaurantCard key={r.id} index={i + 1} r={r} />
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
 
         <div className="mt-12 flex justify-center">
           <Button asChild variant="outline">
@@ -115,6 +148,11 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
             {r.reservable && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
                 ✓ 可预约
+              </span>
+            )}
+            {r.needsReview && (
+              <span className="px-2 py-0.5 rounded-full bg-warning/15 text-warning">
+                ⚠ 需平台核实
               </span>
             )}
           </div>

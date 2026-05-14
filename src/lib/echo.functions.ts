@@ -78,6 +78,7 @@ const RestaurantSchema = z.object({
   matchTier: z.enum(["perfect", "high", "partial"]),
   openNow: z.boolean(),
   reservable: z.boolean(),
+  needsReview: z.boolean(),
   ratings: z.array(z.object({ platform: z.string(), score: z.string().nullable() })),
   aiSummary: z.string(),
   matchDetails: z.array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) })),
@@ -105,6 +106,7 @@ const SearchDraftRestaurantSchema = z
     matchTier: z.string().optional(),
     openNow: z.union([z.boolean(), z.string()]).optional(),
     reservable: z.union([z.boolean(), z.string()]).optional(),
+    needsReview: z.union([z.boolean(), z.string()]).optional(),
     ratings: z
       .array(
         z.object({
@@ -151,6 +153,8 @@ const SearchDraftSchema = z
 type SearchDraft = z.infer<typeof SearchDraftSchema>;
 type SearchDraftRestaurant = z.infer<typeof SearchDraftRestaurantSchema>;
 
+const PLACEHOLDER_RE = /推荐候选|餐厅候选|候选\s*\d*$|restaurant\s*candidate|某某店|placeholder|示例/i;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -180,7 +184,7 @@ function looksLikeRestaurant(value: unknown) {
 function normalizeDraftRestaurant(value: unknown): SearchDraftRestaurant | null {
   if (!isRecord(value)) return null;
   const name = getStringField(value, ["name", "restaurantName", "restaurant_name", "title", "店名", "餐厅名"]);
-  if (!name) return null;
+  if (!name || PLACEHOLDER_RE.test(name)) return null;
 
   return {
     ...value,
@@ -200,7 +204,9 @@ function normalizeDraftGroup(value: unknown, fallbackCuisine: string) {
   if (!isRecord(value)) return null;
   const restaurantValues = getArrayField(value, ["restaurants", "items", "recommendations", "results", "餐厅"]);
   if (!restaurantValues) return null;
-  const restaurants = restaurantValues.map(normalizeDraftRestaurant).filter((item): item is SearchDraftRestaurant => Boolean(item));
+  const restaurants = restaurantValues
+    .map(normalizeDraftRestaurant)
+    .filter((item): item is SearchDraftRestaurant => Boolean(item));
   if (!restaurants.length) return null;
   return {
     cuisine: getStringField(value, ["cuisine", "cuisineType", "category", "料理", "料理类型"]) ?? fallbackCuisine,
@@ -208,29 +214,19 @@ function normalizeDraftGroup(value: unknown, fallbackCuisine: string) {
   };
 }
 
-function toSearchDraft(value: unknown, cuisines: string[]): SearchDraft {
+function toSearchDraft(value: unknown, cuisines: string[]): SearchDraft | null {
   const root = Array.isArray(value)
     ? value.some(looksLikeRestaurant)
       ? { restaurants: value }
       : { groups: value }
     : value;
-  const mappedGroups = isRecord(root)
-    ? Object.entries(root)
-        .filter(([, item]) => Array.isArray(item))
-        .map(([cuisine, items]) =>
-          normalizeDraftGroup({ cuisine, restaurants: items }, cuisines[0] ?? cuisine),
-        )
-        .filter((item): item is SearchDraft["groups"][number] => Boolean(item))
-    : [];
+
   const groupCandidates = isRecord(root)
     ? getArrayField(root, ["groups", "cuisineGroups", "recommendations", "results", "餐厅推荐"])
     : undefined;
   const directRestaurants = isRecord(root)
     ? getArrayField(root, ["restaurants", "items", "餐厅"])
     : undefined;
-  const flatRestaurantCandidates = groupCandidates?.some(looksLikeRestaurant)
-    ? groupCandidates
-    : directRestaurants;
 
   const groups = groupCandidates
     ?.map((item, index) =>
@@ -240,25 +236,37 @@ function toSearchDraft(value: unknown, cuisines: string[]): SearchDraft {
     )
     .filter((item): item is SearchDraft["groups"][number] => Boolean(item));
 
+  const flatRestaurantCandidates = groupCandidates?.some(looksLikeRestaurant)
+    ? groupCandidates
+    : directRestaurants;
   const restaurants = flatRestaurantCandidates
     ?.map(normalizeDraftRestaurant)
     .filter((item): item is SearchDraftRestaurant => Boolean(item));
 
-  const candidate = {
-    groups: groups?.length
-      ? groups
-      : mappedGroups.length
-        ? mappedGroups
+  const mappedGroups = isRecord(root)
+    ? Object.entries(root)
+        .filter(
+          ([key, item]) =>
+            Array.isArray(item) &&
+            !["groups", "cuisineGroups", "recommendations", "results", "餐厅推荐", "restaurants", "items", "餐厅"].includes(
+              key,
+            ),
+        )
+        .map(([cuisine, items]) => normalizeDraftGroup({ cuisine, restaurants: items }, cuisine))
+        .filter((item): item is SearchDraft["groups"][number] => Boolean(item))
+    : [];
+
+  const finalGroups = groups?.length
+    ? groups
+    : mappedGroups.length
+      ? mappedGroups
       : restaurants?.length
         ? [{ cuisine: cuisines[0] ?? "推荐", restaurants }]
-        : [],
-  };
+        : [];
 
-  const parsed = SearchDraftSchema.safeParse(candidate);
-  if (!parsed.success || !parsed.data.groups.length) {
-    throw new Error("AI 没有返回可用餐厅，请换一个城市或减少料理类型后重试");
-  }
-  return parsed.data;
+  if (!finalGroups.length) return null;
+  const parsed = SearchDraftSchema.safeParse({ groups: finalGroups });
+  return parsed.success ? parsed.data : null;
 }
 
 function safeText(value: unknown, fallback: string) {
@@ -310,9 +318,26 @@ function normalizeRatings(raw: SearchDraftRestaurant["ratings"]) {
   });
 }
 
-function normalizeLinks(raw: SearchDraftRestaurant["links"], name: string, city: string) {
+function buildSearchLinks(name: string, city: string) {
   const query = encodeURIComponent(`${name} ${city}`);
-  const links =
+  const looksJapanese = /[\u3040-\u30ff]/.test(name) || /tokyo|kyoto|osaka|japan|日本|东京|京都|大阪/i.test(city);
+  const looksChinese = /[\u4e00-\u9fff]/.test(name) && !looksJapanese;
+  const links = [
+    { label: "Google Maps", url: `https://www.google.com/maps/search/?api=1&query=${query}` },
+    { label: "Google 搜索", url: `https://www.google.com/search?q=${query}` },
+  ];
+  if (looksJapanese) {
+    links.push({ label: "Tabelog 搜索", url: `https://tabelog.com/rstLst/?sw=${query}` });
+  }
+  if (looksChinese) {
+    links.push({ label: "大众点评搜索", url: `https://www.dianping.com/search/keyword/0/0_${query}` });
+    links.push({ label: "美团搜索", url: `https://www.meituan.com/s/${query}` });
+  }
+  return links;
+}
+
+function normalizeLinks(raw: SearchDraftRestaurant["links"], name: string, city: string) {
+  const aiLinks =
     raw
       ?.map((link) => ({
         label: safeText(link.label, "平台搜索"),
@@ -320,84 +345,112 @@ function normalizeLinks(raw: SearchDraftRestaurant["links"], name: string, city:
       }))
       .filter((link) => /^https?:\/\//.test(link.url)) ?? [];
 
-  return links.length >= 2
-    ? links.slice(0, 4)
-    : [
-        { label: "Google Maps", url: `https://www.google.com/maps/search/?api=1&query=${query}` },
-        { label: "Google Search", url: `https://www.google.com/search?q=${query}` },
-      ];
+  const generated = buildSearchLinks(name, city);
+  // Merge: generated search links first (always reliable), then any extra AI URLs that aren't duplicates.
+  const seen = new Set(generated.map((l) => l.url));
+  for (const link of aiLinks) {
+    if (!seen.has(link.url)) {
+      generated.push(link);
+      seen.add(link.url);
+    }
+  }
+  return generated.slice(0, 6);
 }
 
 function normalizeResults(draft: SearchDraft, data: z.infer<typeof ParsedSchema>) {
-  const sourceGroups = Array.isArray(draft.groups) ? draft.groups : [];
-  const groups = data.cuisines.map((cuisine, groupIndex) => {
-    const group =
-      sourceGroups.find((item) => item.cuisine?.toLowerCase() === cuisine.toLowerCase()) ??
-      sourceGroups[groupIndex];
-    if (!group?.restaurants?.length) {
-      throw new Error(`AI 没有为「${cuisine}」返回具体餐厅，请调整条件后重试`);
-    }
-    const restaurants = group.restaurants.slice(0, 3);
+  const sourceGroups = draft.groups;
+  const groups = data.cuisines
+    .map((cuisine, groupIndex) => {
+      const group =
+        sourceGroups.find((item) => item.cuisine?.toLowerCase() === cuisine.toLowerCase()) ??
+        sourceGroups[groupIndex];
+      if (!group?.restaurants?.length) return null;
 
-    return {
-      cuisine,
-      restaurants: restaurants.map((restaurant, index) => {
-        const name = safeText(restaurant.name, "");
-        if (!name || /推荐候选|candidate/i.test(name)) {
-          throw new Error(`AI 返回了无效餐厅名称，请重新搜索`);
-        }
-        const score = normalizeScore(restaurant.matchScore, 88 - index * 4);
-        const explicitTier = restaurant.matchTier;
-        const matchTier =
-          explicitTier === "perfect" || explicitTier === "high" || explicitTier === "partial"
-            ? explicitTier
-            : tierFromScore(score);
+      const restaurants = group.restaurants
+        .slice(0, 3)
+        .map((restaurant, index) => {
+          const name = safeText(restaurant.name, "");
+          if (!name || PLACEHOLDER_RE.test(name)) return null;
 
-        return {
-          id: slugify(String(restaurant.id ?? `${cuisine}-${name}-${index + 1}`)) || `restaurant-${groupIndex}-${index}`,
-          name,
-          localName: safeText(restaurant.localName, name),
-          cuisine,
-          matchScore: score,
-          matchTier,
-          openNow: normalizeBoolean(restaurant.openNow, true),
-          reservable: normalizeBoolean(restaurant.reservable, true),
-          ratings: normalizeRatings(restaurant.ratings),
-          aiSummary: safeText(
-            restaurant.aiSummary,
-            `这家店与 ${data.city} 的 ${cuisine} 需求匹配度较高，适合作为当前条件下的优先候选。建议点开平台链接确认最新营业时间与预约情况。`,
-          ),
-          matchDetails:
-            restaurant.matchDetails?.length
+          const score = normalizeScore(restaurant.matchScore, 82 - index * 4);
+          const explicitTier = restaurant.matchTier;
+          const matchTier =
+            explicitTier === "perfect" || explicitTier === "high" || explicitTier === "partial"
+              ? explicitTier
+              : tierFromScore(score);
+
+          const ratings = normalizeRatings(restaurant.ratings);
+          const hasAnyScore = ratings.some((r) => r.score);
+          const needsReview = normalizeBoolean(restaurant.needsReview, !hasAnyScore);
+
+          return {
+            id:
+              slugify(String(restaurant.id ?? `${cuisine}-${name}-${index + 1}`)) ||
+              `restaurant-${groupIndex}-${index}`,
+            name,
+            localName: safeText(restaurant.localName, name),
+            cuisine,
+            matchScore: score,
+            matchTier,
+            openNow: normalizeBoolean(restaurant.openNow, true),
+            reservable: normalizeBoolean(restaurant.reservable, true),
+            needsReview,
+            ratings,
+            aiSummary: safeText(
+              restaurant.aiSummary,
+              `这家店与 ${data.city} 的 ${cuisine} 需求方向匹配。建议点开下方搜索链接确认最新评分、营业时间与预约情况。`,
+            ),
+            matchDetails: restaurant.matchDetails?.length
               ? restaurant.matchDetails.slice(0, 7).map((detail) => ({
                   label: safeText(detail.label, "符合当前搜索条件"),
-                  status: detail.status === "warn" ? "warn" : "ok",
+                  status: detail.status === "warn" ? ("warn" as const) : ("ok" as const),
                 }))
               : [
                   { label: `位于 ${data.city}`, status: "ok" as const },
                   { label: `符合 ${cuisine} 料理需求`, status: "ok" as const },
                   { label: "请在平台确认实时营业状态", status: "warn" as const },
                 ],
-          pros: safeList(restaurant.pros, ["匹配当前口味方向", "适合作为优先比较对象"]),
-          cons: safeList(restaurant.cons, ["热门时段可能需要等待", "平台信息需以实时页面为准"]),
-          links: normalizeLinks(restaurant.links, name, data.city),
-        };
-      }),
-    };
-  });
+            pros: safeList(restaurant.pros, ["匹配当前口味方向", "适合作为优先比较对象"]),
+            cons: safeList(restaurant.cons, ["AI 信息可能不实时，请确认", "热门时段可能需要等待"]),
+            links: normalizeLinks(restaurant.links, name, data.city),
+          };
+        })
+        .filter((r): r is NonNullable<typeof r> => Boolean(r));
+
+      if (!restaurants.length) return null;
+      return { cuisine, restaurants };
+    })
+    .filter((g): g is NonNullable<typeof g> => Boolean(g));
 
   return ResultsSchema.parse({ groups }).groups;
 }
 
+const SearchResponseSchema = z.object({
+  groups: ResultsSchema.shape.groups,
+  error: z.string().nullable(),
+  suggestions: z.array(z.string()),
+});
+
+export type SearchResponse = z.infer<typeof SearchResponseSchema>;
+
+const FALLBACK_SUGGESTIONS = [
+  "尝试更具体的料理类型（如把「日料」换成「寿司」或「居酒屋」）",
+  "扩大或更换城市（用城市核心区域名）",
+  "在「其它需求」里加上具体菜品或预算，让 AI 更聚焦",
+  "减少同时搜索的料理类型数量",
+];
+
 export const searchRestaurants = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParsedSchema.parse(input))
-  .handler(async ({ data }) => {
+  .handler(async ({ data }): Promise<SearchResponse> => {
     const key = process.env.LOVABLE_API_KEY;
-    if (!key) throw new Error("Missing LOVABLE_API_KEY");
+    if (!key) {
+      return { groups: [], error: "服务未配置 AI 凭据", suggestions: [] };
+    }
     const gateway = createLovableAiGatewayProvider(key);
     const model = gateway("google/gemini-3-flash-preview");
 
-    const prompt = `你是 Echo Eats 的餐厅推荐引擎。基于以下结构化需求，给出最匹配的真实餐厅候选清单。
+    const prompt = `你是 Echo Eats 的餐厅推荐分析师。Echo Eats 不是地图数据库，你只负责基于既有知识，推荐当地真实存在的、知名度足够的餐厅。
 
 城市：${data.city}
 料理：${data.cuisines.join("、")}
@@ -408,38 +461,95 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 菜品偏好：${data.dishPreferences.join("；") || "无"}
 搜索策略：${data.searchStrategy.join("；") || "无"}
 
-要求：
-- 按"料理类型"分组（每个用户输入的料理类型一组）。
-- 每组返回 1-3 家具体餐厅，必须给出真实餐厅名或看起来像真实店铺的完整店名，按 matchScore 降序。
-- 禁止使用"推荐候选"、"餐厅候选"、"Restaurant Candidate"、"某某店"这类占位名称。
-- name 用英文/罗马字，localName 用本地语言（日本=日文，中国=中文）。
-- matchScore 0-100。matchTier：>=92 perfect, >=80 high, 其余 partial。
-- ratings 包含 Google Maps / Tabelog / Yelp / 大众点评 / 美团 五项；不存在的平台 score 设为 null。日本店通常无大众点评/美团数据，中国店通常无 Tabelog。分数为字符串如 "4.5 / 5" 或 "3.68 / 5"。
-- aiSummary 用一段中文解释推荐理由（2-3 句），结合用户的偏好与避雷。
-- matchDetails 列出 5-7 条匹配点，status=ok 表示符合，warn 表示提醒（如"晚餐需提前预约"）。
-- pros / cons 各 2-4 条简短中文。
-- links 包含相关平台搜索链接（用 https://www.google.com/maps/search/?api=1&query=... 这类可点击 URL，至少 2 条）。
-- id 用短小写英文 slug。
-- openNow / reservable 设为合理值（多数为 true）。
+诚实性原则（非常重要）：
+- 不要假装做了实时网络搜索；基于你的知识推荐。
+- 如果某个料理你没有真实店铺把握，宁可少返回也不要编造店名。
+- 不要使用"推荐候选"、"餐厅候选"、"Restaurant Candidate"、"示例"、"某某店"等占位名称。
+- 评分没有把握时 score 设为 null，绝不编造数字。
+- 不要伪造店铺详情页 URL，链接交给前端生成搜索链接。
 
-只返回 JSON。`;
+输出 JSON 结构：
+{
+  "groups": [
+    {
+      "cuisine": "原料理名（与输入一致）",
+      "restaurants": [
+        {
+          "name": "罗马字/英文店名",
+          "localName": "本地语言店名（日本=日文，中国=中文）",
+          "matchScore": 0-100 数字,
+          "matchTier": "perfect | high | partial",
+          "openNow": true/false,
+          "reservable": true/false,
+          "needsReview": true/false（信息把握不大时为 true）,
+          "ratings": [{ "platform": "Google Maps|Tabelog|Yelp|大众点评|美团", "score": "4.3 / 5" 或 null }],
+          "aiSummary": "2-3 句中文，说明为什么匹配用户偏好",
+          "matchDetails": [{ "label": "短描述", "status": "ok | warn" }],
+          "pros": ["..."],
+          "cons": ["..."]
+        }
+      ]
+    }
+  ]
+}
 
+每组返回 1-3 家具体的真实店铺。如果某料理你没有可靠候选，可以返回空 restaurants 数组（前端会显示提示）。只返回 JSON，不要包裹在 markdown 中。`;
+
+    let output: unknown;
+    let finishReason: string | undefined;
     try {
-      const { output, finishReason } = await generateText({
+      const result = await generateText({
         model,
         prompt,
         maxOutputTokens: 8000,
         output: Output.json({
           name: "restaurant_recommendation_groups",
-          description: "Grouped Echo Eats restaurant recommendations that can be normalized before display",
+          description: "Echo Eats 餐厅推荐结果",
         }),
       });
-      if (finishReason === "length") {
-        throw new Error("AI 输出被截断，请减少料理类型数量后重试");
-      }
-      return normalizeResults(toSearchDraft(output, data.cuisines), data);
+      output = result.output;
+      finishReason = result.finishReason;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      throw new Error(`AI 推荐失败：${msg}`);
+      return {
+        groups: [],
+        error: `AI 调用失败：${msg}`,
+        suggestions: FALLBACK_SUGGESTIONS,
+      };
     }
+
+    if (finishReason === "length") {
+      return {
+        groups: [],
+        error: "AI 输出被截断，请减少同时搜索的料理类型后重试",
+        suggestions: FALLBACK_SUGGESTIONS,
+      };
+    }
+
+    const draft = toSearchDraft(output, data.cuisines);
+    if (!draft) {
+      return {
+        groups: [],
+        error: "AI 这次没有返回可靠的餐厅。可能是它对该城市/料理把握不够。",
+        suggestions: FALLBACK_SUGGESTIONS,
+      };
+    }
+
+    const groups = normalizeResults(draft, data);
+    if (!groups.length) {
+      return {
+        groups: [],
+        error: "AI 返回的餐厅都被反幻觉过滤掉了（占位名称或无效信息）。",
+        suggestions: FALLBACK_SUGGESTIONS,
+      };
+    }
+
+    const missing = data.cuisines.filter(
+      (cuisine) => !groups.some((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()),
+    );
+    return {
+      groups,
+      error: missing.length ? `没有找到「${missing.join("、")}」的可靠候选` : null,
+      suggestions: missing.length ? FALLBACK_SUGGESTIONS : [],
+    };
   });

@@ -1,106 +1,128 @@
-# Echo Eats — MVP Implementation Plan
+## 结论
 
-A natural-language restaurant discovery agent. Users describe city, cuisine, time, and free-form needs. AI structures requirements, searches multiple sources, and returns ranked recommendations with match scores and explanations.
+你判断得对：目前的问题不是你搜不到，而是当前 MVP 的 `searchRestaurants` 并没有真正连接 Google Maps / 网页搜索 / 店铺数据库。它只是让 AI 根据城市和料理类型直接生成候选餐厅，再用本地解析器校验。手动能搜到、AI 却显示无结果，主要来自两点：
 
-## Scope (this build)
+1. AI 本身没有稳定的实时餐厅检索能力，可能返回空、返回非预期结构，或返回被我们过滤掉的占位名称。
+2. 我们刚加的“不能显示推荐候选”校验是对的，但它会把 AI 不确定时生成的弱结果直接拦截，因此出现“没有返回可用餐厅”。
 
-- 4-step guided input flow (city → cuisines → date/time → free text)
-- AI requirement confirmation page (hard filters / soft preferences / negative filters / dish preferences / search strategy)
-- Search results page with category groups, match scores, AI summaries, ratings, pros/cons, platform links
-- Loading/streaming states between steps
-- Bilingual UI copy (Chinese primary, matching the PRD)
+## 目标调整
 
-## Out of scope (per PRD)
-
-Social/feed, video, booking, navigation, communities, AI companion.
-
-## User flow & routes
+把搜索链路改成：
 
 ```text
-/                    → Step 1: city
-/cuisines            → Step 2: cuisine types (multi)
-/when                → Step 3: date + time
-/requirements        → Step 4: free-text needs
-/confirm             → AI-parsed requirement summary (edit / search)
-/results             → ranked restaurants grouped by cuisine
+用户需求
+  -> AI 结构化需求
+  -> 生成真实搜索 query
+  -> 搜索 / 获取候选餐厅
+  -> AI 只负责分析、打分、排序、总结
+  -> 展示结果
 ```
 
-State carried across steps via a Zustand store (persisted to sessionStorage) so refresh doesn't lose input.
-
-## Pages
-
-**Step 1–4**: Single centered card, large input, "Next" button, progress indicator (1/4 … 4/4). Step 2 supports comma-separated or chip input. Step 3 uses date + time inputs.
-
-**Confirm page**: Shows AI-parsed structure in clear sections — City, Cuisine Types, Date/Time, Hard Filters, Soft Preferences, Negative Filters, Dish Preferences, Search Strategy. Two actions: `Edit` (back to Step 4) and `Start Search`.
-
-**Results page**: Header summarizing query → grouped sections per cuisine → restaurant cards with:
-- Name (EN + local), match badge (★ Perfect / High / Partial), Match Score %
-- Status row: open now, reservable
-- Photo strip (3 slots)
-- Multi-platform ratings table (Google / Tabelog / Yelp / Dianping / Meituan, "no data" allowed)
-- AI summary paragraph explaining the recommendation
-- Match details checklist (✓/⚠)
-- High-frequency pros (+) and cons (−)
-- Platform links
-
-## AI integration
-
-Two TanStack server functions in `src/lib/echo.functions.ts`, both calling Lovable AI Gateway via the OpenAI-compatible adapter (`google/gemini-3-flash-preview`):
-
-1. `parseRequirements({ city, cuisines, date, time, freeText })` → structured object with `hardFilters[]`, `softPreferences[]`, `negativeFilters[]`, `dishPreferences[]`, `searchStrategy[]`. Uses AI SDK `Output.object` with a Zod schema.
-
-2. `searchRestaurants(parsedRequirements)` → array of restaurant objects grouped by cuisine. For MVP we use the LLM to *generate plausible candidates* with realistic ratings/summaries based on the structured query (the PRD's real multi-platform scrapers — Tabelog/Dianping/Meituan — are out of MVP backend scope and require separate data infra). Output schema covers all fields rendered on the card. Clearly noted in code: this is the "AI-as-source" placeholder; real data sources can be wired into this same function later without changing the UI.
-
-`LOVABLE_API_KEY` read inside handlers, never exposed to client. Lovable Cloud is **not** required for this build (no DB, no auth) — just the AI Gateway.
-
-## Frontend stack
-
-- TanStack Start file routes (no React Router DOM)
-- Tailwind v4 + existing shadcn/ui (Button, Card, Input, Textarea, Badge, Separator)
-- Zustand for cross-step query state
-- TanStack Query + `useServerFn` for parse + search calls, with proper loading skeletons
-- Design tokens only (no hardcoded colors); warm, restrained palette appropriate for a food/concierge product (light theme default, subtle accent)
-
-## Components
+而不是：
 
 ```text
-src/components/
-  StepShell.tsx          shared layout: progress, title, input slot, next button
-  CuisineChips.tsx       multi-input with chip display
-  RequirementSection.tsx labeled list block for confirm page
-  RestaurantCard.tsx     full result card
-  MatchBadge.tsx         Perfect / High / Partial pill
-  RatingTable.tsx        per-platform rating rows
-  ProsCons.tsx
-  LoadingState.tsx       skeleton + status message
+用户需求 -> AI 直接编餐厅 -> 前端展示
 ```
 
-## Files to create / modify
+## 实施计划
 
-```text
-src/styles.css                          (refine tokens for warm palette)
-src/lib/store.ts                        (Zustand query store)
-src/lib/echo.functions.ts               (parseRequirements, searchRestaurants)
-src/lib/ai-gateway.ts                   (Lovable AI provider helper)
-src/routes/index.tsx                    (Step 1)
-src/routes/cuisines.tsx                 (Step 2)
-src/routes/when.tsx                     (Step 3)
-src/routes/requirements.tsx             (Step 4)
-src/routes/confirm.tsx                  (AI confirmation)
-src/routes/results.tsx                  (ranked results)
-src/routes/__root.tsx                   (update title/meta to Echo Eats)
-src/components/...                      (per list above)
+### 1. 明确结果来源状态
+
+在结果数据里增加来源/置信度字段，用于区分：
+
+- `verified_search`：来自真实搜索结果
+- `ai_enriched`：AI 只做分析和总结
+- `needs_review`：信息不完整，需要用户点平台链接确认
+
+UI 上不需要复杂解释，但可以在卡片上显示“需确认实时信息”。
+
+### 2. 改造 `searchRestaurants` 的职责
+
+保留现有 TanStack server function，但把它拆成三个步骤：
+
+1. 根据城市、料理、预算、避雷条件生成搜索 query
+2. 获取候选餐厅列表
+3. 让 AI 对候选餐厅做匹配分析，而不是凭空生成餐厅
+
+现阶段如果没有外部搜索 API，可先使用 Google Maps 搜索链接作为候选入口，同时要求 AI 返回“具体店名 + 搜索链接 + 置信说明”，并禁止在没有店名时继续展示。
+
+### 3. 加入“候选不足”的可恢复体验
+
+不要让 server function 抛错导致 blank screen。改成返回结构化状态：
+
+```ts
+{
+  groups: [],
+  error: "没有找到足够可靠的餐厅",
+  suggestions: ["扩大料理类型", "换成城市核心区域", "减少硬性条件"]
+}
 ```
 
-## Technical notes
+前端在 `/confirm` 或 `/results` 显示友好提示，而不是 runtime error。
 
-- All AI calls run server-side; client only sends user input via `useServerFn`.
-- Server functions return plain DTOs (per server-fn rules).
-- Zod schemas shared between validator and Output.object for parse step.
-- Errors (429 rate limit, 402 credits) surfaced with toast + inline message; preserve user input.
-- No placeholder index page remains — real Step 1 ships at `/`.
-- SEO: per-route `head()` with unique titles (Echo Eats — Step N / Confirm / Results).
+### 4. 放宽解析器，但保留反幻觉过滤
 
-## Open question
+继续拒绝这些无效名称：
 
-The PRD lists Tabelog / Dianping / Meituan scrapers in the backend. These need scraping infra well beyond an MVP frontend build. Plan delivers the **full UX** with AI-generated candidate data in the search step so the product is end-to-end usable today; real scrapers/APIs can plug into `searchRestaurants` later. If you'd rather wait and wire real data sources first, say so before I start.
+- 推荐候选
+- 餐厅候选
+- Restaurant Candidate
+- 某某店
+
+但允许 AI 返回多种常见结构：
+
+- `{ groups: [...] }`
+- `{ restaurants: [...] }`
+- `{ 居酒屋: [...] }`
+- `{ recommendations: [...] }`
+
+如果解析失败，把原始失败转成前端可显示的业务错误，不抛出未捕获异常。
+
+### 5. 优化 prompt，让 AI 不假装实时搜索
+
+调整系统提示：
+
+- 明确“不要声称已经搜索全网”
+- 如果不确定，返回 `needsReview: true`
+- 店名必须是具体餐厅名
+- 所有平台链接用搜索链接，不伪造店铺详情页
+- 评分没有把握时返回 `null`，不要编分数
+
+### 6. 结果页显示真实搜索动作
+
+每张餐厅卡保留：
+
+- Google Maps 搜索
+- Google Search
+- Tabelog / 大众点评 / 美团搜索入口（按城市适配）
+
+这样用户能直接打开验证，产品逻辑也更诚实。
+
+## 技术变更范围
+
+主要修改：
+
+- `src/lib/echo.functions.ts`
+  - 返回 typed result，不再直接 throw 业务型“无结果”错误
+  - 增加候选解析和结果状态
+  - 优化 prompt 和 normalization
+
+- `src/routes/confirm.tsx`
+  - 接收搜索失败状态并显示在页面内
+  - 不让 server function 错误造成 blank screen
+
+- `src/routes/results.tsx`
+  - 支持空结果/候选不足提示
+  - 显示“需确认实时信息”的状态
+
+- `src/lib/store.ts`
+  - 如有需要，扩展结果类型以支持 `error` / `suggestions` / `sourceStatus`
+
+## 预期效果
+
+修完后：
+
+- 手动能搜到但 AI 不确定时，不会 blank screen。
+- 不会再展示“某城市 + 料理 + 推荐候选”这种假餐厅。
+- 用户会看到清晰提示和可点击的搜索入口。
+- Echo Eats 的定位更接近“AI 决策分析层”，而不是假装自己有完整地图数据库。

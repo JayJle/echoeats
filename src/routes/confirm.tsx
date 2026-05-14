@@ -52,8 +52,8 @@ function ConfirmPage() {
     setError(null);
     setLoading(true);
     try {
-      const groups = await searchFn({ data: parsed });
-      setResults(groups);
+      const response = await searchFn({ data: parsed });
+      setResults(response);
       navigate({ to: "/results" });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "搜索失败";
