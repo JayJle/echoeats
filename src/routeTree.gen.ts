@@ -9,8 +9,38 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WhenRouteImport } from './routes/when'
+import { Route as ResultsRouteImport } from './routes/results'
+import { Route as RequirementsRouteImport } from './routes/requirements'
+import { Route as CuisinesRouteImport } from './routes/cuisines'
+import { Route as ConfirmRouteImport } from './routes/confirm'
 import { Route as IndexRouteImport } from './routes/index'
 
+const WhenRoute = WhenRouteImport.update({
+  id: '/when',
+  path: '/when',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResultsRoute = ResultsRouteImport.update({
+  id: '/results',
+  path: '/results',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RequirementsRoute = RequirementsRouteImport.update({
+  id: '/requirements',
+  path: '/requirements',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CuisinesRoute = CuisinesRouteImport.update({
+  id: '/cuisines',
+  path: '/cuisines',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConfirmRoute = ConfirmRouteImport.update({
+  id: '/confirm',
+  path: '/confirm',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -19,28 +49,96 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/confirm': typeof ConfirmRoute
+  '/cuisines': typeof CuisinesRoute
+  '/requirements': typeof RequirementsRoute
+  '/results': typeof ResultsRoute
+  '/when': typeof WhenRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/confirm': typeof ConfirmRoute
+  '/cuisines': typeof CuisinesRoute
+  '/requirements': typeof RequirementsRoute
+  '/results': typeof ResultsRoute
+  '/when': typeof WhenRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/confirm': typeof ConfirmRoute
+  '/cuisines': typeof CuisinesRoute
+  '/requirements': typeof RequirementsRoute
+  '/results': typeof ResultsRoute
+  '/when': typeof WhenRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/confirm'
+    | '/cuisines'
+    | '/requirements'
+    | '/results'
+    | '/when'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/confirm' | '/cuisines' | '/requirements' | '/results' | '/when'
+  id:
+    | '__root__'
+    | '/'
+    | '/confirm'
+    | '/cuisines'
+    | '/requirements'
+    | '/results'
+    | '/when'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ConfirmRoute: typeof ConfirmRoute
+  CuisinesRoute: typeof CuisinesRoute
+  RequirementsRoute: typeof RequirementsRoute
+  ResultsRoute: typeof ResultsRoute
+  WhenRoute: typeof WhenRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/when': {
+      id: '/when'
+      path: '/when'
+      fullPath: '/when'
+      preLoaderRoute: typeof WhenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/results': {
+      id: '/results'
+      path: '/results'
+      fullPath: '/results'
+      preLoaderRoute: typeof ResultsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/requirements': {
+      id: '/requirements'
+      path: '/requirements'
+      fullPath: '/requirements'
+      preLoaderRoute: typeof RequirementsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cuisines': {
+      id: '/cuisines'
+      path: '/cuisines'
+      fullPath: '/cuisines'
+      preLoaderRoute: typeof CuisinesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/confirm': {
+      id: '/confirm'
+      path: '/confirm'
+      fullPath: '/confirm'
+      preLoaderRoute: typeof ConfirmRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -53,17 +151,12 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ConfirmRoute: ConfirmRoute,
+  CuisinesRoute: CuisinesRoute,
+  RequirementsRoute: RequirementsRoute,
+  ResultsRoute: ResultsRoute,
+  WhenRoute: WhenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
