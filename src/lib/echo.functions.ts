@@ -318,25 +318,49 @@ function normalizeRatings(raw: SearchDraftRestaurant["ratings"]) {
   });
 }
 
-function buildSearchLinks(name: string, city: string) {
-  const query = encodeURIComponent(`${name} ${city}`);
-  const looksJapanese = /[\u3040-\u30ff]/.test(name) || /tokyo|kyoto|osaka|japan|日本|东京|京都|大阪/i.test(city);
-  const looksChinese = /[\u4e00-\u9fff]/.test(name) && !looksJapanese;
-  const links = [
-    { label: "Google Maps", url: `https://www.google.com/maps/search/?api=1&query=${query}` },
-    { label: "Google 搜索", url: `https://www.google.com/search?q=${query}` },
+function buildSearchLinks(name: string, localName: string, city: string) {
+  // Prefer the original local-language name for searches — translated/romanized
+  // names often miss on Google Maps / Tabelog / 大众点评.
+  const primary = localName && localName !== name ? localName : name;
+  const primaryQuery = encodeURIComponent(`${primary} ${city}`);
+  const altQuery = encodeURIComponent(`${name} ${city}`);
+  const looksJapanese =
+    /[\u3040-\u30ff]/.test(primary) ||
+    /tokyo|kyoto|osaka|japan|日本|东京|京都|大阪/i.test(city);
+  const looksChinese = /[\u4e00-\u9fff]/.test(primary) && !looksJapanese;
+  const links: { label: string; url: string }[] = [
+    { label: "Google Maps", url: `https://www.google.com/maps/search/?api=1&query=${primaryQuery}` },
+    { label: "Google 搜索", url: `https://www.google.com/search?q=${primaryQuery}` },
   ];
+  if (primary !== name) {
+    links.push({ label: "Google 搜索（英文名）", url: `https://www.google.com/search?q=${altQuery}` });
+  }
   if (looksJapanese) {
-    links.push({ label: "Tabelog 搜索", url: `https://tabelog.com/rstLst/?sw=${query}` });
+    // site:tabelog.com 搜索更稳定,直接命中店铺详情页
+    links.push({
+      label: "Tabelog 搜索",
+      url: `https://www.google.com/search?q=${encodeURIComponent(`site:tabelog.com ${primary} ${city}`)}`,
+    });
   }
   if (looksChinese) {
-    links.push({ label: "大众点评搜索", url: `https://www.dianping.com/search/keyword/0/0_${query}` });
-    links.push({ label: "美团搜索", url: `https://www.meituan.com/s/${query}` });
+    links.push({
+      label: "大众点评搜索",
+      url: `https://www.google.com/search?q=${encodeURIComponent(`site:dianping.com ${primary} ${city}`)}`,
+    });
+    links.push({
+      label: "美团搜索",
+      url: `https://www.google.com/search?q=${encodeURIComponent(`site:meituan.com ${primary} ${city}`)}`,
+    });
   }
   return links;
 }
 
-function normalizeLinks(raw: SearchDraftRestaurant["links"], name: string, city: string) {
+function normalizeLinks(
+  raw: SearchDraftRestaurant["links"],
+  name: string,
+  localName: string,
+  city: string,
+) {
   const aiLinks =
     raw
       ?.map((link) => ({
@@ -345,7 +369,7 @@ function normalizeLinks(raw: SearchDraftRestaurant["links"], name: string, city:
       }))
       .filter((link) => /^https?:\/\//.test(link.url)) ?? [];
 
-  const generated = buildSearchLinks(name, city);
+  const generated = buildSearchLinks(name, localName, city);
   // Merge: generated search links first (always reliable), then any extra AI URLs that aren't duplicates.
   const seen = new Set(generated.map((l) => l.url));
   for (const link of aiLinks) {
@@ -383,12 +407,13 @@ function normalizeResults(draft: SearchDraft, data: z.infer<typeof ParsedSchema>
           const hasAnyScore = ratings.some((r) => r.score);
           const needsReview = normalizeBoolean(restaurant.needsReview, !hasAnyScore);
 
+          const localName = safeText(restaurant.localName, name);
           return {
             id:
               slugify(String(restaurant.id ?? `${cuisine}-${name}-${index + 1}`)) ||
               `restaurant-${groupIndex}-${index}`,
             name,
-            localName: safeText(restaurant.localName, name),
+            localName,
             cuisine,
             matchScore: score,
             matchTier,
@@ -412,7 +437,7 @@ function normalizeResults(draft: SearchDraft, data: z.infer<typeof ParsedSchema>
                 ],
             pros: safeList(restaurant.pros, ["匹配当前口味方向", "适合作为优先比较对象"]),
             cons: safeList(restaurant.cons, ["AI 信息可能不实时，请确认", "热门时段可能需要等待"]),
-            links: normalizeLinks(restaurant.links, name, data.city),
+            links: normalizeLinks(restaurant.links, name, localName, data.city),
           };
         })
         .filter((r): r is NonNullable<typeof r> => Boolean(r));
@@ -465,6 +490,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 - 不要假装做了实时网络搜索；基于你的知识推荐。
 - 如果某个料理你没有真实店铺把握，宁可少返回也不要编造店名。
 - 不要使用"推荐候选"、"餐厅候选"、"Restaurant Candidate"、"示例"、"某某店"等占位名称。
+- **店名必须使用当地原文**：日本店铺用日文（汉字+假名，如「鳥さき」「すし さいとう」），中国店铺用中文，韩国用韩文。**不要翻译、不要意译、不要只给拼音/罗马字**——前端要用这个名字去 Google Maps / Tabelog / 大众点评搜索，翻译过的名字会搜不到。
+- localName = 招牌上的原文店名（必填，最重要）。name = 罗马字/英文转写（用于无法显示当地文字时的降级），如果只知道原文就把 name 也填成原文。
 - 评分没有把握时 score 设为 null，绝不编造数字。
 - 不要伪造店铺详情页 URL，链接交给前端生成搜索链接。
 
