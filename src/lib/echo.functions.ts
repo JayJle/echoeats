@@ -157,10 +157,11 @@ async function fetchReviewSummary(
 - commonComplaints: 0-3 条网友普遍提到的缺点/吐槽（如有）
 - sentiment: 整体口碑 positive/mixed/negative
 - sourceCount: 找到的有效来源数量（整数）
+- sources: **真正被你引用查到信息的平台**数组，从 ["大众点评","小红书","Tabelog","Google Reviews","Yelp","其它"] 里选。**没有真的去过该平台或没找到该店信息的，绝不要列**；找不到任何来源返回空数组 []。
 - dianpingRating: 仅当你在大众点评店铺页或小红书帖子中**直接看到**该店的点评评分（0-5 分，例如 4.5）时返回该数字，最多保留一位小数。**找不到必须返回 null**，禁止根据"好评多/口碑好"等模糊信号自己估算或编造。
 - dianpingRatingSource: 评分来源——"dianping"（来自大众点评）/"xiaohongshu_mention"（小红书帖子提到的点评分）/"other"（其它来源）/"unknown"（找不到，此时 dianpingRating 必须为 null）。
 
-如果找不到该店，sourceCount 设为 0、其它数组为空、dianpingRating=null、dianpingRatingSource="unknown"。只输出 JSON 对象。`,
+如果找不到该店，sourceCount 设为 0、其它数组为空、sources=[]、dianpingRating=null、dianpingRatingSource="unknown"。只输出 JSON 对象。`,
           },
         ],
         max_tokens: 700,
