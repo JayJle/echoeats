@@ -669,7 +669,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         const aiGroup =
           ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
           ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 12);
+        const picks = (aiGroup?.picks ?? []).slice(0, 20);
 
         type Bucket = "ok" | "partial" | null;
 
