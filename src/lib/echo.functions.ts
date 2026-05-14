@@ -742,8 +742,18 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           })
           .filter((r): r is NonNullable<typeof r> => Boolean(r));
 
-        const restaurants = built.filter((b) => b.bucket === "ok").map((b) => b.restaurant).slice(0, 8);
-        const partialRestaurants = built.filter((b) => b.bucket === "partial").map((b) => b.restaurant).slice(0, 6);
+        const sortByScore = (a: { restaurant: { matchScore: number } }, b: { restaurant: { matchScore: number } }) =>
+          b.restaurant.matchScore - a.restaurant.matchScore;
+        const restaurants = built
+          .filter((b) => b.bucket === "ok")
+          .sort(sortByScore)
+          .map((b) => b.restaurant)
+          .slice(0, 15);
+        const partialRestaurants = built
+          .filter((b) => b.bucket === "partial")
+          .sort(sortByScore)
+          .map((b) => b.restaurant)
+          .slice(0, 15);
 
         if (!restaurants.length && !partialRestaurants.length) return null;
         return {
