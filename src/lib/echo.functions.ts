@@ -123,6 +123,23 @@ type ReviewSummary = {
   sources: string[];
   dianpingRating: number | null;
   dianpingRatingSource: "dianping" | "xiaohongshu_mention" | "other" | "unknown";
+  priceLevel: number | null;
+  priceCurrency: string | null;
+  priceContext: string | null;
+};
+
+const CURRENCY_ENUM = ["CNY", "JPY", "USD", "EUR", "HKD", "TWD", "KRW", "SGD", "GBP", "其它"] as const;
+
+const CURRENCY_SYMBOL: Record<string, string> = {
+  CNY: "¥",
+  JPY: "¥",
+  USD: "$",
+  EUR: "€",
+  HKD: "HK$",
+  TWD: "NT$",
+  KRW: "₩",
+  SGD: "S$",
+  GBP: "£",
 };
 
 const SOURCE_ENUM = ["大众点评", "小红书", "Tabelog", "Google Reviews", "Yelp", "其它"] as const;
