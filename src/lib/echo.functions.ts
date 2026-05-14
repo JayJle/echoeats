@@ -378,7 +378,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               needsReview: p.rating == null,
               ratings: candidateRatings(p),
               aiSummary: pick.aiSummary?.trim() ||
-                `${p.name} 位于 ${data.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
+                `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
               pros: pick.pros.length ? pick.pros : ["匹配当前搜索方向"],
               cons: pick.cons.length ? pick.cons : ["请到 Google Maps 确认最新营业时间"],
