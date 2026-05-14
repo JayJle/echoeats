@@ -225,6 +225,15 @@ async function fetchReviewSummary(
       commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
       sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
       sourceCount: Number(parsed.sourceCount) || 0,
+      sources: Array.isArray(parsed.sources)
+        ? Array.from(
+            new Set(
+              parsed.sources.filter((s: unknown): s is string =>
+                typeof s === "string" && (SOURCE_ENUM as readonly string[]).includes(s),
+              ),
+            ),
+          )
+        : [],
       dianpingRating: rating,
       dianpingRatingSource: rating == null ? "unknown" : ratingSource,
     };
