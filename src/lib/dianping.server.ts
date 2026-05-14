@@ -153,14 +153,32 @@ async function fetchDianpingShopsViaPerplexity(opts: {
     }
     const json = await res.json();
     const content = json?.choices?.[0]?.message?.content;
-    if (!content) return [];
+    if (!content) {
+      console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: empty content`);
+      return [];
+    }
     let parsed: { shops?: unknown };
     try {
       parsed = JSON.parse(content);
     } catch {
+      const m = content.match(/\{[\s\S]*\}/);
+      if (m) {
+        try {
+          parsed = JSON.parse(m[0]);
+        } catch {
+          console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: JSON parse fail. content=${content.slice(0, 300)}`);
+          return [];
+        }
+      } else {
+        console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: no JSON. content=${content.slice(0, 300)}`);
+        return [];
+      }
+    }
+    if (!parsed?.shops || !Array.isArray(parsed.shops)) {
+      console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: no shops. parsed=${JSON.stringify(parsed).slice(0, 300)}`);
       return [];
     }
-    if (!parsed?.shops || !Array.isArray(parsed.shops)) return [];
+    console.log(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: got ${parsed.shops.length} shops`);
     const out: RawShop[] = [];
     for (const raw of parsed.shops) {
       if (!raw || typeof raw !== "object") continue;
