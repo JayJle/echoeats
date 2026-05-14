@@ -150,6 +150,11 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
                 ✓ 可预约
               </span>
             )}
+            {r.needsReview && (
+              <span className="px-2 py-0.5 rounded-full bg-warning/15 text-warning">
+                ⚠ 需平台核实
+              </span>
+            )}
           </div>
         </div>
         <div className="text-right shrink-0">
