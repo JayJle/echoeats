@@ -132,13 +132,16 @@ function ResultsPage() {
 }
 
 function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
+  const displayName = r.localName?.trim() || r.name;
+  const alternateName = r.name && r.name !== displayName ? r.name : null;
+
   return (
     <article className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
       <div className="p-6 flex items-start justify-between gap-4">
         <div>
           <div className="text-xs text-muted-foreground">#{index}</div>
-          <h3 className="mt-0.5 text-xl font-semibold tracking-tight">{r.name}</h3>
-          <p className="text-sm text-muted-foreground">{r.localName}</p>
+          <h3 className="mt-0.5 text-xl font-semibold tracking-tight">{displayName}</h3>
+          {alternateName && <p className="text-sm text-muted-foreground">{alternateName}</p>}
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             {r.openNow && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">

@@ -408,11 +408,12 @@ function normalizeResults(draft: SearchDraft, data: z.infer<typeof ParsedSchema>
           const needsReview = normalizeBoolean(restaurant.needsReview, !hasAnyScore);
 
           const localName = safeText(restaurant.localName, name);
+          const displayName = localName || name;
           return {
             id:
-              slugify(String(restaurant.id ?? `${cuisine}-${name}-${index + 1}`)) ||
+              slugify(String(restaurant.id ?? `${cuisine}-${displayName}-${index + 1}`)) ||
               `restaurant-${groupIndex}-${index}`,
-            name,
+            name: displayName,
             localName,
             cuisine,
             matchScore: score,
@@ -437,7 +438,7 @@ function normalizeResults(draft: SearchDraft, data: z.infer<typeof ParsedSchema>
                 ],
             pros: safeList(restaurant.pros, ["匹配当前口味方向", "适合作为优先比较对象"]),
             cons: safeList(restaurant.cons, ["AI 信息可能不实时，请确认", "热门时段可能需要等待"]),
-            links: normalizeLinks(restaurant.links, name, localName, data.city),
+            links: normalizeLinks(restaurant.links, displayName, localName, data.city),
           };
         })
         .filter((r): r is NonNullable<typeof r> => Boolean(r));
