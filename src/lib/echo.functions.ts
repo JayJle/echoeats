@@ -214,6 +214,14 @@ function toSearchDraft(value: unknown, cuisines: string[]): SearchDraft {
       ? { restaurants: value }
       : { groups: value }
     : value;
+  const mappedGroups = isRecord(root)
+    ? Object.entries(root)
+        .filter(([, item]) => Array.isArray(item))
+        .map(([cuisine, items]) =>
+          normalizeDraftGroup({ cuisine, restaurants: items }, cuisines[0] ?? cuisine),
+        )
+        .filter((item): item is SearchDraft["groups"][number] => Boolean(item))
+    : [];
   const groupCandidates = isRecord(root)
     ? getArrayField(root, ["groups", "cuisineGroups", "recommendations", "results", "餐厅推荐"])
     : undefined;
@@ -239,6 +247,8 @@ function toSearchDraft(value: unknown, cuisines: string[]): SearchDraft {
   const candidate = {
     groups: groups?.length
       ? groups
+      : mappedGroups.length
+        ? mappedGroups
       : restaurants?.length
         ? [{ cuisine: cuisines[0] ?? "推荐", restaurants }]
         : [],
