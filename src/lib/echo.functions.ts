@@ -209,13 +209,20 @@ function normalizeDraftGroup(value: unknown, fallbackCuisine: string) {
 }
 
 function toSearchDraft(value: unknown, cuisines: string[]): SearchDraft {
-  const root = Array.isArray(value) ? { groups: value } : value;
+  const root = Array.isArray(value)
+    ? value.some(looksLikeRestaurant)
+      ? { restaurants: value }
+      : { groups: value }
+    : value;
   const groupCandidates = isRecord(root)
     ? getArrayField(root, ["groups", "cuisineGroups", "recommendations", "results", "餐厅推荐"])
     : undefined;
   const directRestaurants = isRecord(root)
     ? getArrayField(root, ["restaurants", "items", "餐厅"])
     : undefined;
+  const flatRestaurantCandidates = groupCandidates?.some(looksLikeRestaurant)
+    ? groupCandidates
+    : directRestaurants;
 
   const groups = groupCandidates
     ?.map((item, index) =>
@@ -225,7 +232,7 @@ function toSearchDraft(value: unknown, cuisines: string[]): SearchDraft {
     )
     .filter((item): item is SearchDraft["groups"][number] => Boolean(item));
 
-  const restaurants = directRestaurants
+  const restaurants = flatRestaurantCandidates
     ?.map(normalizeDraftRestaurant)
     .filter((item): item is SearchDraftRestaurant => Boolean(item));
 
