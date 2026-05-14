@@ -151,10 +151,94 @@ const SearchDraftSchema = z
 type SearchDraft = z.infer<typeof SearchDraftSchema>;
 type SearchDraftRestaurant = z.infer<typeof SearchDraftRestaurantSchema>;
 
-function toSearchDraft(value: unknown): SearchDraft {
-  const candidate = Array.isArray(value) ? { groups: value } : value;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getStringField(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number") return String(value);
+  }
+  return undefined;
+}
+
+function getArrayField(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) return value;
+  }
+  return undefined;
+}
+
+function looksLikeRestaurant(value: unknown) {
+  if (!isRecord(value)) return false;
+  return Boolean(getStringField(value, ["name", "restaurantName", "restaurant_name", "title", "店名", "餐厅名"]));
+}
+
+function normalizeDraftRestaurant(value: unknown): SearchDraftRestaurant | null {
+  if (!isRecord(value)) return null;
+  const name = getStringField(value, ["name", "restaurantName", "restaurant_name", "title", "店名", "餐厅名"]);
+  if (!name) return null;
+
+  return {
+    ...value,
+    id: value.id as SearchDraftRestaurant["id"],
+    name,
+    localName: getStringField(value, ["localName", "local_name", "nativeName", "native_name", "店铺原名", "本地名"]),
+    cuisine: getStringField(value, ["cuisine", "cuisineType", "category", "料理", "料理类型"]),
+    ratings: getArrayField(value, ["ratings", "platformRatings", "scores", "评分"]) as SearchDraftRestaurant["ratings"],
+    matchDetails: getArrayField(value, ["matchDetails", "match_details", "details", "匹配详情"]) as SearchDraftRestaurant["matchDetails"],
+    pros: getArrayField(value, ["pros", "advantages", "highlights", "优点", "好评"]) as SearchDraftRestaurant["pros"],
+    cons: getArrayField(value, ["cons", "cautions", "weaknesses", "缺点", "差评"]) as SearchDraftRestaurant["cons"],
+    links: getArrayField(value, ["links", "urls", "platformLinks", "链接"]) as SearchDraftRestaurant["links"],
+  };
+}
+
+function normalizeDraftGroup(value: unknown, fallbackCuisine: string) {
+  if (!isRecord(value)) return null;
+  const restaurantValues = getArrayField(value, ["restaurants", "items", "recommendations", "results", "餐厅"]);
+  if (!restaurantValues) return null;
+  const restaurants = restaurantValues.map(normalizeDraftRestaurant).filter((item): item is SearchDraftRestaurant => Boolean(item));
+  if (!restaurants.length) return null;
+  return {
+    cuisine: getStringField(value, ["cuisine", "cuisineType", "category", "料理", "料理类型"]) ?? fallbackCuisine,
+    restaurants,
+  };
+}
+
+function toSearchDraft(value: unknown, cuisines: string[]): SearchDraft {
+  const root = Array.isArray(value) ? { groups: value } : value;
+  const groupCandidates = isRecord(root)
+    ? getArrayField(root, ["groups", "cuisineGroups", "recommendations", "results", "餐厅推荐"])
+    : undefined;
+  const directRestaurants = isRecord(root)
+    ? getArrayField(root, ["restaurants", "items", "餐厅"])
+    : undefined;
+
+  const groups = groupCandidates
+    ?.map((item, index) =>
+      looksLikeRestaurant(item)
+        ? null
+        : normalizeDraftGroup(item, cuisines[index] ?? cuisines[0] ?? "推荐"),
+    )
+    .filter((item): item is SearchDraft["groups"][number] => Boolean(item));
+
+  const restaurants = directRestaurants
+    ?.map(normalizeDraftRestaurant)
+    .filter((item): item is SearchDraftRestaurant => Boolean(item));
+
+  const candidate = {
+    groups: groups?.length
+      ? groups
+      : restaurants?.length
+        ? [{ cuisine: cuisines[0] ?? "推荐", restaurants }]
+        : [],
+  };
+
   const parsed = SearchDraftSchema.safeParse(candidate);
-  if (!parsed.success) {
+  if (!parsed.success || !parsed.data.groups.length) {
     throw new Error("AI 没有返回可用餐厅，请换一个城市或减少料理类型后重试");
   }
   return parsed.data;
