@@ -156,6 +156,8 @@ const AiPickSchema = z.object({
   matchDetails: z
     .array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) }))
     .default([]),
+  hardFilterPass: z.boolean(),
+  hardFilterViolations: z.array(z.string()).default([]),
 });
 
 const AiRankingSchema = z.object({
