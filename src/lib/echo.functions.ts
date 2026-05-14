@@ -623,6 +623,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
     - "fail" = 明确证实不满足
   note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
 - **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
+- **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用（例：editorialSummary 写明"仅晚市营业"但用户要求午餐；commonComplaints 明确提到"不接受预约"但用户要求可预约）。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。宁可放进 partial 让用户自己核实，也不要错杀。
 - 价格判断（重要）：
     1. 若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
     2. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
