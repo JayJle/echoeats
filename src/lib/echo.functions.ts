@@ -310,16 +310,20 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 只返回 JSON。`;
 
     try {
-      const { experimental_output, finishReason } = await generateText({
+      const { output, finishReason } = await generateText({
         model,
         prompt,
         maxOutputTokens: 8000,
-        experimental_output: Output.object({ schema: ResultsSchema }),
+        output: Output.object({
+          schema: SearchDraftSchema,
+          name: "restaurant_recommendation_groups",
+          description: "Grouped Echo Eats restaurant recommendations that can be normalized before display",
+        }),
       });
       if (finishReason === "length") {
         throw new Error("AI 输出被截断，请减少料理类型数量后重试");
       }
-      return experimental_output.groups;
+      return normalizeResults(output, data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`AI 推荐失败：${msg}`);
