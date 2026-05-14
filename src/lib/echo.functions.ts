@@ -114,6 +114,91 @@ import {
   type PlaceCandidate,
 } from "./google-places.server";
 
+// Perplexity 真实网评摘要
+type ReviewSummary = {
+  reviewHighlights: string[];
+  commonComplaints: string[];
+  sentiment: "positive" | "mixed" | "negative" | "unknown";
+  sourceCount: number;
+};
+
+async function fetchReviewSummary(
+  name: string,
+  city: string,
+  apiKey: string,
+): Promise<ReviewSummary | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 9000);
+  try {
+    const res = await fetch("https://api.perplexity.ai/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: "sonar",
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是餐厅口碑分析助手。基于真实网友评价（大众点评/小红书/Tabelog/Google/Yelp 等）总结。只输出 JSON。",
+          },
+          {
+            role: "user",
+            content: `查询「${name}」（位于 ${city}）的真实顾客评价。从大众点评、小红书、Tabelog、Google Reviews、Yelp 等平台找资料，总结：
+- reviewHighlights: 3-5 条真实网友提到的优点（具体菜品/服务/氛围/性价比，简体中文，每条 ≤ 25 字）
+- commonComplaints: 0-3 条网友普遍提到的缺点/吐槽（如有）
+- sentiment: 整体口碑 positive/mixed/negative
+- sourceCount: 找到的有效来源数量（整数）
+
+如果找不到该店，sourceCount 设为 0、其它数组为空。只输出 JSON 对象。`,
+          },
+        ],
+        max_tokens: 600,
+        temperature: 0.2,
+        search_recency_filter: "year",
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "review_summary",
+            schema: {
+              type: "object",
+              properties: {
+                reviewHighlights: { type: "array", items: { type: "string" } },
+                commonComplaints: { type: "array", items: { type: "string" } },
+                sentiment: { type: "string", enum: ["positive", "mixed", "negative", "unknown"] },
+                sourceCount: { type: "number" },
+              },
+              required: ["reviewHighlights", "commonComplaints", "sentiment", "sourceCount"],
+            },
+          },
+        },
+      }),
+    });
+    if (!res.ok) {
+      console.warn(`[Perplexity] ${name}: HTTP ${res.status}`);
+      return null;
+    }
+    const json = await res.json();
+    const content = json?.choices?.[0]?.message?.content;
+    if (!content) return null;
+    const parsed = JSON.parse(content);
+    return {
+      reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
+      commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
+      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
+      sourceCount: Number(parsed.sourceCount) || 0,
+    };
+  } catch (e) {
+    console.warn(`[Perplexity] ${name}:`, e instanceof Error ? e.message : e);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 const RestaurantSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -192,25 +277,54 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-function buildLinks(p: PlaceCandidate, city: string) {
-  const links: { label: string; url: string }[] = [
-    { label: "Google Maps", url: p.googleMapsUri },
-  ];
-  if (p.websiteUri) links.push({ label: "官网", url: p.websiteUri });
+function isChineseCity(city: string, name: string): boolean {
+  return /[\u4e00-\u9fff]/.test(name) || /china|中国|北京|上海|广州|深圳|成都|杭州|重庆|武汉|南京|苏州|天津|西安|青岛|厦门|长沙|郑州|香港|hong\s*kong|hk|澳门|macau|台北|taipei/i.test(city);
+}
 
+function isJapaneseCity(city: string, name: string): boolean {
+  return /[\u3040-\u30ff]/.test(name) || /japan|日本|tokyo|kyoto|osaka|东京|京都|大阪|nagoya|fukuoka|sapporo|yokohama|札幌|横滨|名古屋|福冈/i.test(city);
+}
+
+function buildLinks(p: PlaceCandidate, city: string) {
+  const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
-  if (/[\u3040-\u30ff]/.test(p.name) || /japan|日本|tokyo|kyoto|osaka/i.test(city)) {
+  const qName = encodeURIComponent(p.name);
+  const qCity = encodeURIComponent(city);
+
+  const isCN = isChineseCity(city, p.name);
+  const isJP = isJapaneseCity(city, p.name);
+
+  if (isCN) {
+    // 大众点评 H5 搜索深链（手机会拉起 App）
     links.push({
-      label: "Tabelog 搜索",
+      label: "大众点评",
+      url: `https://m.dianping.com/searchshop?keyword=${qName}&regionname=${qCity}`,
+    });
+    // 小红书搜索（用户口碑）
+    links.push({
+      label: "小红书",
+      url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
+    });
+  }
+
+  if (isJP) {
+    links.push({
+      label: "Tabelog",
       url: `https://www.google.com/search?q=${encodeURIComponent(`site:tabelog.com ${p.name}`)}`,
     });
   }
-  if (/[\u4e00-\u9fff]/.test(p.name) && /china|中国|北京|上海|广州|深圳|成都|杭州/i.test(city)) {
+
+  links.push({ label: "Google Maps", url: p.googleMapsUri });
+  if (p.websiteUri) links.push({ label: "官网", url: p.websiteUri });
+
+  if (!isCN) {
+    // 非中文城市也加小红书（很多海外城市国人口碑在小红书）
     links.push({
-      label: "大众点评搜索",
-      url: `https://www.google.com/search?q=${encodeURIComponent(`site:dianping.com ${p.name}`)}`,
+      label: "小红书",
+      url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
     });
   }
+
   links.push({ label: "Google 搜索", url: `https://www.google.com/search?q=${q}` });
   return links.slice(0, 6);
 }
@@ -301,6 +415,26 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
 
     // 2. AI 排序：用 placeId 引用真实候选
+    // 1.5 Perplexity 真实网评摘要：每组取 Google 评分前 5 家并行获取
+    const pplxKey = process.env.PERPLEXITY_API_KEY;
+    const reviewById = new Map<string, ReviewSummary>();
+    if (pplxKey) {
+      const tasks: Array<Promise<void>> = [];
+      for (const r of placeResults) {
+        const top = [...r.places]
+          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+          .slice(0, 5);
+        for (const p of top) {
+          tasks.push(
+            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => {
+              if (s && s.sourceCount > 0) reviewById.set(p.placeId, s);
+            }),
+          );
+        }
+      }
+      await Promise.all(tasks);
+    }
+
     const candidatesForPrompt = placeResults
       .filter((r) => r.places.length)
       .map((r) => ({
@@ -315,6 +449,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           openNow: p.openNow,
           primaryType: p.primaryType,
           editorialSummary: p.editorialSummary,
+          realWorldReviews: reviewById.get(p.placeId) ?? null,
         })),
       }));
 
@@ -329,7 +464,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 - 硬条件：${data.hardFilters.join("；") || "无"}
 - 偏好：${data.softPreferences.join("；") || "无"}
 - 避雷：${data.negativeFilters.join("；") || "无"}
-- 菜品偏好：${data.dishPreferences.join("；") || "无"}
+- 菜品偏好：${data.dishPreferences.join("、") || "无"}
 
 候选数据（JSON）：
 ${JSON.stringify(candidatesForPrompt, null, 2)}
@@ -340,9 +475,10 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 - 如果某组所有候选都无法通过硬条件，请返回空 picks 数组，绝不"将就"输出。
 - 仅当 hardFilterPass=true 时才输出该候选；每组按匹配度从高到低输出 1-3 家。
 - 价格判断：候选的 priceLevel（$/$$/$$$/$$$$）若明显高于用户预算上限，视为违反硬条件。无 priceLevel 信息时，若用户给了明确预算上限，视为无法确认 → hardFilterPass=false。
+- **realWorldReviews 优先**：当候选有 realWorldReviews（来自大众点评/小红书/Tabelog 等真实网评）时，**优先依据它判断匹配度**，而不是只看 Google 评分；commonComplaints 命中用户硬条件或避雷项 → hardFilterPass=false 或大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
+- **pros/cons 必须取真实素材**：有 realWorldReviews 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（如 commonComplaints 为空则 cons 用候选其它弱点）。禁止"环境不错""值得一试"等空话。
+- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。
-- aiSummary: 2-3 句中文，结合用户偏好与候选的评分/位置/类型说明匹配理由。
-- pros/cons: 各 2-4 条简短中文。
 - matchDetails: 3-6 条短描述，每条带 status (ok/warn)。
 
 输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterPass": true, "hardFilterViolations": [], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
