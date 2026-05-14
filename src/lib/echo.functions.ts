@@ -309,7 +309,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
 要求：
 - 按"料理类型"分组（每个用户输入的料理类型一组）。
-- 每组返回 1-3 家真实存在或合理虚构的当地知名餐厅候选，按 matchScore 降序。
+- 每组返回 1-3 家具体餐厅，必须给出真实餐厅名或看起来像真实店铺的完整店名，按 matchScore 降序。
+- 禁止使用"推荐候选"、"餐厅候选"、"Restaurant Candidate"、"某某店"这类占位名称。
 - name 用英文/罗马字，localName 用本地语言（日本=日文，中国=中文）。
 - matchScore 0-100。matchTier：>=92 perfect, >=80 high, 其余 partial。
 - ratings 包含 Google Maps / Tabelog / Yelp / 大众点评 / 美团 五项；不存在的平台 score 设为 null。日本店通常无大众点评/美团数据，中国店通常无 Tabelog。分数为字符串如 "4.5 / 5" 或 "3.68 / 5"。
