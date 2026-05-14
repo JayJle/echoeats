@@ -554,29 +554,43 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       .filter((r) => r.places.length)
       .map((r) => ({
         cuisine: r.cuisine,
-        candidates: r.places.map((p) => ({
-          placeId: p.placeId,
-          name: p.name,
-          address: p.address,
-          rating: p.rating,
-          userRatingCount: p.userRatingCount,
-          priceLevel: priceLevelLabel(p.priceLevel),
-          openNow: p.openNow,
-          primaryType: p.primaryType,
-          editorialSummary: p.editorialSummary,
-          realWorldReviews: reviewById.get(p.placeId) ?? null,
-        })),
+        candidates: r.places.map((p) => {
+          const review = reviewById.get(p.placeId) ?? null;
+          return {
+            placeId: p.placeId,
+            name: p.name,
+            address: p.address,
+            rating: p.rating,
+            userRatingCount: p.userRatingCount,
+            priceLevel: priceLevelLabel(p.priceLevel),
+            priceFromReviews:
+              review?.priceLevel != null
+                ? {
+                    amount: review.priceLevel,
+                    currency: review.priceCurrency,
+                    context: review.priceContext,
+                  }
+                : null,
+            openNow: p.openNow,
+            primaryType: p.primaryType,
+            editorialSummary: p.editorialSummary,
+            realWorldReviews: review,
+          };
+        }),
       }));
 
     const gateway = createLovableAiGatewayProvider(aiKey);
     const model = gateway("google/gemini-3-flash-preview");
+
+    const hardFiltersList = data.hardFilters;
+    const hardFiltersJson = JSON.stringify(hardFiltersList);
 
     const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，为每组挑出最匹配的 1-3 家，并给出打分和理由。
 
 用户需求：
 - 城市：${data.city}
 - 日期/时间：${data.dateTime}
-- 硬条件：${data.hardFilters.join("；") || "无"}
+- 硬条件（数组形式，下面 hardFilterChecks 必须**逐条且按相同顺序**对照）：${hardFiltersJson}
 - 偏好：${data.softPreferences.join("；") || "无"}
 - 避雷：${data.negativeFilters.join("；") || "无"}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
@@ -586,17 +600,23 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 
 铁律：
 - **只能使用候选列表里的 placeId**，禁止虚构 placeId、禁止编造店名。
-- **硬条件是入选门槛**：对每个候选，先逐条核对 hardFilters。任何一条不满足或无法从候选数据确认满足，必须设置 hardFilterPass=false，并在 hardFilterViolations 列出违反/无法确认的硬条件原文。**hardFilterPass=false 的候选不要放进 picks**。
-- 如果某组所有候选都无法通过硬条件，请返回空 picks 数组，绝不"将就"输出。
-- 仅当 hardFilterPass=true 时才输出该候选；每组按匹配度从高到低输出 1-3 家。
-- 价格判断：候选的 priceLevel（$/$$/$$$/$$$$）若明显高于用户预算上限，视为违反硬条件。无 priceLevel 信息时，若用户给了明确预算上限，视为无法确认 → hardFilterPass=false。
-- **realWorldReviews 优先**：当候选有 realWorldReviews（来自大众点评/小红书/Tabelog 等真实网评）时，**优先依据它判断匹配度**，而不是只看 Google 评分；commonComplaints 命中用户硬条件或避雷项 → hardFilterPass=false 或大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
-- **pros/cons 必须取真实素材**：有 realWorldReviews 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（如 commonComplaints 为空则 cons 用候选其它弱点）。禁止"环境不错""值得一试"等空话。
-- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，例如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台，不要编造。
-- matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。
-- matchDetails: 3-6 条短描述，每条带 status (ok/warn)。
+- **hardFilterChecks 必须对每个候选逐条核对所有 ${hardFiltersList.length} 条硬条件**：长度严格等于 ${hardFiltersList.length}，filter 字段原文复述，status 取值：
+    - "ok" = 候选数据/realWorldReviews 明确证实满足
+    - "unknown" = 信息不足无法判断（既不能确认满足、也不能确认违反）
+    - "fail" = 明确证实不满足
+  note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
+- **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
+- 价格判断（重要）：
+    1. 若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
+    2. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
+    3. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
+- **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度，而不是只看 Google 评分；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
+- **pros/cons 必须取真实素材**：有 realWorldReviews 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（commonComplaints 为空则用候选其它弱点）。禁止"环境不错""值得一试"等空话。
+- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台。
+- matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
+- matchDetails: 3-6 条短描述，每条带 status (ok/warn)。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。
 
-输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterPass": true, "hardFilterViolations": [], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
+输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
 
     let ranking: z.infer<typeof AiRankingSchema>;
     try {
