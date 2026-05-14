@@ -98,7 +98,7 @@ const ResultsSchema = z.object({
 const SearchDraftRestaurantSchema = z
   .object({
     id: z.union([z.string(), z.number()]).optional(),
-    name: z.string().optional(),
+    name: z.string().min(1),
     localName: z.string().optional(),
     cuisine: z.string().optional(),
     matchScore: z.union([z.string(), z.number()]).optional(),
@@ -137,16 +137,14 @@ const SearchDraftRestaurantSchema = z
 
 const SearchDraftSchema = z
   .object({
-    groups: z
-      .array(
-        z
-          .object({
-            cuisine: z.string().optional(),
-            restaurants: z.array(SearchDraftRestaurantSchema).optional(),
-          })
-          .passthrough(),
-      )
-      .optional(),
+    groups: z.array(
+      z
+        .object({
+          cuisine: z.string().min(1),
+          restaurants: z.array(SearchDraftRestaurantSchema).min(1),
+        })
+        .passthrough(),
+    ),
   })
   .passthrough();
 
@@ -156,7 +154,10 @@ type SearchDraftRestaurant = z.infer<typeof SearchDraftRestaurantSchema>;
 function toSearchDraft(value: unknown): SearchDraft {
   const candidate = Array.isArray(value) ? { groups: value } : value;
   const parsed = SearchDraftSchema.safeParse(candidate);
-  return parsed.success ? parsed.data : {};
+  if (!parsed.success) {
+    throw new Error("AI 没有返回可用餐厅，请换一个城市或减少料理类型后重试");
+  }
+  return parsed.data;
 }
 
 function safeText(value: unknown, fallback: string) {
