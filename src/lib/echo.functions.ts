@@ -120,9 +120,12 @@ type ReviewSummary = {
   commonComplaints: string[];
   sentiment: "positive" | "mixed" | "negative" | "unknown";
   sourceCount: number;
+  sources: string[];
   dianpingRating: number | null;
   dianpingRatingSource: "dianping" | "xiaohongshu_mention" | "other" | "unknown";
 };
+
+const SOURCE_ENUM = ["大众点评", "小红书", "Tabelog", "Google Reviews", "Yelp", "其它"] as const;
 
 async function fetchReviewSummary(
   name: string,
