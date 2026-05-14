@@ -207,6 +207,12 @@ async function fetchReviewSummary(
                   type: "string",
                   enum: ["dianping", "xiaohongshu_mention", "other", "unknown"],
                 },
+                priceLevel: { type: ["number", "null"] },
+                priceCurrency: {
+                  type: ["string", "null"],
+                  enum: [...CURRENCY_ENUM, null],
+                },
+                priceContext: { type: ["string", "null"] },
               },
               required: [
                 "reviewHighlights",
@@ -216,6 +222,9 @@ async function fetchReviewSummary(
                 "sources",
                 "dianpingRating",
                 "dianpingRatingSource",
+                "priceLevel",
+                "priceCurrency",
+                "priceContext",
               ],
             },
           },
@@ -240,6 +249,20 @@ async function fetchReviewSummary(
     )
       ? parsed.dianpingRatingSource
       : "unknown";
+    const rawPrice = parsed.priceLevel;
+    const priceLevel =
+      typeof rawPrice === "number" && rawPrice > 0 && rawPrice < 1_000_000
+        ? Math.round(rawPrice)
+        : null;
+    const priceCurrency =
+      priceLevel != null && typeof parsed.priceCurrency === "string" &&
+      (CURRENCY_ENUM as readonly string[]).includes(parsed.priceCurrency)
+        ? parsed.priceCurrency
+        : null;
+    const priceContext =
+      priceLevel != null && typeof parsed.priceContext === "string"
+        ? parsed.priceContext.slice(0, 30)
+        : null;
     return {
       reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
       commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
@@ -256,6 +279,9 @@ async function fetchReviewSummary(
         : [],
       dianpingRating: rating,
       dianpingRatingSource: rating == null ? "unknown" : ratingSource,
+      priceLevel,
+      priceCurrency,
+      priceContext,
     };
   } catch (e) {
     console.warn(`[Perplexity] ${name}:`, e instanceof Error ? e.message : e);
