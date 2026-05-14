@@ -109,6 +109,24 @@ function ResultsPage() {
                     <RestaurantCard key={r.id} index={i + 1} r={r} />
                   ))}
                 </div>
+
+                {group.partialRestaurants && group.partialRestaurants.length > 0 && (
+                  <div className="mt-8">
+                    <div className="mb-3 border-l-4 border-warning pl-3">
+                      <h3 className="text-base font-semibold tracking-tight">
+                        ⚠ 信息不足，部分硬条件无法核实
+                      </h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        以下店其它条件大部分满足，但有硬条件因网评/Google 数据缺失无法确认，请自行到平台核对。
+                      </p>
+                    </div>
+                    <div className="space-y-5">
+                      {group.partialRestaurants.map((r, i) => (
+                        <RestaurantCard key={r.id} index={i + 1} r={r} />
+                      ))}
+                    </div>
+                  </div>
+                )}
               </section>
             ))}
           </div>

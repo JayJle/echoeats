@@ -34,7 +34,7 @@ export type Restaurant = {
   links: { label: string; url: string }[];
 };
 
-export type ResultsGroup = { cuisine: string; restaurants: Restaurant[] };
+export type ResultsGroup = { cuisine: string; restaurants: Restaurant[]; partialRestaurants?: Restaurant[] };
 
 export type SearchResults = {
   groups: ResultsGroup[];

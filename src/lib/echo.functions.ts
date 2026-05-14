@@ -123,6 +123,23 @@ type ReviewSummary = {
   sources: string[];
   dianpingRating: number | null;
   dianpingRatingSource: "dianping" | "xiaohongshu_mention" | "other" | "unknown";
+  priceLevel: number | null;
+  priceCurrency: string | null;
+  priceContext: string | null;
+};
+
+const CURRENCY_ENUM = ["CNY", "JPY", "USD", "EUR", "HKD", "TWD", "KRW", "SGD", "GBP", "其它"] as const;
+
+const CURRENCY_SYMBOL: Record<string, string> = {
+  CNY: "¥",
+  JPY: "¥",
+  USD: "$",
+  EUR: "€",
+  HKD: "HK$",
+  TWD: "NT$",
+  KRW: "₩",
+  SGD: "S$",
+  GBP: "£",
 };
 
 const SOURCE_ENUM = ["大众点评", "小红书", "Tabelog", "Google Reviews", "Yelp", "其它"] as const;
@@ -160,8 +177,11 @@ async function fetchReviewSummary(
 - sources: **真正被你引用查到信息的平台**数组，从 ["大众点评","小红书","Tabelog","Google Reviews","Yelp","其它"] 里选。**没有真的去过该平台或没找到该店信息的，绝不要列**；找不到任何来源返回空数组 []。
 - dianpingRating: 仅当你在大众点评店铺页或小红书帖子中**直接看到**该店的点评评分（0-5 分，例如 4.5）时返回该数字，最多保留一位小数。**找不到必须返回 null**，禁止根据"好评多/口碑好"等模糊信号自己估算或编造。
 - dianpingRatingSource: 评分来源——"dianping"（来自大众点评）/"xiaohongshu_mention"（小红书帖子提到的点评分）/"other"（其它来源）/"unknown"（找不到，此时 dianpingRating 必须为 null）。
+- priceLevel: 仅当你在大众点评"人均"、Tabelog"夜の予算/昼の予算/ランチ予算"、小红书帖子等里**直接看到**该店人均消费金额（数字）时返回该数字。例如大众点评"人均 ¥328"→ 返回 328。**找不到必须返回 null**，禁止根据"贵/便宜/性价比高"等模糊信号自己估算或编造。
+- priceCurrency: 人均价对应的币种代码，从 ["CNY","JPY","USD","EUR","HKD","TWD","KRW","SGD","GBP","其它"] 里选；priceLevel=null 时返回 null。
+- priceContext: 价格的上下文短语（≤20 字），如"晚餐人均""午市套餐""含酒水""夜の予算"。priceLevel=null 时返回 null。
 
-如果找不到该店，sourceCount 设为 0、其它数组为空、sources=[]、dianpingRating=null、dianpingRatingSource="unknown"。只输出 JSON 对象。`,
+如果找不到该店，sourceCount 设为 0、其它数组为空、sources=[]、dianpingRating=null、dianpingRatingSource="unknown"、priceLevel=null、priceCurrency=null、priceContext=null。只输出 JSON 对象。`,
           },
         ],
         max_tokens: 700,
@@ -187,6 +207,12 @@ async function fetchReviewSummary(
                   type: "string",
                   enum: ["dianping", "xiaohongshu_mention", "other", "unknown"],
                 },
+                priceLevel: { type: ["number", "null"] },
+                priceCurrency: {
+                  type: ["string", "null"],
+                  enum: [...CURRENCY_ENUM, null],
+                },
+                priceContext: { type: ["string", "null"] },
               },
               required: [
                 "reviewHighlights",
@@ -196,6 +222,9 @@ async function fetchReviewSummary(
                 "sources",
                 "dianpingRating",
                 "dianpingRatingSource",
+                "priceLevel",
+                "priceCurrency",
+                "priceContext",
               ],
             },
           },
@@ -220,6 +249,20 @@ async function fetchReviewSummary(
     )
       ? parsed.dianpingRatingSource
       : "unknown";
+    const rawPrice = parsed.priceLevel;
+    const priceLevel =
+      typeof rawPrice === "number" && rawPrice > 0 && rawPrice < 1_000_000
+        ? Math.round(rawPrice)
+        : null;
+    const priceCurrency =
+      priceLevel != null && typeof parsed.priceCurrency === "string" &&
+      (CURRENCY_ENUM as readonly string[]).includes(parsed.priceCurrency)
+        ? parsed.priceCurrency
+        : null;
+    const priceContext =
+      priceLevel != null && typeof parsed.priceContext === "string"
+        ? parsed.priceContext.slice(0, 30)
+        : null;
     return {
       reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
       commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
@@ -236,6 +279,9 @@ async function fetchReviewSummary(
         : [],
       dianpingRating: rating,
       dianpingRatingSource: rating == null ? "unknown" : ratingSource,
+      priceLevel,
+      priceCurrency,
+      priceContext,
     };
   } catch (e) {
     console.warn(`[Perplexity] ${name}:`, e instanceof Error ? e.message : e);
@@ -272,6 +318,7 @@ const ResultsSchema = z.object({
     z.object({
       cuisine: z.string(),
       restaurants: z.array(RestaurantSchema),
+      partialRestaurants: z.array(RestaurantSchema).optional(),
     }),
   ),
 });
@@ -287,8 +334,15 @@ const AiPickSchema = z.object({
   matchDetails: z
     .array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) }))
     .default([]),
-  hardFilterPass: z.boolean(),
-  hardFilterViolations: z.array(z.string()).default([]),
+  hardFilterChecks: z
+    .array(
+      z.object({
+        filter: z.string(),
+        status: z.enum(["ok", "unknown", "fail"]),
+        note: z.string().optional(),
+      }),
+    )
+    .default([]),
 });
 
 const AiRankingSchema = z.object({
@@ -375,6 +429,14 @@ function buildLinks(p: PlaceCandidate, city: string) {
   return links.slice(0, 6);
 }
 
+function formatPriceFromReview(review: ReviewSummary | null): string | null {
+  if (!review || review.priceLevel == null) return null;
+  const sym = review.priceCurrency ? CURRENCY_SYMBOL[review.priceCurrency] ?? "" : "";
+  const amount = `${sym}${review.priceLevel}`;
+  const ctx = review.priceContext ? `（${review.priceContext}，来自网评）` : "（来自网评）";
+  return `${amount}${ctx}`;
+}
+
 function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
   const score =
     p.rating != null
@@ -384,9 +446,12 @@ function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
     review?.dianpingRating != null
       ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
       : null;
+  const priceFromReview = formatPriceFromReview(review);
+  const priceScore = priceFromReview ?? priceLevelLabel(p.priceLevel);
   return [
     { platform: "Google Maps", score },
     { platform: "大众点评", score: dpScore },
+    { platform: "人均价格", score: priceScore },
     { platform: "Tabelog", score: null },
     { platform: "Yelp", score: null },
   ];
@@ -489,29 +554,43 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       .filter((r) => r.places.length)
       .map((r) => ({
         cuisine: r.cuisine,
-        candidates: r.places.map((p) => ({
-          placeId: p.placeId,
-          name: p.name,
-          address: p.address,
-          rating: p.rating,
-          userRatingCount: p.userRatingCount,
-          priceLevel: priceLevelLabel(p.priceLevel),
-          openNow: p.openNow,
-          primaryType: p.primaryType,
-          editorialSummary: p.editorialSummary,
-          realWorldReviews: reviewById.get(p.placeId) ?? null,
-        })),
+        candidates: r.places.map((p) => {
+          const review = reviewById.get(p.placeId) ?? null;
+          return {
+            placeId: p.placeId,
+            name: p.name,
+            address: p.address,
+            rating: p.rating,
+            userRatingCount: p.userRatingCount,
+            priceLevel: priceLevelLabel(p.priceLevel),
+            priceFromReviews:
+              review?.priceLevel != null
+                ? {
+                    amount: review.priceLevel,
+                    currency: review.priceCurrency,
+                    context: review.priceContext,
+                  }
+                : null,
+            openNow: p.openNow,
+            primaryType: p.primaryType,
+            editorialSummary: p.editorialSummary,
+            realWorldReviews: review,
+          };
+        }),
       }));
 
     const gateway = createLovableAiGatewayProvider(aiKey);
     const model = gateway("google/gemini-3-flash-preview");
+
+    const hardFiltersList = data.hardFilters;
+    const hardFiltersJson = JSON.stringify(hardFiltersList);
 
     const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，为每组挑出最匹配的 1-3 家，并给出打分和理由。
 
 用户需求：
 - 城市：${data.city}
 - 日期/时间：${data.dateTime}
-- 硬条件：${data.hardFilters.join("；") || "无"}
+- 硬条件（数组形式，下面 hardFilterChecks 必须**逐条且按相同顺序**对照）：${hardFiltersJson}
 - 偏好：${data.softPreferences.join("；") || "无"}
 - 避雷：${data.negativeFilters.join("；") || "无"}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
@@ -521,17 +600,23 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 
 铁律：
 - **只能使用候选列表里的 placeId**，禁止虚构 placeId、禁止编造店名。
-- **硬条件是入选门槛**：对每个候选，先逐条核对 hardFilters。任何一条不满足或无法从候选数据确认满足，必须设置 hardFilterPass=false，并在 hardFilterViolations 列出违反/无法确认的硬条件原文。**hardFilterPass=false 的候选不要放进 picks**。
-- 如果某组所有候选都无法通过硬条件，请返回空 picks 数组，绝不"将就"输出。
-- 仅当 hardFilterPass=true 时才输出该候选；每组按匹配度从高到低输出 1-3 家。
-- 价格判断：候选的 priceLevel（$/$$/$$$/$$$$）若明显高于用户预算上限，视为违反硬条件。无 priceLevel 信息时，若用户给了明确预算上限，视为无法确认 → hardFilterPass=false。
-- **realWorldReviews 优先**：当候选有 realWorldReviews（来自大众点评/小红书/Tabelog 等真实网评）时，**优先依据它判断匹配度**，而不是只看 Google 评分；commonComplaints 命中用户硬条件或避雷项 → hardFilterPass=false 或大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
-- **pros/cons 必须取真实素材**：有 realWorldReviews 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（如 commonComplaints 为空则 cons 用候选其它弱点）。禁止"环境不错""值得一试"等空话。
-- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，例如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台，不要编造。
-- matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。
-- matchDetails: 3-6 条短描述，每条带 status (ok/warn)。
+- **hardFilterChecks 必须对每个候选逐条核对所有 ${hardFiltersList.length} 条硬条件**：长度严格等于 ${hardFiltersList.length}，filter 字段原文复述，status 取值：
+    - "ok" = 候选数据/realWorldReviews 明确证实满足
+    - "unknown" = 信息不足无法判断（既不能确认满足、也不能确认违反）
+    - "fail" = 明确证实不满足
+  note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
+- **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
+- 价格判断（重要）：
+    1. 若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
+    2. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
+    3. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
+- **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度，而不是只看 Google 评分；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
+- **pros/cons 必须取真实素材**：有 realWorldReviews 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（commonComplaints 为空则用候选其它弱点）。禁止"环境不错""值得一试"等空话。
+- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台。
+- matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
+- matchDetails: 3-6 条短描述，每条带 status (ok/warn)。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。
 
-输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterPass": true, "hardFilterViolations": [], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
+输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
 
     let ranking: z.infer<typeof AiRankingSchema>;
     try {
@@ -566,34 +651,54 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         const aiGroup =
           ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
           ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 3);
+        const picks = (aiGroup?.picks ?? []).slice(0, 6);
 
-        const restaurants = picks
+        type Bucket = "ok" | "partial" | null;
+
+        const built = picks
           .map((pick, idx) => {
-            // 严格执行硬条件门槛：AI 标记不通过的直接剔除
-            if (data.hardFilters.length > 0 && pick.hardFilterPass === false) return null;
             const entry = placeById.get(pick.placeId);
-            if (!entry) return null; // AI 编了 placeId，过滤掉
+            if (!entry) return null; // AI 编了 placeId
             const p = entry.place;
+
+            // 规范化 hardFilterChecks：长度对齐、缺失视为 unknown
+            const checksByFilter = new Map<string, { status: "ok" | "unknown" | "fail"; note?: string }>();
+            for (const c of pick.hardFilterChecks ?? []) {
+              checksByFilter.set(c.filter, { status: c.status, note: c.note });
+            }
+            const checks = data.hardFilters.map((f) => {
+              const c = checksByFilter.get(f);
+              return c ?? { status: "unknown" as const, note: undefined as string | undefined };
+            });
+
+            // 任何 fail → 剔除
+            if (checks.some((c) => c.status === "fail")) return null;
+
+            const hasUnknown = checks.some((c) => c.status === "unknown");
+            const bucket: Bucket = hasUnknown ? "partial" : "ok";
+
             const score = Math.round(pick.matchScore);
-            const tier =
+            let tier =
               pick.matchTier === "perfect" || pick.matchTier === "high" || pick.matchTier === "partial"
                 ? pick.matchTier
                 : tierFromScore(score);
+            // 含 unknown 的不允许 perfect
+            if (hasUnknown && tier === "perfect") tier = "high";
 
-            const matchDetails = pick.matchDetails.length
-              ? pick.matchDetails.slice(0, 7)
-              : [
-                  { label: `位于 ${data.city}`, status: "ok" as const },
-                  ...(p.rating != null
-                    ? [{ label: `Google 评分 ${p.rating.toFixed(1)} (${p.userRatingCount ?? 0} 评价)`, status: "ok" as const }]
-                    : []),
-                  ...(p.openNow === false
-                    ? [{ label: "当前未营业", status: "warn" as const }]
-                    : []),
-                ];
+            // 硬条件 detail 置顶
+            const hardDetails = data.hardFilters.map((f, i) => {
+              const c = checks[i];
+              const noteSuffix = c.note ? ` — ${c.note}` : "";
+              if (c.status === "ok") {
+                return { label: `✓ 硬条件：${f}${noteSuffix}`, status: "ok" as const };
+              }
+              return { label: `？ 硬条件待核实：${f}${noteSuffix}`, status: "warn" as const };
+            });
+            const aiDetails = (pick.matchDetails ?? []).slice(0, 6);
+            const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);
 
-            return {
+            const review = reviewById.get(p.placeId) ?? null;
+            const restaurant = {
               id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
               name: p.name,
               localName: p.name,
@@ -607,7 +712,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null,
-              ratings: candidateRatings(p, reviewById.get(p.placeId) ?? null),
+              ratings: candidateRatings(p, review),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
@@ -615,11 +720,19 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               cons: pick.cons.length ? pick.cons : ["请到 Google Maps 确认最新营业时间"],
               links: buildLinks(p, data.city),
             };
+            return { bucket, restaurant };
           })
           .filter((r): r is NonNullable<typeof r> => Boolean(r));
 
-        if (!restaurants.length) return null;
-        return { cuisine, restaurants };
+        const restaurants = built.filter((b) => b.bucket === "ok").map((b) => b.restaurant).slice(0, 3);
+        const partialRestaurants = built.filter((b) => b.bucket === "partial").map((b) => b.restaurant).slice(0, 3);
+
+        if (!restaurants.length && !partialRestaurants.length) return null;
+        return {
+          cuisine,
+          restaurants,
+          ...(partialRestaurants.length ? { partialRestaurants } : {}),
+        };
       })
       .filter((g): g is NonNullable<typeof g> => Boolean(g));
 
