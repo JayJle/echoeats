@@ -1,57 +1,75 @@
-## 问题
+## 目标
 
-用户在 Step 4 自然语言输入里写明的「必须 / 一定 / 不能超过 / 限定 X 以内」等强制要求，目前 `parseRequirements` 经常把它们放进 `softPreferences`，导致后续搜索/排序没有把它当硬条件处理。
+在现有 Google Places 真实候选 + Gemini 排序流程的基础上，新增"网友真实口碑"维度，让结果不再只看 Google 评分。
 
-例：
-- "预算 15000 日元以内" → 应进 hardFilters，实际常进 softPreferences
-- "必须能预约" / "一定要有包间" → 同上
-- "不要游客店" → 应进 negativeFilters（已 OK，但边界模糊）
-
-## 方案
-
-只改 `src/lib/echo.functions.ts` 里 `parseRequirements` 的 prompt，不动表单/UI/搜索逻辑。
-
-### 1. 在 prompt 里加入明确的「硬条件识别规则」
-
-给 AI 一份判定清单，让它把以下信号一律归为 hardFilters：
-
-- 含强制词：**必须 / 一定 / 务必 / 只要 / 仅 / 不能 / 不要 / 禁止 / 拒绝 / 不接受**
-- 含数值上下限：**X 以内 / 不超过 X / 至少 X / 最多 X / X 以上**（预算、人数、距离、评分、步行分钟数等）
-- 含明确可验证属性：**可预约 / 接受信用卡 / 有包间 / 无烟 / 适合婴儿车 / 营业到 X 点 / 步行 X 分钟内**
-- 用户用「要」「需要」「得」陈述的具体可验证条件
-
-反过来，归 softPreferences 的只有：
-- 模糊形容（"氛围好"、"舒服"、"地道"、"环境不错"）
-- 用户用"最好/希望/偏好/优先"等弱化词表达的条件
-
-否定句（"不要 X" / "避免 X" / "拒绝 X"）→ negativeFilters。
-
-### 2. 拆分歧义：硬条件 vs 否定
-
-明确告诉 AI：
-- "不要游客店" / "避免连锁" → negativeFilters
-- "必须能预约" / "预算 ≤ 15000 日元" → hardFilters
-- 不要把同一条同时塞进两边
-
-### 3. 加 few-shot 示例
-
-在 prompt 里给 2-3 个对照例子，覆盖：
-- 预算上限 → hardFilter
-- "可以预约" vs "必须能预约" → soft vs hard
-- "最好有蟹刺身" → dishPreferences + soft，而不是 hard
-
-### 4. 可选：让 AI 输出每条 hardFilter 的原文出处
-
-让它在输出里用"用户原话片段 → 标准化条件"的格式（例："预算 15000 日元以内 → 人均预算 ≤ 15000 JPY"），便于后续排序阶段在 prompt 里更准确地引用。
+- **D 部分**：增强跳转链接，用户一键到大众点评/小红书查原始评价
+- **E 部分**：在 AI 排序前用 Perplexity 抓取每家候选的网评摘要，喂给 Gemini，让排序、`aiSummary`、`pros/cons` 真正反映真实口碑
 
 ## 改动范围
 
-- 文件：`src/lib/echo.functions.ts`
-- 函数：`parseRequirements` 的 prompt 字符串
-- 不改 schema、不改 UI、不改 `searchRestaurants`
+只动 `src/lib/echo.functions.ts` 一个文件，加一个新 connector（Perplexity）。前端无需改动 —— `pros/cons/aiSummary/links` 字段都已经在用。
+
+## 详细方案
+
+### 1. D：增强跳转链接（`buildLinks`）
+
+当前只在 Google 上加 `site:dianping.com` 搜索。改成：
+
+- **中文城市**（已有判断逻辑）：直接生成大众点评 H5 搜索深链
+  `https://m.dianping.com/searchshop?keyword={店名}&regionname={城市}`
+  （手机点开会拉起 App，桌面端 fallback 到 Google `site:` 搜索）
+- **新增小红书链接**：所有城市都加
+  `https://www.xiaohongshu.com/search_result?keyword={店名+城市}`
+- **日本城市**（已有判断逻辑）：保留 Tabelog `site:` 搜索
+
+链接顺序按平台权威度排（中国：大众点评 > 小红书 > Google；日本：Tabelog > Google；其它：Google > 小红书）。
+
+### 2. E：Perplexity 真实口碑摘要
+
+#### 2a. 接入 Perplexity connector
+通过 `standard_connectors--connect` 加 `perplexity`，注入 `PERPLEXITY_API_KEY` 到 server runtime。
+
+#### 2b. 新增 `fetchReviewSummaries` 函数
+在 `searchRestaurants` 里，**Google Places 拿到候选后、AI 排序前**插入一步：
+
+```text
+对每组前 N 家候选（N=5，控制成本与延迟）：
+  并行调用 Perplexity sonar 模型
+  query: "{店名} {城市} 真实顾客评价 大众点评 小红书 优缺点"
+  search_recency_filter: "year"
+  使用结构化输出（json_schema）：
+    { reviewHighlights: [...3-5 条], commonComplaints: [...0-3 条],
+      sentiment: "positive|mixed|negative", sourceCount: number }
+```
+
+如果 `PERPLEXITY_API_KEY` 缺失或调用失败 → 跳过该步骤、不阻断主流程，仅在日志打 warning。
+
+#### 2c. 把摘要喂给 Gemini 排序 prompt
+在候选 JSON 里多加一个 `realWorldReviews` 字段。Prompt 增加规则：
+
+- "**优先依据 realWorldReviews 中的真实顾客反馈** 来判断匹配度，而不是只看 Google 评分"
+- "若 `commonComplaints` 命中用户的硬条件/避雷项 → 设 `hardFilterPass=false` 或大幅扣分"
+- "`pros/cons` 必须从 reviewHighlights / commonComplaints 里取真实素材，不要泛泛而谈"
+
+#### 2d. 控制成本
+- 每组只对 top 5 候选做 Perplexity 调用（按 Google 评分排）
+- 整个搜索成本 ≈ `料理数 × 5` 次 sonar 调用 + 1 次 Gemini 排序
+- 加 8 秒超时，单家失败不影响其它
+
+### 3. 错误处理 & 兜底
+
+- Perplexity 未连接：完全跳过 E 步骤，回到当前 Google-only 排序，不报错
+- Perplexity 429/402：在返回的 `error` 字段里附加提示，但仍返回 Google + Gemini 结果
+- 单家超时：该家 `realWorldReviews=null`，Gemini 自然降权
 
 ## 不在范围
 
-- 不改前端表单（Step 4 已经能输入自由文本）
-- 不动 Google Places 调用
-- 不调整排序逻辑（排序阶段已经把 hardFilters 写进 prompt 给 Gemini，只要识别准确这里就生效）
+- 不爬大众点评原站（反爬+法律风险，前面已说明）
+- 不接第三方付费聚合 API
+- 不改前端 UI（链接和文案字段都已存在）
+- 不改硬条件解析逻辑（上一轮刚加强过）
+
+## 后续可选
+
+- 把 Perplexity 摘要缓存到 Lovable Cloud 的 KV/表里（按 placeId+7 天 TTL），重复搜索同店时直接命中
+- 在卡片里单独显示 "网友说" 折叠区块（需要前端改动，本次不做）
