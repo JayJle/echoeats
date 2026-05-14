@@ -19,7 +19,7 @@ export const Route = createFileRoute("/requirements")({
 
 function StepRequirements() {
   const navigate = useNavigate();
-  const { city, cuisines, date, time, freeText } = useQueryStore();
+  const { city, cuisines, date, freeText } = useQueryStore();
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
   const setResults = useQueryStore((s) => s.setResults);
@@ -29,8 +29,8 @@ function StepRequirements() {
   const parseFn = useServerFn(parseRequirements);
 
   useEffect(() => {
-    if (!date || !time) navigate({ to: "/" });
-  }, [date, time, navigate]);
+    if (!date) navigate({ to: "/" });
+  }, [date, navigate]);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -39,7 +39,7 @@ function StepRequirements() {
     setFreeText(value);
     try {
       const parsed = await parseFn({
-        data: { city, cuisines, date, time, freeText: value },
+        data: { city, cuisines, date, freeText: value },
       });
       setParsed(parsed);
       setResults(null);

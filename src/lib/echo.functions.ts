@@ -9,7 +9,6 @@ const ParseInput = z.object({
   city: z.string().min(1),
   cuisines: z.array(z.string()).min(1),
   date: z.string().min(1),
-  time: z.string().min(1),
   freeText: z.string().default(""),
 });
 
@@ -37,16 +36,15 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 城市：${data.city}
 - 料理类型：${data.cuisines.join("、")}
 - 日期：${data.date}
-- 时间：${data.time}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
 请把需求结构化为 JSON。规则：
-- hardFilters：必须满足的硬条件（包含城市、料理、营业时间、明确预算、可预约等）。每条简短中文。
+- hardFilters：必须满足的硬条件（包含城市、料理、明确预算、可预约等）。每条简短中文。
 - softPreferences：偏好（氛围、评分、适合场景等）。
 - negativeFilters：避雷条件（不要游客店、避免吵闹等）。
 - dishPreferences：希望吃到的具体菜品。
 - searchStrategy：3-5 条搜索策略说明，比如"优先本地高分""排除连锁游客店"等。
-- dateTime：合并为可读字符串，如 "2026/05/20 19:30"。
+- dateTime：直接使用日期字符串，如 "2026/05/20"。
 - city/cuisines：原样回传。
 
 如果用户没提到某类，返回空数组。所有内容用简体中文。`;
