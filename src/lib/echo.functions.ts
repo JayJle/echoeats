@@ -120,6 +120,8 @@ type ReviewSummary = {
   commonComplaints: string[];
   sentiment: "positive" | "mixed" | "negative" | "unknown";
   sourceCount: number;
+  dianpingRating: number | null;
+  dianpingRatingSource: "dianping" | "xiaohongshu_mention" | "other" | "unknown";
 };
 
 async function fetchReviewSummary(

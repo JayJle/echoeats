@@ -1,75 +1,86 @@
 ## 目标
 
-在现有 Google Places 真实候选 + Gemini 排序流程的基础上，新增"网友真实口碑"维度，让结果不再只看 Google 评分。
+1. 移除「美团」评分行（前端 ratings 列表里的固定项）。
+2. 想办法补上「大众点评」的真实评分数字（X.X / 5）。
 
-- **D 部分**：增强跳转链接，用户一键到大众点评/小红书查原始评价
-- **E 部分**：在 AI 排序前用 Perplexity 抓取每家候选的网评摘要，喂给 Gemini，让排序、`aiSummary`、`pros/cons` 真正反映真实口碑
+---
 
-## 改动范围
+## 关于大众点评评分的现实情况
 
-只动 `src/lib/echo.functions.ts` 一个文件，加一个新 connector（Perplexity）。前端无需改动 —— `pros/cons/aiSummary/links` 字段都已经在用。
+大众点评**没有任何公开/免费的官方 API**可以查询店铺评分：
 
-## 详细方案
+- 官方开放平台早已对个人开发者关闭，仅向签约商户/连锁品牌开放，且不含评分查询接口。
+- 第三方聚合 API（聚合数据、APISpace 等）大多已下架点评数据，少数还在的需付费 + 实名企业资质。
+- 直接爬 `dianping.com` / `m.dianping.com` 有强反爬（字体加密、滑块、IP 封禁），Firecrawl 也只能拿到搜索结果列表的店名，**评分数字会被加密成乱码**，不稳定。
 
-### 1. D：增强跳转链接（`buildLinks`）
+所以"拿到准确的大众点评 4.5 分"这种字段在工程上**不现实**。我推荐两条务实路线，请你选一条：
 
-当前只在 Google 上加 `site:dianping.com` 搜索。改成：
+### 方案 A（推荐）：用 Perplexity 提取「网评评分」
 
-- **中文城市**（已有判断逻辑）：直接生成大众点评 H5 搜索深链
-  `https://m.dianping.com/searchshop?keyword={店名}&regionname={城市}`
-  （手机点开会拉起 App，桌面端 fallback 到 Google `site:` 搜索）
-- **新增小红书链接**：所有城市都加
-  `https://www.xiaohongshu.com/search_result?keyword={店名+城市}`
-- **日本城市**（已有判断逻辑）：保留 Tabelog `site:` 搜索
+复用已经接入的 Perplexity，让它在抓真实网评时**顺便提取一个评分**：
+- 扩展 `fetchReviewSummary` 的 JSON schema，新增 `dianpingRating`（number 或 null）和 `dianpingRatingSource`（"dianping" / "xiaohongshu_mention" / "unknown"）。
+- Prompt 明确要求："如果在大众点评页面/小红书帖子里看到该店的点评评分（如 4.5 分），返回数字；查不到就返回 null，禁止编造。"
+- 前端 ratings 行展示为 `4.5 / 5（网评，来源：大众点评）`，查不到时显示 `—`。
+- 优点：零额外成本（已经在调 Perplexity）、零额外延迟、不会编数据。
+- 缺点：覆盖率不是 100%，小店 / 新店常拿不到；准确度依赖 Perplexity 的引用源。
 
-链接顺序按平台权威度排（中国：大众点评 > 小红书 > Google；日本：Tabelog > Google；其它：Google > 小红书）。
+### 方案 B：用 Firecrawl 抓大众点评搜索页
 
-### 2. E：Perplexity 真实口碑摘要
+- 接 Firecrawl，对每家候选店调一次 `m.dianping.com/searchshop?keyword=...` 的 scrape。
+- 现实问题：评分数字在大众点评 H5 上是**加密字体**渲染，markdown 里出来是 `&#xe6f4;&#xe...` 这种乱码，**拿不到可用数字**。能稳定拿到的只有店名 + 地址 + 商圈。
+- 等于花了 Firecrawl 额度但还是没拿到评分 → **不推荐**。
 
-#### 2a. 接入 Perplexity connector
-通过 `standard_connectors--connect` 加 `perplexity`，注入 `PERPLEXITY_API_KEY` 到 server runtime。
+### 方案 C：放弃大众点评评分，只显示 Google 评分
 
-#### 2b. 新增 `fetchReviewSummaries` 函数
-在 `searchRestaurants` 里，**Google Places 拿到候选后、AI 排序前**插入一步：
+- 直接把「大众点评」整行从 ratings 里删掉，跟「美团」一起删。
+- 卡片更干净，不会出现"暂无评分"的占位行。
+- 缺点：失去了"多平台口碑"的视觉表达。
 
-```text
-对每组前 N 家候选（N=5，控制成本与延迟）：
-  并行调用 Perplexity sonar 模型
-  query: "{店名} {城市} 真实顾客评价 大众点评 小红书 优缺点"
-  search_recency_filter: "year"
-  使用结构化输出（json_schema）：
-    { reviewHighlights: [...3-5 条], commonComplaints: [...0-3 条],
-      sentiment: "positive|mixed|negative", sourceCount: number }
-```
+---
 
-如果 `PERPLEXITY_API_KEY` 缺失或调用失败 → 跳过该步骤、不阻断主流程，仅在日志打 warning。
+## 我推荐方案 A
 
-#### 2c. 把摘要喂给 Gemini 排序 prompt
-在候选 JSON 里多加一个 `realWorldReviews` 字段。Prompt 增加规则：
+理由：你已经付了 Perplexity 的钱在做网评摘要，让它顺手抽一个评分数字几乎是零成本，且明确标注了来源/不编造。拿不到时显示 `—`，比假装有数据要诚实。
 
-- "**优先依据 realWorldReviews 中的真实顾客反馈** 来判断匹配度，而不是只看 Google 评分"
-- "若 `commonComplaints` 命中用户的硬条件/避雷项 → 设 `hardFilterPass=false` 或大幅扣分"
-- "`pros/cons` 必须从 reviewHighlights / commonComplaints 里取真实素材，不要泛泛而谈"
+---
 
-#### 2d. 控制成本
-- 每组只对 top 5 候选做 Perplexity 调用（按 Google 评分排）
-- 整个搜索成本 ≈ `料理数 × 5` 次 sonar 调用 + 1 次 Gemini 排序
-- 加 8 秒超时，单家失败不影响其它
+## 技术改动（方案 A + 删美团）
 
-### 3. 错误处理 & 兜底
+文件：`src/lib/echo.functions.ts`
 
-- Perplexity 未连接：完全跳过 E 步骤，回到当前 Google-only 排序，不报错
-- Perplexity 429/402：在返回的 `error` 字段里附加提示，但仍返回 Google + Gemini 结果
-- 单家超时：该家 `realWorldReviews=null`，Gemini 自然降权
+1. **`ReviewSummary` 类型**：新增
+   ```ts
+   dianpingRating: number | null;       // 0-5，找不到为 null
+   dianpingRatingSource: "dianping" | "xiaohongshu_mention" | "other" | "unknown";
+   ```
 
-## 不在范围
+2. **`fetchReviewSummary` 的 Perplexity prompt + json_schema**：
+   - 增加字段说明："仅当在大众点评店铺页或小红书帖子里**直接看到**该店的点评评分时返回数字（0-5，最多一位小数），找不到必须返回 null，禁止根据'好评多'等模糊信号自己估算。"
+   - schema 加上对应的 properties + required。
 
-- 不爬大众点评原站（反爬+法律风险，前面已说明）
-- 不接第三方付费聚合 API
-- 不改前端 UI（链接和文案字段都已存在）
-- 不改硬条件解析逻辑（上一轮刚加强过）
+3. **`candidateRatings(p, review)` 函数签名扩展**：
+   - 接收 `ReviewSummary | null`。
+   - 删除 `{ platform: "美团", score: null }` 这一行。
+   - 大众点评行：`review?.dianpingRating != null ? \`${review.dianpingRating.toFixed(1)} / 5（网评）\` : null`。
+   - Tabelog / Yelp 行保持现状（占位）。
 
-## 后续可选
+4. **`searchRestaurants` 里调用 `candidateRatings`**：把已经在 `reviewById` Map 里的 summary 传进去。
 
-- 把 Perplexity 摘要缓存到 Lovable Cloud 的 KV/表里（按 placeId+7 天 TTL），重复搜索同店时直接命中
-- 在卡片里单独显示 "网友说" 折叠区块（需要前端改动，本次不做）
+5. **AI prompt 微调**（可选）：告诉 Gemini 现在 candidate 多了 `realWorldReviews.dianpingRating` 字段，可作为口碑参考。
+
+---
+
+## 不改的部分
+
+- 前端组件 / 路由：ratings 是数组，删一行不需要改 UI（卡片自动少一行）。
+- `buildLinks`、硬条件过滤、Google Places 调用：都不动。
+- 不引入 Firecrawl，不爬大众点评。
+
+---
+
+## 风险与预期
+
+- 大概**30%-60%** 的候选能拿到大众点评数字（北上广深热门餐厅命中率高，海外/小店命中率低）；其余显示 `—`，与现状一致。
+- Perplexity 偶尔会把"网友打分高"翻译成具体数字 → 已在 prompt 里明令禁止 + 要求 source。极端情况下仍可能有 1-2% 的幻觉评分，可接受范围。
+
+请确认走方案 A，我就开始实现。如果想要 B 或 C 直接说编号即可。
