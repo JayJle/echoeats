@@ -178,6 +178,10 @@ async function fetchReviewSummary(
                 commonComplaints: { type: "array", items: { type: "string" } },
                 sentiment: { type: "string", enum: ["positive", "mixed", "negative", "unknown"] },
                 sourceCount: { type: "number" },
+                sources: {
+                  type: "array",
+                  items: { type: "string", enum: [...SOURCE_ENUM] },
+                },
                 dianpingRating: { type: ["number", "null"] },
                 dianpingRatingSource: {
                   type: "string",
@@ -189,6 +193,7 @@ async function fetchReviewSummary(
                 "commonComplaints",
                 "sentiment",
                 "sourceCount",
+                "sources",
                 "dianpingRating",
                 "dianpingRatingSource",
               ],
