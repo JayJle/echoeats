@@ -355,7 +355,12 @@ function buildSearchLinks(name: string, localName: string, city: string) {
   return links;
 }
 
-function normalizeLinks(raw: SearchDraftRestaurant["links"], name: string, city: string) {
+function normalizeLinks(
+  raw: SearchDraftRestaurant["links"],
+  name: string,
+  localName: string,
+  city: string,
+) {
   const aiLinks =
     raw
       ?.map((link) => ({
@@ -364,7 +369,7 @@ function normalizeLinks(raw: SearchDraftRestaurant["links"], name: string, city:
       }))
       .filter((link) => /^https?:\/\//.test(link.url)) ?? [];
 
-  const generated = buildSearchLinks(name, city);
+  const generated = buildSearchLinks(name, localName, city);
   // Merge: generated search links first (always reliable), then any extra AI URLs that aren't duplicates.
   const seen = new Set(generated.map((l) => l.url));
   for (const link of aiLinks) {
