@@ -192,25 +192,54 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-function buildLinks(p: PlaceCandidate, city: string) {
-  const links: { label: string; url: string }[] = [
-    { label: "Google Maps", url: p.googleMapsUri },
-  ];
-  if (p.websiteUri) links.push({ label: "官网", url: p.websiteUri });
+function isChineseCity(city: string, name: string): boolean {
+  return /[\u4e00-\u9fff]/.test(name) || /china|中国|北京|上海|广州|深圳|成都|杭州|重庆|武汉|南京|苏州|天津|西安|青岛|厦门|长沙|郑州|香港|hong\s*kong|hk|澳门|macau|台北|taipei/i.test(city);
+}
 
+function isJapaneseCity(city: string, name: string): boolean {
+  return /[\u3040-\u30ff]/.test(name) || /japan|日本|tokyo|kyoto|osaka|东京|京都|大阪|nagoya|fukuoka|sapporo|yokohama|札幌|横滨|名古屋|福冈/i.test(city);
+}
+
+function buildLinks(p: PlaceCandidate, city: string) {
+  const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
-  if (/[\u3040-\u30ff]/.test(p.name) || /japan|日本|tokyo|kyoto|osaka/i.test(city)) {
+  const qName = encodeURIComponent(p.name);
+  const qCity = encodeURIComponent(city);
+
+  const isCN = isChineseCity(city, p.name);
+  const isJP = isJapaneseCity(city, p.name);
+
+  if (isCN) {
+    // 大众点评 H5 搜索深链（手机会拉起 App）
     links.push({
-      label: "Tabelog 搜索",
+      label: "大众点评",
+      url: `https://m.dianping.com/searchshop?keyword=${qName}&regionname=${qCity}`,
+    });
+    // 小红书搜索（用户口碑）
+    links.push({
+      label: "小红书",
+      url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
+    });
+  }
+
+  if (isJP) {
+    links.push({
+      label: "Tabelog",
       url: `https://www.google.com/search?q=${encodeURIComponent(`site:tabelog.com ${p.name}`)}`,
     });
   }
-  if (/[\u4e00-\u9fff]/.test(p.name) && /china|中国|北京|上海|广州|深圳|成都|杭州/i.test(city)) {
+
+  links.push({ label: "Google Maps", url: p.googleMapsUri });
+  if (p.websiteUri) links.push({ label: "官网", url: p.websiteUri });
+
+  if (!isCN) {
+    // 非中文城市也加小红书（很多海外城市国人口碑在小红书）
     links.push({
-      label: "大众点评搜索",
-      url: `https://www.google.com/search?q=${encodeURIComponent(`site:dianping.com ${p.name}`)}`,
+      label: "小红书",
+      url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
     });
   }
+
   links.push({ label: "Google 搜索", url: `https://www.google.com/search?q=${q}` });
   return links.slice(0, 6);
 }
