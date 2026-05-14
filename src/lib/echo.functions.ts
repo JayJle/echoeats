@@ -651,34 +651,54 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         const aiGroup =
           ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
           ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 3);
+        const picks = (aiGroup?.picks ?? []).slice(0, 6);
 
-        const restaurants = picks
+        type Bucket = "ok" | "partial" | null;
+
+        const built = picks
           .map((pick, idx) => {
-            // 严格执行硬条件门槛：AI 标记不通过的直接剔除
-            if (data.hardFilters.length > 0 && pick.hardFilterPass === false) return null;
             const entry = placeById.get(pick.placeId);
-            if (!entry) return null; // AI 编了 placeId，过滤掉
+            if (!entry) return null; // AI 编了 placeId
             const p = entry.place;
+
+            // 规范化 hardFilterChecks：长度对齐、缺失视为 unknown
+            const checksByFilter = new Map<string, { status: "ok" | "unknown" | "fail"; note?: string }>();
+            for (const c of pick.hardFilterChecks ?? []) {
+              checksByFilter.set(c.filter, { status: c.status, note: c.note });
+            }
+            const checks = data.hardFilters.map((f) => {
+              const c = checksByFilter.get(f);
+              return c ?? { status: "unknown" as const, note: undefined as string | undefined };
+            });
+
+            // 任何 fail → 剔除
+            if (checks.some((c) => c.status === "fail")) return null;
+
+            const hasUnknown = checks.some((c) => c.status === "unknown");
+            const bucket: Bucket = hasUnknown ? "partial" : "ok";
+
             const score = Math.round(pick.matchScore);
-            const tier =
+            let tier =
               pick.matchTier === "perfect" || pick.matchTier === "high" || pick.matchTier === "partial"
                 ? pick.matchTier
                 : tierFromScore(score);
+            // 含 unknown 的不允许 perfect
+            if (hasUnknown && tier === "perfect") tier = "high";
 
-            const matchDetails = pick.matchDetails.length
-              ? pick.matchDetails.slice(0, 7)
-              : [
-                  { label: `位于 ${data.city}`, status: "ok" as const },
-                  ...(p.rating != null
-                    ? [{ label: `Google 评分 ${p.rating.toFixed(1)} (${p.userRatingCount ?? 0} 评价)`, status: "ok" as const }]
-                    : []),
-                  ...(p.openNow === false
-                    ? [{ label: "当前未营业", status: "warn" as const }]
-                    : []),
-                ];
+            // 硬条件 detail 置顶
+            const hardDetails = data.hardFilters.map((f, i) => {
+              const c = checks[i];
+              const noteSuffix = c.note ? ` — ${c.note}` : "";
+              if (c.status === "ok") {
+                return { label: `✓ 硬条件：${f}${noteSuffix}`, status: "ok" as const };
+              }
+              return { label: `？ 硬条件待核实：${f}${noteSuffix}`, status: "warn" as const };
+            });
+            const aiDetails = (pick.matchDetails ?? []).slice(0, 6);
+            const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);
 
-            return {
+            const review = reviewById.get(p.placeId) ?? null;
+            const restaurant = {
               id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
               name: p.name,
               localName: p.name,
@@ -692,7 +712,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null,
-              ratings: candidateRatings(p, reviewById.get(p.placeId) ?? null),
+              ratings: candidateRatings(p, review),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
@@ -700,11 +720,19 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               cons: pick.cons.length ? pick.cons : ["请到 Google Maps 确认最新营业时间"],
               links: buildLinks(p, data.city),
             };
+            return { bucket, restaurant };
           })
           .filter((r): r is NonNullable<typeof r> => Boolean(r));
 
-        if (!restaurants.length) return null;
-        return { cuisine, restaurants };
+        const restaurants = built.filter((b) => b.bucket === "ok").map((b) => b.restaurant).slice(0, 3);
+        const partialRestaurants = built.filter((b) => b.bucket === "partial").map((b) => b.restaurant).slice(0, 3);
+
+        if (!restaurants.length && !partialRestaurants.length) return null;
+        return {
+          cuisine,
+          restaurants,
+          ...(partialRestaurants.length ? { partialRestaurants } : {}),
+        };
       })
       .filter((g): g is NonNullable<typeof g> => Boolean(g));
 
