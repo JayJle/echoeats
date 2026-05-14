@@ -527,7 +527,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 - 价格判断：候选的 priceLevel（$/$$/$$$/$$$$）若明显高于用户预算上限，视为违反硬条件。无 priceLevel 信息时，若用户给了明确预算上限，视为无法确认 → hardFilterPass=false。
 - **realWorldReviews 优先**：当候选有 realWorldReviews（来自大众点评/小红书/Tabelog 等真实网评）时，**优先依据它判断匹配度**，而不是只看 Google 评分；commonComplaints 命中用户硬条件或避雷项 → hardFilterPass=false 或大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
 - **pros/cons 必须取真实素材**：有 realWorldReviews 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（如 commonComplaints 为空则 cons 用候选其它弱点）。禁止"环境不错""值得一试"等空话。
-- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。
+- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，例如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台，不要编造。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。
 - matchDetails: 3-6 条短描述，每条带 status (ok/warn)。
 
