@@ -357,7 +357,22 @@ function buildLinks(p: PlaceCandidate, city: string) {
   return links.slice(0, 6);
 }
 
-function candidateRatings(p: PlaceCandidate) {
+function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
+  const score =
+    p.rating != null
+      ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
+      : null;
+  const dpScore =
+    review?.dianpingRating != null
+      ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
+      : null;
+  return [
+    { platform: "Google Maps", score },
+    { platform: "大众点评", score: dpScore },
+    { platform: "Tabelog", score: null },
+    { platform: "Yelp", score: null },
+  ];
+}
   const score = p.rating != null
     ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
     : null;
