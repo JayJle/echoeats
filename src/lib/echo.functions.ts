@@ -641,7 +641,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       const result = await generateText({
         model,
         prompt,
-        maxOutputTokens: 6000,
+        maxOutputTokens: 10000,
         output: Output.object({
           schema: AiRankingSchema,
           name: "echo_eats_ranking",
