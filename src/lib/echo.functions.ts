@@ -429,6 +429,14 @@ function buildLinks(p: PlaceCandidate, city: string) {
   return links.slice(0, 6);
 }
 
+function formatPriceFromReview(review: ReviewSummary | null): string | null {
+  if (!review || review.priceLevel == null) return null;
+  const sym = review.priceCurrency ? CURRENCY_SYMBOL[review.priceCurrency] ?? "" : "";
+  const amount = `${sym}${review.priceLevel}`;
+  const ctx = review.priceContext ? `（${review.priceContext}，来自网评）` : "（来自网评）";
+  return `${amount}${ctx}`;
+}
+
 function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
   const score =
     p.rating != null
@@ -438,9 +446,12 @@ function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
     review?.dianpingRating != null
       ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
       : null;
+  const priceFromReview = formatPriceFromReview(review);
+  const priceScore = priceFromReview ?? priceLevelLabel(p.priceLevel);
   return [
     { platform: "Google Maps", score },
     { platform: "大众点评", score: dpScore },
+    { platform: "人均价格", score: priceScore },
     { platform: "Tabelog", score: null },
     { platform: "Yelp", score: null },
   ];
