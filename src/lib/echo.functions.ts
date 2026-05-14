@@ -420,7 +420,13 @@ function buildLinks(p: PlaceCandidate, city: string) {
   }
 
   links.push({ label: "Google Maps", url: p.googleMapsUri });
-  if (p.websiteUri) links.push({ label: "官网", url: p.websiteUri });
+  if (p.websiteUri) {
+    const isDianpingShop = /dianping\.com\/shop\//i.test(p.websiteUri);
+    links.push({
+      label: isDianpingShop ? "大众点评店铺页" : "官网",
+      url: p.websiteUri,
+    });
+  }
 
   if (!isCN) {
     // 非中文城市也加小红书（很多海外城市国人口碑在小红书）
