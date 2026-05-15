@@ -415,7 +415,15 @@ const RestaurantSchema = z.object({
       reviewCount: z.number().nullable(),
       url: z.string().nullable(),
       priceRange: z.string().nullable(),
+      dinnerBudget: z.string().nullable().default(null),
+      lunchBudget: z.string().nullable().default(null),
       summary: z.string().nullable(),
+      topDishes: z.array(z.string()).default([]),
+      goodPoints: z.array(z.string()).default([]),
+      badPoints: z.array(z.string()).default([]),
+      reviewQuotes: z.array(z.string()).default([]),
+      awards: z.string().nullable().default(null),
+      recommendedScene: z.string().nullable().default(null),
     })
     .nullable(),
 });
