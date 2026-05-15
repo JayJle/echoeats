@@ -137,16 +137,60 @@ function ResultsPage() {
             {parsed.city} · {parsed.cuisines.join(" / ")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {parsed.hardFilters.slice(0, 5).map((f, i) => (
-              <span
-                key={i}
-                className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground"
-              >
-                {f}
-              </span>
-            ))}
-          </div>
+          {parsed.hardFilters.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">硬条件</p>
+              <div className="flex flex-wrap gap-1.5">
+                {parsed.hardFilters.map((f, i) => (
+                  <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
+                    {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {parsed.softPreferences.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">偏好</p>
+              <div className="flex flex-wrap gap-1.5">
+                {parsed.softPreferences.map((f, i) => (
+                  <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground">
+                    {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {parsed.negativeFilters.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">排除</p>
+              <div className="flex flex-wrap gap-1.5">
+                {parsed.negativeFilters.map((f, i) => (
+                  <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
+                    {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {parsed.dishPreferences.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">菜品偏好</p>
+              <div className="flex flex-wrap gap-1.5">
+                {parsed.dishPreferences.map((f, i) => (
+                  <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-accent text-accent-foreground">
+                    {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {freeText && (
+            <details className="mt-3">
+              <summary className="text-[11px] uppercase tracking-wider text-muted-foreground cursor-pointer hover:text-foreground">原始描述 ▾</summary>
+              <p className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">{freeText}</p>
+            </details>
+          )}
         </div>
 
         <div className="mb-8 bg-card border border-border rounded-2xl overflow-hidden">
