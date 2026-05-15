@@ -118,10 +118,13 @@ export async function fetchTabelogInfo(
       return null;
     }
 
+    const ratingRaw = parsed.rating;
     const rating =
-      typeof parsed.rating === "string" && /^\d(\.\d{1,2})?$/.test(parsed.rating.trim())
-        ? parsed.rating.trim()
-        : null;
+      typeof ratingRaw === "string" && /^\d(\.\d{1,2})?$/.test(ratingRaw.trim())
+        ? ratingRaw.trim()
+        : typeof ratingRaw === "number" && ratingRaw > 0 && ratingRaw <= 5
+          ? ratingRaw.toFixed(2)
+          : null;
     const reviewCount =
       typeof parsed.reviewCount === "number" && parsed.reviewCount >= 0
         ? Math.round(parsed.reviewCount)
@@ -135,11 +138,12 @@ export async function fetchTabelogInfo(
         ? parsed.summary.trim().slice(0, 120)
         : null;
 
-    // 至少 rating 或 summary 二者之一有效，否则视为找不到
     if (rating == null && summary == null) {
+      console.warn(`[Tabelog] ${name}: rating & summary both null (url=${url})`);
       cache.set(cacheKey, null);
       return null;
     }
+    console.log(`[Tabelog] ${name}: ok rating=${rating} reviews=${reviewCount}`);
 
     const info: TabelogInfo = { rating, reviewCount, url, priceRange, summary };
     cache.set(cacheKey, info);
