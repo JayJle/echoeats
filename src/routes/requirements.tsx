@@ -67,10 +67,6 @@ function StepRequirements() {
     }
   };
 
-  const onSkip = async () => {
-    await runSearch("", "deep");
-  };
-
   return (
     <StepShell
       step={3}
