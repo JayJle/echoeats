@@ -2,6 +2,17 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
 import { searchRestaurants } from "@/lib/echo.functions";
@@ -85,9 +96,23 @@ function ResultsPage() {
           <Button asChild variant="outline" size="sm">
             <Link to="/requirements">编辑需求</Link>
           </Button>
-          <Button variant="outline" size="sm" onClick={restartFlow}>
-            重新开始
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm">重新开始</Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>确定要重新开始吗？</AlertDialogTitle>
+                <AlertDialogDescription>
+                  当前的搜索条件和结果将被清空，回到第一步重新输入。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>取消</AlertDialogCancel>
+                <AlertDialogAction onClick={restartFlow}>确认重新开始</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </header>
 
@@ -246,16 +271,23 @@ function ResultsPage() {
         )}
 
         <div className="mt-12 flex justify-center">
-          <Button asChild variant="outline">
-            <Link
-              to="/"
-              onClick={() => {
-                useQueryStore.getState().reset();
-              }}
-            >
-              重新搜索
-            </Link>
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline">重新搜索</Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>确定要重新开始吗？</AlertDialogTitle>
+                <AlertDialogDescription>
+                  当前的搜索条件和结果将被清空，回到第一步重新输入。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>取消</AlertDialogCancel>
+                <AlertDialogAction onClick={restartFlow}>确认重新开始</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </main>
     </div>
