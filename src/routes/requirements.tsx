@@ -126,12 +126,12 @@ function StepRequirements() {
             >
               {stage === "searching" ? "搜索中…" : "⚡ 快速搜索"}
             </Button>
-            <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="relative w-full sm:w-auto">
               <Button
                 type="submit"
                 disabled={loading || !value.trim()}
                 size="lg"
-                className="flex-1 sm:flex-none"
+                className="w-full sm:w-auto"
               >
                 {stage === "parsing" ? (
                   "AI 正在理解需求…"
@@ -146,7 +146,7 @@ function StepRequirements() {
                   <button
                     type="button"
                     aria-label="深度搜索说明"
-                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    className="absolute -top-2 -right-2 z-10 rounded-full bg-background p-0.5 text-muted-foreground hover:text-foreground transition-colors shadow-sm border border-border"
                   >
                     <HelpCircle className="w-4 h-4" />
                   </button>
