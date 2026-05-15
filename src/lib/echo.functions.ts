@@ -521,22 +521,14 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-function isChineseCity(city: string, name: string): boolean {
-  return /[\u4e00-\u9fff]/.test(name) || /china|中国|北京|上海|广州|深圳|成都|杭州|重庆|武汉|南京|苏州|天津|西安|青岛|厦门|长沙|郑州|香港|hong\s*kong|hk|澳门|macau|台北|taipei/i.test(city);
-}
-
-function isJapaneseCity(city: string, name: string): boolean {
-  return /[\u3040-\u30ff]/.test(name) || /japan|日本|tokyo|kyoto|osaka|东京|京都|大阪|nagoya|fukuoka|sapporo|yokohama|札幌|横滨|名古屋|福冈/i.test(city);
-}
-
-function buildLinks(p: PlaceCandidate, city: string) {
+function buildLinks(p: PlaceCandidate, city: string, country: string) {
   const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
   const qName = encodeURIComponent(p.name);
   const qCity = encodeURIComponent(city);
 
-  const isCN = isChineseCity(city, p.name);
-  const isJP = isJapaneseCity(city, p.name);
+  const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
+  const isJP = country === "JP";
 
   if (isCN) {
     // 大众点评 H5 搜索深链（手机会拉起 App）
@@ -636,7 +628,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     if (!aiKey) {
       return { groups: [], error: "服务未配置 AI 凭据", suggestions: [] };
     }
-    const useDianping = isMainlandChinaCity(data.city);
+    // country/language 优先取 AI parse 结果，正则只做 fallback
+    const country =
+      (data.country && data.country.toUpperCase()) ||
+      guessRegionCode(data.city) ||
+      (isMainlandChinaCity(data.city) ? "CN" : "");
+    const useDianping = country === "CN";
     const pplxKey = process.env.PERPLEXITY_API_KEY;
 
     if (!useDianping && !process.env.GOOGLE_PLACES_API_KEY) {
@@ -707,8 +704,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       placeResults = settled;
     } else {
       // 海外城市：Google Places + Perplexity 网评（原流程）
-      const language = guessLanguageCode(data.city);
-      const region = guessRegionCode(data.city);
+      const language = data.language || guessLanguageCode(data.city);
+      const region = country || guessRegionCode(data.city);
 
       const semanticSuffix = (() => {
         if (language === "ja") return "おすすめ";
@@ -817,7 +814,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
-    if (!useDianping && pplxKey && guessRegionCode(data.city) === "JP") {
+    if (!useDianping && pplxKey && country === "JP") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
@@ -1072,7 +1069,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               matchDetails,
               pros: pick.pros,
               cons: pick.cons,
-              links: buildLinks(p, data.city),
+              links: buildLinks(p, data.city, country),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
             };
