@@ -453,7 +453,14 @@ const AiPickSchema = z.object({
     .array(
       z.object({
         filter: z.string(),
-        status: z.enum(["ok", "unknown", "fail"]),
+        // AI 偶尔会输出 "warn" / "warning" / "partial" 等近义词，统一归一为 "unknown"，避免 schema 校验失败
+        status: z.preprocess((v) => {
+          if (typeof v !== "string") return v;
+          const s = v.toLowerCase();
+          if (s === "ok" || s === "pass" || s === "yes" || s === "true") return "ok";
+          if (s === "fail" || s === "no" || s === "false" || s === "violated") return "fail";
+          return "unknown";
+        }, z.enum(["ok", "unknown", "fail"])),
         note: z.string().optional(),
       }),
     )
