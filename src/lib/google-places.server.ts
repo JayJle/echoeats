@@ -97,6 +97,12 @@ export async function searchPlaces(opts: {
       primaryTypeDisplayName?: { text?: string };
       editorialSummary?: { text?: string };
       location?: { latitude?: number; longitude?: number };
+      reviews?: Array<{
+        text?: { text?: string } | string;
+        originalText?: { text?: string } | string;
+        rating?: number;
+        authorAttribution?: { displayName?: string };
+      }>;
     }>;
   };
 
@@ -116,5 +122,19 @@ export async function searchPlaces(opts: {
     location: p.location?.latitude != null && p.location.longitude != null
       ? { lat: p.location.latitude, lng: p.location.longitude }
       : null,
+    reviews: (p.reviews ?? [])
+      .map((r) => {
+        const t =
+          (typeof r.text === "object" ? r.text?.text : r.text) ??
+          (typeof r.originalText === "object" ? r.originalText?.text : r.originalText) ??
+          "";
+        return {
+          text: typeof t === "string" ? t.trim() : "",
+          rating: typeof r.rating === "number" ? r.rating : null,
+          authorName: r.authorAttribution?.displayName ?? null,
+        };
+      })
+      .filter((r) => r.text.length >= 5)
+      .slice(0, 5),
   })).filter((p) => p.placeId && p.name);
 }
