@@ -47,8 +47,15 @@ function ResultsPage() {
   const results = useQueryStore((s) => s.results);
   const freeText = useQueryStore((s) => s.freeText);
   const setResults = useQueryStore((s) => s.setResults);
+  const setParsed = useQueryStore((s) => s.setParsed);
+  const setFreeText = useQueryStore((s) => s.setFreeText);
 
   const searchFn = useServerFn(searchRestaurants);
+  const parseFn = useServerFn(parseRequirements);
+
+  const [editing, setEditing] = useState(false);
+  const [draftText, setDraftText] = useState(freeText);
+  const conditionsRef = useRef<HTMLDivElement>(null);
 
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
