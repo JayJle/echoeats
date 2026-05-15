@@ -6,11 +6,36 @@ export type TabelogInfo = {
   rating: string | null; // 例 "3.62"
   reviewCount: number | null; // 例 412
   url: string | null; // tabelog 店铺页 URL（必须包含 tabelog.com）
-  priceRange: string | null; // 例 "￥6,000〜￥7,999"
+  priceRange: string | null; // 兼容旧缓存：合并价位
+  dinnerBudget: string | null; // 例 "￥6,000〜￥7,999"
+  lunchBudget: string | null; // 例 "￥1,000〜￥1,999"
   summary: string | null; // 1-2 句中文摘要
+  topDishes: string[]; // 招牌菜，最多 4
+  goodPoints: string[]; // 好评要点，最多 3，每条 ≤ 25 字
+  badPoints: string[]; // 差评要点，最多 3，每条 ≤ 25 字
+  reviewQuotes: string[]; // 食客原话节选（中文翻译），最多 2，每条 ≤ 40 字
+  awards: string | null; // 例 "百名店 2024" / "Tabelog Award Bronze"
+  recommendedScene: string | null; // 例 "约会 / 接待"
 };
 
 const cache = new Map<string, TabelogInfo | null>();
+
+const cleanStr = (v: unknown, max: number): string | null => {
+  if (typeof v !== "string") return null;
+  const s = v.replace(/<[^>]*>/g, "").trim();
+  return s.length > 0 ? s.slice(0, max) : null;
+};
+
+const cleanArr = (v: unknown, maxItems: number, maxLen: number): string[] => {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const item of v) {
+    const s = cleanStr(item, maxLen);
+    if (s) out.push(s);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+};
 
 export async function fetchTabelogInfo(
   name: string,
@@ -20,11 +45,11 @@ export async function fetchTabelogInfo(
   const apiKey = process.env.PERPLEXITY_API_KEY;
   if (!apiKey) return null;
 
-  const cacheKey = `${name}|${address}`.toLowerCase();
+  const cacheKey = `v2|${name}|${address}`.toLowerCase();
   if (cache.has(cacheKey)) return cache.get(cacheKey) ?? null;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
+  const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
     const res = await fetch("https://api.perplexity.ai/chat/completions", {
@@ -40,28 +65,37 @@ export async function fetchTabelogInfo(
           {
             role: "system",
             content:
-              "你是 Tabelog（食べログ）查询助手。只参考 tabelog.com 的页面，找到与给定店名+地址最匹配的那一家店铺页，输出结构化 JSON。找不到必须返回 null 字段，禁止编造。",
+              "你是 Tabelog（食べログ）查询助手。只参考 tabelog.com 上目标店铺页面的真实信息（综合评分、口コミ、店舗情報、予算、おすすめメニュー、TabelogAward/百名店徽章等），输出结构化 JSON。任何字段读不到必须返回 null 或空数组，**严禁编造、严禁跨站补全**。",
           },
           {
             role: "user",
-            content: `查找 Tabelog 上的店铺：
+            content: `查找 Tabelog 上的店铺并提取信息：
 - 店名：${name}
 - 地址：${address}
 - 城市：${city}
 
 要求：
-- 必须是 tabelog.com 上**真实存在**的店铺页（URL 形如 https://tabelog.com/xx/A.../...../...../）。
-- 店名和地址必须能合理对应（同名不同店一律算找不到，宁可返回 null）。
-- url: 该店铺 Tabelog 页面 URL（必须包含 "tabelog.com"）。**只要找到了对应店铺页就返回 URL，即使评分/口コミ件数/价格/摘要暂时读取不到也照常返回 URL**。找不到对应店铺 → null。
-- rating: Tabelog 综合评分（数字字符串，如 "3.62"）。Tabelog 评分体系特殊（满分 5，3.5+ 即优秀），原样返回。读不到 → null（不要编）。
-- reviewCount: 口コミ件数（整数）。读不到 → null。
-- priceRange: "夜の予算" 或 "ランチ予算" 字段原文（如 "￥6,000〜￥7,999"）。读不到 → null。
-- summary: 1-2 句简体中文，归纳 Tabelog 用户口碑（具体菜品/服务/氛围），≤ 60 字。读不到 → null。
+- 必须是 tabelog.com 上**真实存在**的店铺页（URL 形如 https://tabelog.com/xx/A.../...../...../）。店名+地址必须能合理对应；同名不同店一律算找不到。
 
-只输出 JSON 对象。如果找不到任何匹配店铺，所有字段返回 null。`,
+字段说明（只要找到店铺页，url 必返回；其余读不到一律 null/[]，禁止编造）：
+- url: tabelog.com 店铺页 URL（必须包含 "tabelog.com"）。
+- rating: Tabelog 综合评分数字字符串，如 "3.62"。Tabelog 满分 5，3.5+ 即优秀。
+- reviewCount: 口コミ件数（整数）。
+- dinnerBudget: 「夜の予算」字段原文，如 "￥6,000〜￥7,999"。
+- lunchBudget: 「ランチ予算」字段原文，如 "￥1,000〜￥1,999"。
+- priceRange: 如果只有一个综合预算字段，填这里；否则与 dinnerBudget 一致即可。
+- summary: 1-2 句简体中文，归纳店铺整体定位与口碑，≤ 60 字。
+- topDishes: 口コミ/メニュー高频招牌菜名数组，最多 4 个；用日文原名或中文皆可，每条 ≤ 20 字。
+- goodPoints: 高频好评要点（食材/服务/氛围/性价比等），最多 3 条简体中文，每条 ≤ 25 字。
+- badPoints: 高频差评/吐槽（价格/嘈杂/服务等），最多 3 条简体中文，每条 ≤ 25 字。无明显差评 → []。
+- reviewQuotes: 1-2 条具有代表性的食客口コミ原话，翻译为简体中文，每条 ≤ 40 字。
+- awards: Tabelog 页面上是否标注 "百名店 YYYY"、"The Tabelog Award Bronze/Silver/Gold" 等荣誉。原文短语，否则 null。
+- recommendedScene: 适合场景（如 "约会 / 接待"、"家庭聚餐"、"独食"），简体中文，≤ 20 字。
+
+只输出 JSON 对象。如果找不到任何匹配店铺，所有字段返回 null/[]。`,
           },
         ],
-        max_tokens: 400,
+        max_tokens: 900,
         temperature: 0.1,
         search_domain_filter: ["tabelog.com"],
         response_format: {
@@ -75,9 +109,31 @@ export async function fetchTabelogInfo(
                 reviewCount: { type: ["number", "null"] },
                 url: { type: ["string", "null"] },
                 priceRange: { type: ["string", "null"] },
+                dinnerBudget: { type: ["string", "null"] },
+                lunchBudget: { type: ["string", "null"] },
                 summary: { type: ["string", "null"] },
+                topDishes: { type: "array", items: { type: "string" } },
+                goodPoints: { type: "array", items: { type: "string" } },
+                badPoints: { type: "array", items: { type: "string" } },
+                reviewQuotes: { type: "array", items: { type: "string" } },
+                awards: { type: ["string", "null"] },
+                recommendedScene: { type: ["string", "null"] },
               },
-              required: ["rating", "reviewCount", "url", "priceRange", "summary"],
+              required: [
+                "rating",
+                "reviewCount",
+                "url",
+                "priceRange",
+                "dinnerBudget",
+                "lunchBudget",
+                "summary",
+                "topDishes",
+                "goodPoints",
+                "badPoints",
+                "reviewQuotes",
+                "awards",
+                "recommendedScene",
+              ],
             },
           },
         },
@@ -107,7 +163,6 @@ export async function fetchTabelogInfo(
       return null;
     }
 
-    // URL 优先取 JSON 内 url 字段，否则回落到 citations 中第一个 tabelog.com 链接
     const rawUrl = typeof parsed.url === "string" ? (parsed.url as string).trim() : null;
     const urlFromJson = rawUrl && /tabelog\.com\//i.test(rawUrl) ? rawUrl : null;
     const url = urlFromJson ?? tabelogCitation;
@@ -129,22 +184,37 @@ export async function fetchTabelogInfo(
       typeof parsed.reviewCount === "number" && parsed.reviewCount >= 0
         ? Math.round(parsed.reviewCount)
         : null;
-    const priceRange =
-      typeof parsed.priceRange === "string" && parsed.priceRange.trim().length > 0
-        ? parsed.priceRange.trim().slice(0, 40)
-        : null;
-    const summary =
-      typeof parsed.summary === "string" && parsed.summary.trim().length > 0
-        ? parsed.summary.trim().slice(0, 120)
-        : null;
 
-    // 只要有 tabelog.com URL 就保留（前端可让用户点过去自己看），评分/摘要可缺。
-    if (rating == null && summary == null && reviewCount == null && priceRange == null) {
-      console.log(`[Tabelog] ${name}: url-only (no rating/summary/price) url=${url}`);
-    }
-    console.log(`[Tabelog] ${name}: ok rating=${rating} reviews=${reviewCount}`);
+    const dinnerBudget = cleanStr(parsed.dinnerBudget, 40);
+    const lunchBudget = cleanStr(parsed.lunchBudget, 40);
+    const priceRange = cleanStr(parsed.priceRange, 40) ?? dinnerBudget;
+    const summary = cleanStr(parsed.summary, 120);
+    const awards = cleanStr(parsed.awards, 40);
+    const recommendedScene = cleanStr(parsed.recommendedScene, 30);
+    const topDishes = cleanArr(parsed.topDishes, 4, 20);
+    const goodPoints = cleanArr(parsed.goodPoints, 3, 25);
+    const badPoints = cleanArr(parsed.badPoints, 3, 25);
+    const reviewQuotes = cleanArr(parsed.reviewQuotes, 2, 40);
 
-    const info: TabelogInfo = { rating, reviewCount, url, priceRange, summary };
+    console.log(
+      `[Tabelog] ${name}: ok rating=${rating} reviews=${reviewCount} dishes=${topDishes.length} good=${goodPoints.length} quotes=${reviewQuotes.length}`,
+    );
+
+    const info: TabelogInfo = {
+      rating,
+      reviewCount,
+      url,
+      priceRange,
+      dinnerBudget,
+      lunchBudget,
+      summary,
+      topDishes,
+      goodPoints,
+      badPoints,
+      reviewQuotes,
+      awards,
+      recommendedScene,
+    };
     cache.set(cacheKey, info);
     return info;
   } catch (e) {

@@ -264,14 +264,15 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
       </div>
 
       {r.tabelog && (
-        <div className="px-6 py-4 border-t border-border bg-accent/20">
-          <div className="flex items-center justify-between mb-2">
+        <div className="px-6 py-4 border-t border-border bg-accent/20 space-y-3">
+          <div className="flex items-center justify-between">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Tabelog 补充信号
             </h4>
             <span className="text-[10px] text-muted-foreground">食べログ</span>
           </div>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm mb-2">
+
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
             {r.tabelog.rating != null && (
               <div className="flex justify-between">
                 <span className="text-muted-foreground">评分</span>
@@ -281,18 +282,107 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
                 </span>
               </div>
             )}
-            {r.tabelog.priceRange && (
+            {r.tabelog.awards && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">荣誉</span>
+                <span className="font-medium">🏆 {r.tabelog.awards}</span>
+              </div>
+            )}
+            {r.tabelog.dinnerBudget && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">夜の予算</span>
+                <span className="font-medium">{r.tabelog.dinnerBudget}</span>
+              </div>
+            )}
+            {r.tabelog.lunchBudget && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">ランチ</span>
+                <span className="font-medium">{r.tabelog.lunchBudget}</span>
+              </div>
+            )}
+            {!r.tabelog.dinnerBudget && !r.tabelog.lunchBudget && r.tabelog.priceRange && (
               <div className="flex justify-between">
                 <span className="text-muted-foreground">价格带</span>
                 <span className="font-medium">{r.tabelog.priceRange}</span>
               </div>
             )}
+            {r.tabelog.recommendedScene && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">适合场景</span>
+                <span className="font-medium">{r.tabelog.recommendedScene}</span>
+              </div>
+            )}
           </div>
+
+          {r.tabelog.topDishes.length > 0 && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">招牌菜</div>
+              <div className="flex flex-wrap gap-1.5">
+                {r.tabelog.topDishes.map((d, i) => (
+                  <span
+                    key={i}
+                    className="px-2 py-0.5 text-xs rounded-full bg-card border border-border"
+                  >
+                    {d}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {r.tabelog.summary && (
-            <p className="text-sm leading-relaxed text-muted-foreground mb-2">
+            <p className="text-sm leading-relaxed text-muted-foreground">
               "{r.tabelog.summary}"
             </p>
           )}
+
+          {(r.tabelog.goodPoints.length > 0 || r.tabelog.badPoints.length > 0) && (
+            <div className="grid sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+              {r.tabelog.goodPoints.length > 0 && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">好评亮点</div>
+                  <ul className="space-y-0.5">
+                    {r.tabelog.goodPoints.map((p, i) => (
+                      <li key={i}>
+                        <span className="text-success mr-1">+</span>
+                        {p}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {r.tabelog.badPoints.length > 0 && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">差评提醒</div>
+                  <ul className="space-y-0.5">
+                    {r.tabelog.badPoints.map((p, i) => (
+                      <li key={i}>
+                        <span className="text-destructive mr-1">−</span>
+                        {p}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {r.tabelog.reviewQuotes.length > 0 && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">食客原话</div>
+              <ul className="space-y-1">
+                {r.tabelog.reviewQuotes.map((q, i) => (
+                  <li
+                    key={i}
+                    className="text-sm italic text-muted-foreground border-l-2 border-border pl-2"
+                  >
+                    "{q}"
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {r.tabelog.url && (
             <a
               href={r.tabelog.url}
