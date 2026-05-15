@@ -1004,6 +1004,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);
 
             const review = reviewById.get(p.placeId) ?? null;
+            const tabelogInfo = tabelogById.get(p.placeId) ?? null;
             const restaurant = {
               id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
               name: p.name,
@@ -1018,7 +1019,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null,
-              ratings: candidateRatings(p, review),
+              ratings: candidateRatings(p, review, tabelogInfo),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
@@ -1026,6 +1027,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               cons: pick.cons,
               links: buildLinks(p, data.city),
               photoUrls: [] as string[],
+              tabelog: tabelogInfo,
             };
             placeByRestaurantId.set(restaurant.id, p);
             return { bucket, restaurant };
