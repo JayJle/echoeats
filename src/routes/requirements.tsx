@@ -126,7 +126,7 @@ function StepRequirements() {
             >
               {stage === "searching" ? "搜索中…" : "⚡ 快速搜索"}
             </Button>
-            <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="relative w-full sm:w-auto">
               <Button
                 type="submit"
                 disabled={loading || !value.trim()}
