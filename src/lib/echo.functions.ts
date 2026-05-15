@@ -2,6 +2,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
+import {
+  getCachedReview,
+  putCachedReview,
+  getCachedTabelog,
+  putCachedTabelog,
+} from "./review-cache.server";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp", "大众点评", "美团"];
 
@@ -922,7 +928,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }));
 
     const gateway = createLovableAiGatewayProvider(aiKey);
-    const model = gateway("google/gemini-3-flash-preview");
+    const model = gateway("google/gemini-2.5-pro");
 
     const hardFiltersList = data.hardFilters;
     const hardFiltersJson = JSON.stringify(hardFiltersList);
