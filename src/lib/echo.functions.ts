@@ -2,6 +2,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
+import {
+  getCachedReview,
+  putCachedReview,
+  getCachedTabelog,
+  putCachedTabelog,
+} from "./review-cache.server";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp", "大众点评", "美团"];
 
@@ -784,28 +790,51 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         }
       }
       if (pplxKey) {
-        const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
+        // 先批量查缓存
+        const topCandidates: PlaceCandidate[] = [];
         for (const r of placeResults) {
           const top = [...r.places]
             .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
             .slice(0, 10);
-          for (const p of top) {
-            tasks.push(
-              fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
-                id: p.placeId,
-                summary: s,
-              })),
-            );
-          }
+          topCandidates.push(...top);
         }
-        const settled = await Promise.allSettled(tasks);
-        for (const s of settled) {
-          if (s.status === "fulfilled" && s.value.summary) {
-            const existing = reviewById.get(s.value.id);
-            reviewById.set(
-              s.value.id,
-              existing ? mergeReviewSummaries(existing, s.value.summary) : s.value.summary,
-            );
+        let cacheHits = 0;
+        const toFetch: PlaceCandidate[] = [];
+        await Promise.all(
+          topCandidates.map(async (p) => {
+            const cached = await getCachedReview<ReviewSummary>(p.placeId);
+            if (cached) {
+              cacheHits++;
+              const existing = reviewById.get(p.placeId);
+              reviewById.set(
+                p.placeId,
+                existing ? mergeReviewSummaries(existing, cached) : cached,
+              );
+            } else {
+              toFetch.push(p);
+            }
+          }),
+        );
+        console.log(`[Cache] review hit ${cacheHits}/${topCandidates.length}`);
+
+        if (toFetch.length) {
+          const tasks = toFetch.map((p) =>
+            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
+              id: p.placeId,
+              summary: s,
+            })),
+          );
+          const settled = await Promise.allSettled(tasks);
+          for (const s of settled) {
+            if (s.status === "fulfilled" && s.value.summary) {
+              const existing = reviewById.get(s.value.id);
+              reviewById.set(
+                s.value.id,
+                existing ? mergeReviewSummaries(existing, s.value.summary) : s.value.summary,
+              );
+              // 写入缓存（异步触发，不阻塞）
+              void putCachedReview(s.value.id, data.city, s.value.summary);
+            }
           }
         }
       }
@@ -819,23 +848,42 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
       }
+      // 先批量查缓存
+      let tabelogCacheHits = 0;
+      const toFetchTabelog: PlaceCandidate[] = [];
+      await Promise.all(
+        allTargets.map(async (p) => {
+          const cached = await getCachedTabelog(p.placeId);
+          if (cached) {
+            tabelogCacheHits++;
+            tabelogById.set(p.placeId, cached);
+          } else {
+            toFetchTabelog.push(p);
+          }
+        }),
+      );
+      console.log(`[Cache] tabelog hit ${tabelogCacheHits}/${allTargets.length}`);
+
       const CONCURRENCY = 8;
       let cursor = 0;
       const runWorker = async () => {
         while (true) {
           const i = cursor++;
-          if (i >= allTargets.length) return;
-          const p = allTargets[i];
+          if (i >= toFetchTabelog.length) return;
+          const p = toFetchTabelog[i];
           try {
             const info = await fetchTabelogInfo(p.name, p.address, data.city);
-            if (info) tabelogById.set(p.placeId, info);
+            if (info) {
+              tabelogById.set(p.placeId, info);
+              void putCachedTabelog(p.placeId, info);
+            }
           } catch (e) {
             console.warn(`[Tabelog] ${p.name} task error:`, e instanceof Error ? e.message : e);
           }
         }
       };
       await Promise.all(
-        Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+        Array.from({ length: Math.min(CONCURRENCY, toFetchTabelog.length) }, runWorker),
       );
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
@@ -880,7 +928,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }));
 
     const gateway = createLovableAiGatewayProvider(aiKey);
-    const model = gateway("google/gemini-3-flash-preview");
+    const model = gateway("google/gemini-2.5-pro");
 
     const hardFiltersList = data.hardFilters;
     const hardFiltersJson = JSON.stringify(hardFiltersList);

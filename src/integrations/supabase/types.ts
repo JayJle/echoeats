@@ -14,6 +14,27 @@ export type Database = {
   }
   public: {
     Tables: {
+      review_cache: {
+        Row: {
+          city: string
+          fetched_at: string
+          payload: Json
+          place_id: string
+        }
+        Insert: {
+          city: string
+          fetched_at?: string
+          payload: Json
+          place_id: string
+        }
+        Update: {
+          city?: string
+          fetched_at?: string
+          payload?: Json
+          place_id?: string
+        }
+        Relationships: []
+      }
       search_feedback: {
         Row: {
           chosen_external_name: string | null
@@ -82,6 +103,24 @@ export type Database = {
           id?: string
           parsed_json?: Json | null
           results_snapshot?: Json | null
+        }
+        Relationships: []
+      }
+      tabelog_cache: {
+        Row: {
+          fetched_at: string
+          payload: Json
+          place_id: string
+        }
+        Insert: {
+          fetched_at?: string
+          payload: Json
+          place_id: string
+        }
+        Update: {
+          fetched_at?: string
+          payload?: Json
+          place_id?: string
         }
         Relationships: []
       }
