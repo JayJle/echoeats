@@ -15,6 +15,7 @@ export type PlaceCandidate = {
   editorialSummary: string | null;
   location: { lat: number; lng: number } | null;
   reviews: { text: string; rating: number | null; authorName: string | null }[];
+  photoNames: string[];
 };
 
 const FIELD_MASK = [
@@ -31,6 +32,7 @@ const FIELD_MASK = [
   "places.editorialSummary",
   "places.location",
   "places.reviews",
+  "places.photos",
 ].join(",");
 
 export function guessLanguageCode(city: string): string {
