@@ -186,8 +186,11 @@ function ResultsPage() {
 
       {refining && (
         <div className="fixed inset-0 z-50 bg-background/70 backdrop-blur-sm flex items-center justify-center">
-          <div className="bg-card border border-border rounded-2xl px-6 py-5 shadow-lg text-sm">
-            AI 正在重新搜索餐厅…
+          <div className="bg-card border border-border rounded-2xl px-6 py-5 shadow-lg text-sm flex flex-col items-center gap-3">
+            <p>AI 正在重新搜索餐厅…</p>
+            <Button type="button" variant="ghost" size="sm" onClick={cancelRefine}>
+              取消搜索
+            </Button>
           </div>
         </div>
       )}
