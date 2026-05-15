@@ -116,7 +116,7 @@ function StepRequirements() {
                 ? "AI 正在理解需求…"
                 : stage === "searching"
                   ? "AI 正在搜索餐厅…"
-                  : "AI 帮我找餐厅 →"}
+                  : "AI 深度搜索 →"}
             </Button>
           </div>
         </div>
