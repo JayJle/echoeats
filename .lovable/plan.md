@@ -1,88 +1,48 @@
-## 目标
+# 三步流程改造 + 编辑需求统一 + 结果页重新开始
 
-冷门城市（函馆、轻井泽、由布院、清迈、釜山郊区、佛罗伦萨…）当前因为白名单正则覆盖不到，被错误路由（例如"函馆"被当成中国城市走大众点评分支）。
+## 1. 改为三步输入流程
 
-让 AI 在 parse 阶段就输出 `country`（ISO 3166-1 alpha-2），下游所有"该走哪个数据源 / 用什么语言 / 要不要查 Tabelog"的判断改用这个字段，丢弃白名单正则。
+当前是两步（city → cuisines+freeText 合并），要拆成三步。
 
-## 改动清单（4 个文件）
+**Step 1 — `src/routes/index.tsx`（地点）**
+- 进度条 `total={3}`，"下一步 →" 跳转 `/cuisines`，逻辑不变。
 
-### 1. `src/lib/echo.functions.ts` — parseRequirements 输出 country
+**Step 2 — `src/routes/cuisines.tsx`（料理类型）**
+- 进度条改为 `step=2 total=3`，标题"想吃什么料理？"。
+- 删除"补充需求"Textarea 与所有 `desc` / `freeText` / `parseFn` / `searchFn` 相关代码。
+- 删除提交时的 AI 调用，仅保存 cuisines 后跳转 `/requirements`。
+- 按钮文案：`下一步 →`。
 
-**ParsedSchema 增加字段**：
-```ts
-country: z.string().length(2).default("")  // ISO 3166-1 alpha-2，如 "JP" / "CN" / "KR" / "US"
-language: z.string().default("")           // BCP 47，如 "ja" / "zh-CN" / "ko" / "en"
-```
+**Step 3 — 复用并改写 `src/routes/requirements.tsx`（补充需求，可跳过）**
+- 进度条 `step=3 total=3`，标题"还有什么要求？随便写"，提示"可跳过，先看结果再补充"。
+- guard 改成 `if (!city || cuisines.length === 0) navigate("/")`（当前是 `!date`，已无意义）。
+- 输入框初始值 = store 里的 `freeText`（实现编辑回填）。
+- 提交按钮：`AI 帮我找餐厅 →`；额外加一个 `跳过 →` 链接/次按钮，行为 = 把 freeText 设为空字符串后同样触发 parse + search。
+- 提交逻辑：`parseRequirements({ city, cuisines, date: "", freeText })` → `searchRestaurants(parsed)` → `setResults` → 跳转 `/results`（参考 `cuisines.tsx` 现有 onSubmit 的两阶段 stage 文案）。
+- 返回链接指向 `/cuisines`。
 
-**Prompt 末尾新增章节**：
-> ## 国家/语言识别
-> - country：根据 city 推断 ISO 3166-1 alpha-2 国家码。包括非著名城市：函馆/小樽/旭川/轻井泽 → JP；清迈 → TH；佛罗伦萨/米兰 → IT 等。识别不出留 ""。
-> - language：该城市本地主要语言的 BCP 47 代码（JP→ja, CN/HK/TW→zh-CN/zh-HK/zh-TW, KR→ko, 否则按国家映射，识别不出留 ""）。
+**清理**
+- 删除 `src/routes/when.tsx`、`src/routes/confirm.tsx`（流程中已不再使用）。routeTree 自动重生成。
 
-**兜底分支**（catch 里）也带上 `country: ""`, `language: ""`，下游处理空值。
+## 2. 编辑需求统一入口
 
-### 2. `src/lib/echo.functions.ts` — searchRestaurants 改用 parsed.country
+**`src/routes/results.tsx`**
+- header 中的"编辑需求"按钮：`<Link to="/confirm">` → `<Link to="/requirements">`。点进去 Textarea 自动显示当前 `freeText`（由 step 3 的初始值逻辑保证）。
+- 删除整段"➕ 继续补充条件，重新筛选"折叠面板（lines 196–233）以及对应 state：`refineOpen`、`extra`、`applyExtraConditions`。
+- 保留 `runSearchAgain`（"↻ 再次搜索"按钮）和 loading overlay。
+- "没有可展示的餐厅"空态里的 `<Link to="/confirm">` 改为 `/requirements`。
 
-**目前**：
-```ts
-const useDianping = isMainlandChinaCity(data.city);                  // 行 617
-const language = guessLanguageCode(data.city);                       // 行 688
-const region = guessRegionCode(data.city);                           // 行 689
-if (!useDianping && pplxKey && guessRegionCode(data.city) === "JP")  // 行 798
-```
+## 3. 结果页"重新开始"按钮
 
-**改为**（基于 parsed 数据，正则只作 fallback）：
-```ts
-const country = parsed.country || guessRegionCode(data.city) || "";
-const language = parsed.language || guessLanguageCode(data.city);
-const useDianping = country === "CN" || country === "HK" || country === "MO";
-const region = country || undefined;
-if (!useDianping && pplxKey && country === "JP") { /* Tabelog 补充 */ }
-```
-
-`buildLinks` 里的 `isChineseCity` / `isJapaneseCity` 调用同样改为接收 country 参数。
-
-### 3. `searchRestaurants` 接收 country/language
-
-`SearchInput` schema 增加可选 `country`、`language` 字段，前端调 `searchRestaurants` 时把 `parsed.country` / `parsed.language` 一并传入。这样 country 不需要在 server 里二次推断。
-
-### 4. `src/routes/cuisines.tsx` 与 `src/routes/results.tsx` 传递 country
-
-`cuisines.tsx` 调 `searchFn` 时：
-```ts
-await searchFn({ data: { city, cuisines, freeText, country: parsed.country, language: parsed.language } })
-```
-
-`results.tsx` 的"再次搜索"和"应用补充条件"两处同样传递。
-
-## 不动的部分
-
-- `dianping.server.ts` / `google-places.server.ts` / `tabelog.server.ts` 内部逻辑全部不动。
-- `isMainlandChinaCity` / `guessRegionCode` / `guessLanguageCode` **保留**作为 AI 失败时的 fallback，不删除。
-- 评论摘要、Tabelog 抓取、价格筛选、AI 评估 prompt 全部不动。
-- `useQueryStore` 不增字段（country/language 只在内存里流转，不持久化到 sessionStorage）。
-
-## 数据流
-
-```text
-/cuisines  →  parseRequirements → parsed { country: "JP", language: "ja", ... }
-                                     ↓
-                              searchRestaurants({ ...parsed })
-                                     ↓
-              country=="CN/HK/MO"?  → 大众点评分支
-              country=="JP"?         → Google Places + Tabelog 补充
-              其它                   → Google Places 纯 Google 分支
-```
+**`src/routes/results.tsx`**
+- header 右侧再加一个按钮 `重新开始`（variant outline，size sm），onClick：`useQueryStore.getState().reset(); navigate({ to: "/" })`。
+- 底部已有"重新搜索"按钮逻辑相同，可保留或删除——计划：保留底部那个，header 新增的与它行为一致便于用户随时清空回到 step 1。
 
 ## 验证
-
-1. 输入"函馆 寿司"→ parse 应返回 `country:"JP"`、`language:"ja"` → 走 Google Places + Tabelog → 出店、链接含 Tabelog 跳转。
-2. 输入"轻井泽 法餐"→ 同上走 JP 分支。
-3. 输入"清迈 泰餐"→ `country:"TH"` → 走纯 Google 分支，不触发 Tabelog/大众点评。
-4. 输入"上海 本帮菜"→ `country:"CN"` → 仍然走大众点评分支（与现状一致）。
-5. AI parse 失败时（罕见）→ fallback 到正则，行为与今天一致，不崩。
+- 走通 `/ → /cuisines → /requirements →（提交或跳过）→ /results`。
+- 在 results 点"编辑需求"返回 `/requirements`，文本框预填上次的 freeText，可修改后重搜。
+- 在 results 点"重新开始"，回到 `/`，输入框为空，store 清空。
 
 ## 风险
-
-- 模型偶发把 city 国家判错（如把 "Springfield" 判成 US 但其实在 UK）。fallback 正则不覆盖时仍可能走错，但这种边缘情况比现在好得多（现在是大量城市都走错）。
-- AI parse 多输出 2 个字段，token 消耗忽略不计。
+- 删除 `confirm.tsx`/`when.tsx` 后若有外部书签会 404，可接受（内部流程未引用）。
+- 第 3 步跳过时 freeText 为空字符串，AI 解析仍会基于 city + cuisines 出基础结果，已是当前行为。

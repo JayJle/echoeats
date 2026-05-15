@@ -40,7 +40,7 @@ function StepCity() {
   return (
     <StepShell
       step={1}
-      total={2}
+      total={3}
       title="你想在哪个城市找餐厅？"
       hint="例如：Tokyo / 东京、Shanghai / 上海、Paris"
     >
