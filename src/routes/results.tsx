@@ -133,6 +133,19 @@ function ResultsPage() {
           </div>
         )}
 
+        {!isEmpty && (
+          <FeedbackPanel
+            city={parsed.city}
+            cuisines={parsed.cuisines}
+            parsed={parsed}
+            restaurants={results.groups.flatMap((g) => [
+              ...g.restaurants,
+              ...(g.partialRestaurants ?? []),
+            ])}
+            resultsSnapshot={results}
+          />
+        )}
+
         <div className="mt-12 flex justify-center">
           <Button asChild variant="outline">
             <Link
