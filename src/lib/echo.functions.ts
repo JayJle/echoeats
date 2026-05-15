@@ -243,6 +243,19 @@ async function fetchReviewSummary(
     const json = await res.json();
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return null;
+
+    // 反幻觉：Perplexity 必须返回 citations，否则视为模型在凭空编造，整条丢弃
+    const rawCitations: unknown = json?.citations ?? json?.search_results ?? [];
+    const citationUrls: string[] = Array.isArray(rawCitations)
+      ? (rawCitations as unknown[])
+          .map((c) => (typeof c === "string" ? c : (c as { url?: string })?.url))
+          .filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
+      : [];
+    if (citationUrls.length === 0) {
+      console.warn(`[Perplexity] ${name}: no citations → discard (likely hallucinated)`);
+      return null;
+    }
+
     const parsed = JSON.parse(content);
     const rawRating = parsed.dianpingRating;
     const rating =
@@ -272,7 +285,8 @@ async function fetchReviewSummary(
       reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
       commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
       sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
-      sourceCount: Number(parsed.sourceCount) || 0,
+      // 用真实 citation 数覆盖模型自报的 sourceCount，杜绝虚高
+      sourceCount: citationUrls.length,
       sources: Array.isArray(parsed.sources)
         ? Array.from(
             new Set(
