@@ -15,6 +15,7 @@ export type PlaceCandidate = {
   editorialSummary: string | null;
   location: { lat: number; lng: number } | null;
   reviews: { text: string; rating: number | null; authorName: string | null }[];
+  photoNames: string[];
 };
 
 const FIELD_MASK = [
@@ -31,6 +32,7 @@ const FIELD_MASK = [
   "places.editorialSummary",
   "places.location",
   "places.reviews",
+  "places.photos",
 ].join(",");
 
 export function guessLanguageCode(city: string): string {
@@ -103,6 +105,7 @@ export async function searchPlaces(opts: {
         rating?: number;
         authorAttribution?: { displayName?: string };
       }>;
+      photos?: Array<{ name?: string }>;
     }>;
   };
 
@@ -136,5 +139,41 @@ export async function searchPlaces(opts: {
       })
       .filter((r) => r.text.length >= 5)
       .slice(0, 5),
+    photoNames: (p.photos ?? [])
+      .map((ph) => ph.name)
+      .filter((n): n is string => typeof n === "string" && n.length > 0)
+      .slice(0, 3),
   })).filter((p) => p.placeId && p.name);
 }
+
+// Resolves a Google Places photo `name` to a publicly fetchable image URL.
+// Uses skipHttpRedirect to get the actual googleusercontent URL (cacheable, no API key needed by client).
+const photoUrlCache = new Map<string, string | null>();
+
+export async function resolvePhotoUrl(
+  photoName: string,
+  maxWidthPx = 800,
+): Promise<string | null> {
+  const cacheKey = `${photoName}|${maxWidthPx}`;
+  if (photoUrlCache.has(cacheKey)) return photoUrlCache.get(cacheKey)!;
+
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const url = `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidthPx}&skipHttpRedirect=true&key=${apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      photoUrlCache.set(cacheKey, null);
+      return null;
+    }
+    const json = (await res.json()) as { photoUri?: string };
+    const photoUri = json.photoUri ?? null;
+    photoUrlCache.set(cacheKey, photoUri);
+    return photoUri;
+  } catch {
+    photoUrlCache.set(cacheKey, null);
+    return null;
+  }
+}
+

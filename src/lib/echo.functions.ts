@@ -110,6 +110,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 import {
   guessLanguageCode,
   guessRegionCode,
+  resolvePhotoUrl,
   searchPlaces,
   type PlaceCandidate,
 } from "./google-places.server";
@@ -406,6 +407,7 @@ const RestaurantSchema = z.object({
   pros: z.array(z.string()),
   cons: z.array(z.string()),
   links: z.array(z.object({ label: z.string(), url: z.string() })),
+  photoUrl: z.string().nullable(),
 });
 
 const ResultsSchema = z.object({
@@ -899,6 +901,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       for (const p of r.places) placeById.set(p.placeId, { cuisine: r.cuisine, place: p });
     }
 
+    const placeByRestaurantId = new Map<string, PlaceCandidate>();
     const groups = data.cuisines
       .map((cuisine) => {
         const aiGroup =
@@ -972,7 +975,9 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               pros: pick.pros,
               cons: pick.cons,
               links: buildLinks(p, data.city),
+              photoUrl: null as string | null,
             };
+            placeByRestaurantId.set(restaurant.id, p);
             return { bucket, restaurant };
           })
           .filter((r): r is NonNullable<typeof r> => Boolean(r));
@@ -1006,6 +1011,21 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         suggestions: FALLBACK_SUGGESTIONS,
       };
     }
+
+    // Resolve Google photo URLs for displayed restaurants in parallel
+    const allRestaurants = groups.flatMap((g) => [
+      ...g.restaurants,
+      ...(g.partialRestaurants ?? []),
+    ]);
+    await Promise.all(
+      allRestaurants.map(async (r) => {
+        const p = placeByRestaurantId.get(r.id);
+        const name = p?.photoNames?.[0];
+        if (!name) return;
+        const url = await resolvePhotoUrl(name, 800);
+        if (url) r.photoUrl = url;
+      }),
+    );
 
     const missing = data.cuisines.filter(
       (c) => !groups.some((g) => g.cuisine.toLowerCase() === c.toLowerCase()),

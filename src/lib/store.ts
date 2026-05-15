@@ -32,6 +32,7 @@ export type Restaurant = {
   pros: string[];
   cons: string[];
   links: { label: string; url: string }[];
+  photoUrl: string | null;
 };
 
 export type ResultsGroup = { cuisine: string; restaurants: Restaurant[]; partialRestaurants?: Restaurant[] };

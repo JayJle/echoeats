@@ -201,14 +201,30 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
       </div>
 
       <div className="px-6 pb-2">
-        <a
-          href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(displayName + " " + (r.address || ""))}`}
-          target="_blank"
-          rel="noreferrer"
-          className="block aspect-[16/9] rounded-lg bg-gradient-to-br from-accent to-secondary flex items-center justify-center text-xs text-muted-foreground hover:opacity-80 transition"
-        >
-          🔍 在 Google 图片中查看「{displayName}」
-        </a>
+        {r.photoUrl ? (
+          <a
+            href={r.googleMapsUri}
+            target="_blank"
+            rel="noreferrer"
+            className="block aspect-[16/9] rounded-lg overflow-hidden bg-muted"
+          >
+            <img
+              src={r.photoUrl}
+              alt={displayName}
+              loading="lazy"
+              className="w-full h-full object-cover hover:scale-105 transition-transform duration-500"
+            />
+          </a>
+        ) : (
+          <a
+            href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(displayName + " " + (r.address || ""))}`}
+            target="_blank"
+            rel="noreferrer"
+            className="block aspect-[16/9] rounded-lg bg-gradient-to-br from-accent to-secondary flex items-center justify-center text-xs text-muted-foreground hover:opacity-80 transition"
+          >
+            🔍 在 Google 图片中查看「{displayName}」
+          </a>
+        )}
       </div>
 
       <div className="px-6 py-4 border-t border-border">
