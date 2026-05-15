@@ -99,19 +99,20 @@ function StepRequirements() {
             {error}
           </div>
         )}
-        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:flex-wrap">
           <Link
             to="/cuisines"
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors order-last sm:order-first text-center sm:text-left"
           >
             ← 返回
           </Link>
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-3 sm:flex-wrap">
             <Button
               type="button"
               variant="ghost"
               onClick={onSkip}
               disabled={loading}
+              className="w-full sm:w-auto"
             >
               跳过 →
             </Button>
@@ -121,36 +122,44 @@ function StepRequirements() {
               size="lg"
               disabled={loading || !value.trim()}
               onClick={() => void runSearch(value, "quick")}
+              className="w-full sm:w-auto"
             >
               {stage === "searching" ? "搜索中…" : "⚡ 快速搜索"}
             </Button>
-            <Button type="submit" disabled={loading || !value.trim()} size="lg">
-              {stage === "parsing"
-                ? "AI 正在理解需求…"
-                : stage === "searching"
-                  ? "AI 深度搜索中…"
-                  : "AI 深度搜索 →"}
-            </Button>
-            <Popover>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  aria-label="深度搜索说明"
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <HelpCircle className="w-4 h-4" />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent className="w-72 text-sm leading-relaxed" align="end">
-                <p className="font-medium mb-2">两种搜索模式</p>
-                <p className="mb-1">
-                  <span className="font-medium">⚡ 快速搜索</span>：只取主流地图候选 + AI 排序，几秒出结果。
-                </p>
-                <p>
-                  <span className="font-medium">AI 深度搜索</span>：根据所在地区综合多个本地点评/美食平台，抓真实网友口碑、价位等信号再交给 AI 综合判断，更准但更慢。
-                </p>
-              </PopoverContent>
-            </Popover>
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <Button
+                type="submit"
+                disabled={loading || !value.trim()}
+                size="lg"
+                className="flex-1 sm:flex-none"
+              >
+                {stage === "parsing"
+                  ? "AI 正在理解需求…"
+                  : stage === "searching"
+                    ? "AI 深度搜索中…"
+                    : "AI 深度搜索 →"}
+              </Button>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="深度搜索说明"
+                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <HelpCircle className="w-4 h-4" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-72 text-sm leading-relaxed" align="end">
+                  <p className="font-medium mb-2">两种搜索模式</p>
+                  <p className="mb-1">
+                    <span className="font-medium">⚡ 快速搜索</span>：只取主流地图候选 + AI 排序，几秒出结果。
+                  </p>
+                  <p>
+                    <span className="font-medium">AI 深度搜索</span>：根据所在地区综合多个本地点评/美食平台，抓真实网友口碑、价位等信号再交给 AI 综合判断，更准但更慢。
+                  </p>
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
         </div>
       </form>
