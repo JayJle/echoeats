@@ -131,7 +131,7 @@ function StepRequirements() {
                 type="submit"
                 disabled={loading || !value.trim()}
                 size="lg"
-                className="flex-1 sm:flex-none"
+                className="w-full sm:w-auto"
               >
                 {stage === "parsing" ? (
                   "AI 正在理解需求…"
