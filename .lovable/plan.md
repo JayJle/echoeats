@@ -1,126 +1,121 @@
-## 问题诊断
+## 目标
 
-用户搜「猪肉饭」结果第一条是「鳗鱼饭」。根因有 4 个：
+日本店铺在保留 Google Places 评分/评价的基础上，**额外**抓取 Tabelog 的评分和一句话点评摘要，作为补充信号显示。两边评分**分开展示、互不覆盖**，AI 排序时也能同时看到两个信号。
 
-1. **查询词没本地化**：`searchPlaces` 用 `cuisine` 中文原文 + 城市拼接（"猪肉饭 Tokyo"），日语区 Google Places 在中文 query 下会做语义模糊匹配，把所有「丼物」一起召回，包含鳗鱼饭、牛丼。
-2. **没有同义词扩展**：「猪肉饭」在日本叫「豚丼 / 豚バラ丼」，在港台叫「叉烧饭 / 烧肉饭」，英文是「pork rice / pork bowl」。当前只做 1-2 个 query。
-3. **召回后无相关性过滤**：所有 `placeResults[].places` 不分料理对错，全量塞给 AI 排序 prompt。AI 看到 20 个候选，会按 rating 高低挑，鳗鱼饭店因为评分高就被选上。
-4. **AI prompt 没把"料理类型本身"列为 hardFilter**：`cuisine` 字段只是分组键，prompt 里没明确"店必须实际卖这个料理"。
+## 范围
 
-## 改动范围
-
-只改后端 3 个文件：`google-places.server.ts`、`echo.functions.ts`、`dianping.server.ts`（轻改）。前端 `results.tsx` 不动。
-
-## 1. 新增「料理本地化与同义词扩展」模块
-
-新增 `src/lib/cuisine-expand.server.ts`，导出：
-
-```ts
-expandCuisineQueries(cuisine: string, city: string, lang: string): {
-  primary: string;           // 最准确的本地化主词
-  synonyms: string[];        // 同义词（用于 query 扩展和召回过滤）
-  negativeKeywords: string[];// 排除关键词（如搜「猪肉饭」时，"鳗"、"牛"、"鸡"算反例）
-}
-```
-
-实现策略：用 `gemini-3-flash-preview` 做一次轻量 LLM 调用（缓存 in-memory by `${cuisine}|${lang}`），输出结构化 JSON，例如：
-
-```
-猪肉饭 + ja → { primary:"豚丼", synonyms:["豚バラ丼","焼豚丼","チャーシュー丼","pork rice bowl"], negativeKeywords:["鰻","うなぎ","牛丼","親子丼","海鮮丼"] }
-猪肉饭 + en → { primary:"pork rice bowl", synonyms:["char siu rice","pork donburi"], negativeKeywords:["eel","beef","chicken"] }
-寿司 + ja → { primary:"寿司", synonyms:["sushi","鮨"], negativeKeywords:[] }   // 通用词不需要 negative
-```
-
-成本：每个 cuisine 一次 ~200 token 调用，缓存命中后 0 成本。
-
-## 2. `searchPlaces` 多 query 召回
-
-`echo.functions.ts` 海外分支当前只用 `[cuisine + city, cuisine + city + suffix]` 两条 query。改为：
-
-```
-queries = [
-  `${primary} ${city}`,
-  ...synonyms.slice(0, 2).map(s => `${s} ${city}`),
-  `${primary} ${city} ${semanticSuffix}`,
-]
-```
-
-最多 4 条 query 并发，结果按 placeId 去重，与现状一致。
-
-## 3. 召回后做"料理相关性过滤"
-
-去重后的 `places` 数组在塞给 AI 排序前，先过一道关键词过滤：
-
-```
-function filterByCuisineRelevance(places, primary, synonyms, negativeKeywords) {
-  return places.filter(p => {
-    const haystack = `${p.name} ${p.primaryType ?? ""} ${p.editorialSummary ?? ""}`.toLowerCase();
-    const negHit = negativeKeywords.some(n => haystack.includes(n.toLowerCase()));
-    if (negHit) {
-      // 命中 negative 但同时命中 positive，仍保留（混合店）
-      const posHit = [primary, ...synonyms].some(k => haystack.includes(k.toLowerCase()));
-      if (!posHit) return false;
-    }
-    return true;
-  });
-}
-```
-
-关键点：
-- 仅过滤"明显反例"，不强求 positive hit（避免误杀只有店名没有类型描述的小店）。
-- 过滤后若候选数 < 3，回退到不过滤的全集（保留召回宽度，由 AI 再判）。
-- 只过滤 `primaryType + editorialSummary + name` 命中 negative 且无 positive 的，比较保守。
-
-## 4. AI 排序 prompt 加「料理保真」硬条件
-
-在 `searchRestaurants` handler 里，把「店实际卖 ${cuisine}」作为 **隐式硬条件第 0 条**注入 prompt（不写入 `data.hardFilters`，仅在 prompt 里说明），新增段落：
-
-```
-## 料理保真（最高优先级）
-本组的料理类型是「${cuisine}」（本地化主词：${primary}；同义词：${synonyms.join("、")}）。
-candidate.primaryType / editorialSummary / name 必须能合理对应这个料理，否则**不要放进 picks**（视为 fail，不进 partial）。
-明确属于其它料理（如本组要"猪肉饭"但候选是鳗鱼饭/牛丼/海鲜丼）→ 直接剔除，不解释。
-仅在候选模糊（如"日式定食店"且菜单不明）时允许保留并标 unknown。
-```
-
-注意：这条**不计入 `hardFilterChecks` 数组长度**，只在自然语言段落里强制。`hardFilterChecks` 仍严格 = `data.hardFilters.length`，不破坏现有合约。
-
-## 5. 国内分支同步加同义词
-
-`dianping.server.ts` 的 `searchDianpingCuisine` 里调 Perplexity 找候选时，prompt 把同义词列出，例如「请找上海的猪肉饭/烧肉饭/叉烧饭餐厅」，提升召回准确度。改动很小：在拼 user prompt 时插一行同义词 hint。
-
-## 6. （可选）UI 提示
-
-不改 UI；如需后续可在结果页显示 `parsed.cuisines[i] → 本地化为 "豚丼/pork rice"`，让用户感知本地化。本期先不做。
-
-## 技术细节
+只动后端 1 个新文件 + 2 处小改 + 前端 1 处展示块。不影响非日本地区。
 
 ```text
-用户 cuisine ─┐
-              ├─► expandCuisineQueries (LLM, 缓存)
-city/lang ────┘    │
-                   ▼
-        { primary, synonyms[], negativeKeywords[] }
-                   │
-                   ├─► searchPlaces(多 query 并发)
-                   │        ▼
-                   │   去重 places[]
-                   │        ▼
-                   └─► filterByCuisineRelevance
-                            ▼
-                   reviewById 合并 + AI 排序 prompt
-                   （prompt 内嵌料理保真硬条件）
+新增  src/lib/tabelog.server.ts        # 拉 Tabelog 评分 + 摘要
+改   src/lib/echo.functions.ts        # JP 分支并发拉 Tabelog，注入到 ratings + 新字段
+改   src/lib/store.ts                  # Restaurant 增加 tabelog 字段
+改   src/routes/results.tsx            # Ratings 区块按"来源分组"展示
 ```
 
-## 风险与回退
+## 1. Tabelog 抓取层（`src/lib/tabelog.server.ts`）
 
-- LLM 扩展失败 → fallback 到 `{ primary: cuisine, synonyms: [], negativeKeywords: [] }`，行为退化为现状。
-- 过滤后候选 < 3 → 自动回退到不过滤集合，不让用户看到空结果。
-- 缓存仅 in-memory，per-Worker；冷启动会多一次 LLM 调用，可接受。
+不直接爬 Tabelog（ToS 风险 + IP 封锁），用 **Perplexity sonar + `search_domain_filter:["tabelog.com"]`** 让 Perplexity 代为读取并返回结构化结果。
 
-## 预期效果
+接口：
 
-- 「猪肉饭 + Tokyo」→ 召回 query 变成 `豚丼 Tokyo`、`豚バラ丼 Tokyo`、`pork rice bowl Tokyo`，自然不会再大规模召回鳗鱼饭店。
-- 即使有少量鳗鱼饭混入，过滤层（negativeKeywords 命中"鰻"）会剔除它们。
-- AI 排序层兜底：即使前两层漏网，prompt 明确禁止把鳗鱼饭挑进猪肉饭分组。
-- 通用大类（寿司、拉面）negativeKeywords 为空，行为不变，无回归风险。
+```ts
+fetchTabelogInfo(name: string, address: string, city: string): Promise<TabelogInfo | null>
+
+type TabelogInfo = {
+  rating: string | null;        // 例 "3.62"，原样字符串
+  reviewCount: number | null;   // 例 412
+  url: string | null;           // tabelog 店铺页 URL
+  priceRange: string | null;    // 例 "￥6,000〜￥7,999"
+  summary: string | null;       // 1-2 句中文摘要，归纳 Tabelog 用户评价
+};
+```
+
+实现要点：
+- prompt 明确："只参考 tabelog.com 的页面，找到与「${name} / ${address}」最匹配的那一家"
+- `response_format: json_schema` 直接拿结构化 JSON，不解析自由文本
+- 失败/找不到 → 返回 `null`，不抛错（调用侧静默降级）
+- in-memory 缓存（key = `${name}|${address}`）避免同会话重复调用
+- 单次超时 12s，超时 → `null`
+
+## 2. 接入点（`echo.functions.ts`）
+
+仅在 `regionCode === "JP"` 分支启用。位置：在 `reviewById`（Perplexity 通用召回）构建完之后，AI 排序之前，并发批量拉 Tabelog：
+
+```ts
+if (regionCode === "JP") {
+  const top = topCandidatesByPlaceId; // AI 排序前的候选并集，取每 cuisine 前 ~8 家
+  const tabelogById = new Map<string, TabelogInfo>();
+  await Promise.all(top.map(async (p) => {
+    const info = await fetchTabelogInfo(p.name, p.address, data.city);
+    if (info) tabelogById.set(p.placeId, info);
+  }));
+}
+```
+
+并发上限 ~8（与现状 Perplexity 召回保持一致），整体新增延迟 < 一次 Perplexity 调用。
+
+## 3. 数据结构改动
+
+**`Restaurant`（store.ts + RestaurantSchema）** 新增字段：
+
+```ts
+tabelog: {
+  rating: string | null;
+  reviewCount: number | null;
+  url: string | null;
+  summary: string | null;
+} | null;
+```
+
+**`ratings` 数组保持现有结构**，但 JP 分支组装时追加一条 `{ platform: "Tabelog", score: "3.62 (412)" }`，与 Google 评分并列。这样旧 UI 不改也能直接看到两个分数。
+
+## 4. AI 排序 prompt 增强（极小改动）
+
+在塞给排序 LLM 的 candidate 描述里加一行（仅当有 tabelog 数据）：
+
+```
+candidate.tabelog: rating=3.62, reviews=412, summary="..."
+```
+
+并在 prompt 注释里说明：「Google 和 Tabelog 评分体系不同（Tabelog 普遍偏低，3.5+ 已是优质），不要简单相加，而是作为两路独立信号交叉验证」。
+
+不改 `hardFilters` 合约，不影响其它逻辑。
+
+## 5. 前端展示（`results.tsx`）
+
+**Ratings 区块改成两栏**（仅在有 Tabelog 数据时分组）：
+
+```text
+┌─ Ratings ──────────────────────────────┐
+│  Google              4.3 ★ (1.2k)      │
+│  Google 评价摘要     "..."             │
+├────────────────────────────────────────┤
+│  Tabelog             3.62 ★ (412)      │
+│  Tabelog 摘要        "..."             │
+│  [在 Tabelog 查看 →]                   │
+└────────────────────────────────────────┘
+```
+
+实现：
+- 复用现有 `r.ratings.map(...)` 渲染分数
+- 在其下方新增条件块 `{r.tabelog && <TabelogCard … />}`，渲染摘要 + 跳转链接
+- 链接：`r.tabelog.url`（target="_blank"），无 URL 不显示按钮
+- 视觉上用一条 `border-t` 分隔，与 Google 信号清晰区分
+
+非日本店铺：`r.tabelog === null`，整块不渲染，UI 与现状完全一致。
+
+## 6. 风险与回退
+
+| 风险 | 处理 |
+|---|---|
+| Perplexity 找错店（同名重名） | prompt 强制带 address；返回的 url 必须含 `tabelog.com`，否则丢弃 |
+| Perplexity 编造分数 | 摘要里要求"如果未找到 Tabelog 页面则 rating 返回 null"；前端 null → 整块不渲染 |
+| 额外延迟 | Tabelog 拉取与 Google 评分排序**并行**，不阻塞主流程；单店超时 12s |
+| 成本 | JP 分支 cuisine × 候选数 ~24 次 Perplexity 调用/搜索，可接受；后续可加 KV 持久化缓存 |
+
+## 7. 后续可选（本期不做）
+
+- 把 Tabelog 摘要也喂给 `aiSummary` 合成（让最终总结引用两边评价）
+- 同模式扩展 Naver Place（韩国）/ OpenRice（港澳）
+- 持久化缓存到 D1/KV，跨 session 复用

@@ -249,6 +249,49 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
         </div>
       </div>
 
+      {r.tabelog && (
+        <div className="px-6 py-4 border-t border-border bg-accent/20">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Tabelog 补充信号
+            </h4>
+            <span className="text-[10px] text-muted-foreground">食べログ</span>
+          </div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm mb-2">
+            {r.tabelog.rating != null && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">评分</span>
+                <span className="font-medium">
+                  {r.tabelog.rating}
+                  {r.tabelog.reviewCount ? ` (${r.tabelog.reviewCount})` : ""}
+                </span>
+              </div>
+            )}
+            {r.tabelog.priceRange && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">价格带</span>
+                <span className="font-medium">{r.tabelog.priceRange}</span>
+              </div>
+            )}
+          </div>
+          {r.tabelog.summary && (
+            <p className="text-sm leading-relaxed text-muted-foreground mb-2">
+              "{r.tabelog.summary}"
+            </p>
+          )}
+          {r.tabelog.url && (
+            <a
+              href={r.tabelog.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-block text-xs text-primary hover:underline"
+            >
+              在 Tabelog 查看 →
+            </a>
+          )}
+        </div>
+      )}
+
       <div className="px-6 py-4 border-t border-border bg-muted/30">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
           AI 总结

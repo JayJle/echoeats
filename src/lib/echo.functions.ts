@@ -124,6 +124,7 @@ import {
   filterByCuisineRelevance,
   type CuisineExpansion,
 } from "./cuisine-expand.server";
+import { fetchTabelogInfo, type TabelogInfo } from "./tabelog.server";
 
 // Perplexity 真实网评摘要
 type ReviewSummary = {
@@ -408,6 +409,15 @@ const RestaurantSchema = z.object({
   cons: z.array(z.string()),
   links: z.array(z.object({ label: z.string(), url: z.string() })),
   photoUrls: z.array(z.string()),
+  tabelog: z
+    .object({
+      rating: z.string().nullable(),
+      reviewCount: z.number().nullable(),
+      url: z.string().nullable(),
+      priceRange: z.string().nullable(),
+      summary: z.string().nullable(),
+    })
+    .nullable(),
 });
 
 const ResultsSchema = z.object({
@@ -540,7 +550,11 @@ function formatPriceFromReview(review: ReviewSummary | null): string | null {
   return `${amount}${ctx}`;
 }
 
-function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
+function candidateRatings(
+  p: PlaceCandidate,
+  review: ReviewSummary | null,
+  tabelog: TabelogInfo | null,
+) {
   const score =
     p.rating != null
       ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
@@ -550,14 +564,16 @@ function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
       ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
       : null;
   const priceFromReview = formatPriceFromReview(review);
-  // 仅展示从网评直接抓到的人均；Google priceLevel ($/$$) 太粗，不展示以免误导。
   const priceScore = priceFromReview ?? null;
+  const tabelogScore =
+    tabelog?.rating != null
+      ? `${tabelog.rating} / 5${tabelog.reviewCount ? ` (${tabelog.reviewCount})` : ""}`
+      : null;
   return [
     { platform: "Google Maps", score },
+    { platform: "Tabelog", score: tabelogScore },
     { platform: "大众点评", score: dpScore },
     { platform: "人均价格", score: priceScore },
-    { platform: "Tabelog", score: null },
-    { platform: "Yelp", score: null },
   ];
 }
 
@@ -761,12 +777,38 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }
     }
 
+    // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要，作为 Google 之外的独立信号
+    const tabelogById = new Map<string, TabelogInfo>();
+    if (!useDianping && pplxKey && guessRegionCode(data.city) === "JP") {
+      const tasks: Array<Promise<{ id: string; info: TabelogInfo | null }>> = [];
+      for (const r of placeResults) {
+        const top = [...r.places]
+          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+          .slice(0, 8);
+        for (const p of top) {
+          tasks.push(
+            fetchTabelogInfo(p.name, p.address, data.city).then((info) => ({
+              id: p.placeId,
+              info,
+            })),
+          );
+        }
+      }
+      const settled = await Promise.allSettled(tasks);
+      for (const s of settled) {
+        if (s.status === "fulfilled" && s.value.info) {
+          tabelogById.set(s.value.id, s.value.info);
+        }
+      }
+    }
+
     const candidatesForPrompt = placeResults
       .filter((r) => r.places.length)
       .map((r) => ({
         cuisine: r.cuisine,
         candidates: r.places.map((p) => {
           const review = reviewById.get(p.placeId) ?? null;
+          const tabelog = tabelogById.get(p.placeId) ?? null;
           return {
             placeId: p.placeId,
             name: p.name,
@@ -786,6 +828,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             primaryType: p.primaryType,
             editorialSummary: p.editorialSummary,
             realWorldReviews: review,
+            tabelog: tabelog
+              ? {
+                  rating: tabelog.rating,
+                  reviewCount: tabelog.reviewCount,
+                  priceRange: tabelog.priceRange,
+                  summary: tabelog.summary,
+                }
+              : null,
           };
         }),
       }));
@@ -843,6 +893,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 - **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字、提炼具体菜名/服务点，但不得新增事实）。**如果 realWorldReviews 为 null，或 reviewHighlights 与 commonComplaints 都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据（rating、primaryType、editorialSummary、address），不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
 - **pros/cons 必须取真实素材**：当 reviewHighlights 非空时，pros 至少 2 条（不超过可用条数）来自 reviewHighlights 的真实文本浓缩；当 commonComplaints 非空时，cons 至少 1 条来自 commonComplaints（为空则 cons 留空，不要瞎编）。禁止"环境不错""值得一试"等空话。Google Reviews 来源的 highlights 是顾客原文整句，必须提炼成短句（如"出品稳定、服务热情"而不是照抄一整段）。
 - aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台。
+- **Tabelog 信号（仅日本店铺可能有）**：candidate.tabelog 是来自 Tabelog（食べログ）的独立信号，与 Google 体系不同——Tabelog 普遍偏低，3.5+ 已是优质店、3.7+ 顶级。**不要把 Tabelog 评分和 Google 评分相加平均**，而是作为两路独立信号交叉验证：两边都高 → 强信心；只有一边高 → 中等信心；两边都低 → 慎选。tabelog.summary 可作为 reviewHighlights/aiSummary 的补充素材（同样不得超出原文事实）。tabelog 为 null 时不影响判断，不要因此扣分。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
 - matchDetails: 3-6 条短描述，每条带 status (ok/warn)。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。**严格限定范围**：只能围绕用户实际提到的需求（hardFilters / softPreferences / negativeFilters / dishPreferences）来写。**绝对禁止**对用户没有提到的维度发出 warn 或提醒——例如用户没提预算/价格，就不准出现"价格偏高""人均较贵""超出预算"之类的条目；用户没提氛围，就不准提"氛围一般"；用户没提服务，就不准提"服务慢"。如果某维度用户没提，哪怕网评有相关吐槽，也只能放进 cons，不能进 matchDetails。
 
@@ -954,6 +1005,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);
 
             const review = reviewById.get(p.placeId) ?? null;
+            const tabelogInfo = tabelogById.get(p.placeId) ?? null;
             const restaurant = {
               id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
               name: p.name,
@@ -968,7 +1020,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null,
-              ratings: candidateRatings(p, review),
+              ratings: candidateRatings(p, review, tabelogInfo),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
@@ -976,6 +1028,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               cons: pick.cons,
               links: buildLinks(p, data.city),
               photoUrls: [] as string[],
+              tabelog: tabelogInfo,
             };
             placeByRestaurantId.set(restaurant.id, p);
             return { bucket, restaurant };
