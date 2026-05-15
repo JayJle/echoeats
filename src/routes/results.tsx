@@ -253,27 +253,35 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
           <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
             高频好评
           </h4>
-          <ul className="space-y-1 text-sm">
-            {r.pros.map((p, i) => (
-              <li key={i} className="text-foreground">
-                <span className="text-success mr-1">+</span>
-                {p}
-              </li>
-            ))}
-          </ul>
+          {r.pros.length > 0 ? (
+            <ul className="space-y-1 text-sm">
+              {r.pros.map((p, i) => (
+                <li key={i} className="text-foreground">
+                  <span className="text-success mr-1">+</span>
+                  {p}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground italic">暂无可信网评</p>
+          )}
         </div>
         <div>
           <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
             高频差评
           </h4>
-          <ul className="space-y-1 text-sm">
-            {r.cons.map((c, i) => (
-              <li key={i} className="text-foreground">
-                <span className="text-destructive mr-1">−</span>
-                {c}
-              </li>
-            ))}
-          </ul>
+          {r.cons.length > 0 ? (
+            <ul className="space-y-1 text-sm">
+              {r.cons.map((c, i) => (
+                <li key={i} className="text-foreground">
+                  <span className="text-destructive mr-1">−</span>
+                  {c}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground italic">暂无明显差评</p>
+          )}
         </div>
       </div>
 
