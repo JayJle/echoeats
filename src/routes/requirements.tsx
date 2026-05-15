@@ -131,6 +131,26 @@ function StepRequirements() {
                   ? "AI 深度搜索中…"
                   : "AI 深度搜索 →"}
             </Button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="深度搜索说明"
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-72 text-sm leading-relaxed" align="end">
+                <p className="font-medium mb-2">两种搜索模式</p>
+                <p className="mb-1">
+                  <span className="font-medium">⚡ 快速搜索</span>：只取主流地图候选 + AI 排序，几秒出结果。
+                </p>
+                <p>
+                  <span className="font-medium">AI 深度搜索</span>：根据所在地区综合多个本地点评/美食平台，抓真实网友口碑、价位等信号再交给 AI 综合判断，更准但更慢。
+                </p>
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
       </form>
