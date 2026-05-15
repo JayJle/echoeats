@@ -109,7 +109,7 @@ function StepRequirements() {
               size="lg"
               disabled={loading}
               onClick={() => void runSearch(value, "quick")}
-              className="w-full sm:w-auto"
+              className="flex-1 sm:w-auto sm:flex-none"
             >
               {stage === "searching" ? "搜索中…" : "⚡ 快速搜索"}
             </Button>
@@ -118,7 +118,7 @@ function StepRequirements() {
                 type="submit"
                 disabled={loading}
                 size="lg"
-                className="w-full sm:w-auto"
+                className="flex-1 sm:w-auto sm:flex-none"
               >
                 {stage === "parsing" ? (
                   "AI 正在理解需求…"
