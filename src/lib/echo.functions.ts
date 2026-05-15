@@ -808,6 +808,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         cuisine: r.cuisine,
         candidates: r.places.map((p) => {
           const review = reviewById.get(p.placeId) ?? null;
+          const tabelog = tabelogById.get(p.placeId) ?? null;
           return {
             placeId: p.placeId,
             name: p.name,
