@@ -407,7 +407,7 @@ const RestaurantSchema = z.object({
   pros: z.array(z.string()),
   cons: z.array(z.string()),
   links: z.array(z.object({ label: z.string(), url: z.string() })),
-  photoUrl: z.string().nullable(),
+  photoUrls: z.array(z.string()),
 });
 
 const ResultsSchema = z.object({
@@ -975,7 +975,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               pros: pick.pros,
               cons: pick.cons,
               links: buildLinks(p, data.city),
-              photoUrl: null as string | null,
+              photoUrls: [] as string[],
             };
             placeByRestaurantId.set(restaurant.id, p);
             return { bucket, restaurant };
@@ -1020,10 +1020,10 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
     await Promise.all(
       allRestaurants.map(async (r) => {
         const p = placeByRestaurantId.get(r.id);
-        const name = p?.photoNames?.[0];
-        if (!name) return;
-        const url = await resolvePhotoUrl(name, 800);
-        if (url) r.photoUrl = url;
+        const names = (p?.photoNames ?? []).slice(0, 6);
+        if (!names.length) return;
+        const urls = await Promise.all(names.map((n) => resolvePhotoUrl(n, 800)));
+        r.photoUrls = urls.filter((u): u is string => Boolean(u));
       }),
     );
 

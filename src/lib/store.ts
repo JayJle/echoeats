@@ -32,7 +32,7 @@ export type Restaurant = {
   pros: string[];
   cons: string[];
   links: { label: string; url: string }[];
-  photoUrl: string | null;
+  photoUrls: string[];
 };
 
 export type ResultsGroup = { cuisine: string; restaurants: Restaurant[]; partialRestaurants?: Restaurant[] };
