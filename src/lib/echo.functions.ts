@@ -784,7 +784,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       for (const r of placeResults) {
         const top = [...r.places]
           .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-          .slice(0, 8);
+          .slice(0, 15);
         for (const p of top) {
           tasks.push(
             fetchTabelogInfo(p.name, p.address, data.city).then((info) => ({
