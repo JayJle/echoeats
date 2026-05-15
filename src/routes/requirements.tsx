@@ -25,6 +25,7 @@ function StepRequirements() {
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
   const setResults = useQueryStore((s) => s.setResults);
+  const hasHydrated = useQueryStore((s) => s._hasHydrated);
 
   const [value, setValue] = useState(freeText);
   const [loading, setLoading] = useState(false);
@@ -35,8 +36,14 @@ function StepRequirements() {
   const searchFn = useServerFn(searchRestaurants);
 
   useEffect(() => {
-    if (!city || cuisines.length === 0) navigate({ to: "/" });
-  }, [city, cuisines, navigate]);
+    if (hasHydrated && (!city || cuisines.length === 0)) navigate({ to: "/" });
+  }, [hasHydrated, city, cuisines, navigate]);
+
+  // Sync local textarea with persisted freeText once store rehydrates
+  useEffect(() => {
+    if (hasHydrated && !value && freeText) setValue(freeText);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasHydrated]);
 
   const runSearch = async (text: string) => {
     setError(null);

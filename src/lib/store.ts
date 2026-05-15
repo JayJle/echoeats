@@ -57,12 +57,14 @@ type QueryState = {
   freeText: string;
   parsed: ParsedRequirements | null;
   results: SearchResults | null;
+  _hasHydrated: boolean;
   setCity: (v: string) => void;
   setCuisines: (v: string[]) => void;
   setDate: (v: string) => void;
   setFreeText: (v: string) => void;
   setParsed: (v: ParsedRequirements | null) => void;
   setResults: (v: SearchResults | null) => void;
+  setHasHydrated: (v: boolean) => void;
   reset: () => void;
 };
 
@@ -75,12 +77,14 @@ export const useQueryStore = create<QueryState>()(
       freeText: "",
       parsed: null,
       results: null,
+      _hasHydrated: false,
       setCity: (v) => set({ city: v }),
       setCuisines: (v) => set({ cuisines: v }),
       setDate: (v) => set({ date: v }),
       setFreeText: (v) => set({ freeText: v }),
       setParsed: (v) => set({ parsed: v }),
       setResults: (v) => set({ results: v }),
+      setHasHydrated: (v) => set({ _hasHydrated: v }),
       reset: () =>
         set({
           city: "",
@@ -96,6 +100,17 @@ export const useQueryStore = create<QueryState>()(
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),
       ),
+      partialize: (state) => ({
+        city: state.city,
+        cuisines: state.cuisines,
+        date: state.date,
+        freeText: state.freeText,
+        parsed: state.parsed,
+        results: state.results,
+      }),
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true);
+      },
     },
   ),
 );

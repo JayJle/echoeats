@@ -22,12 +22,21 @@ function StepCuisines() {
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
   const setCuisines = useQueryStore((s) => s.setCuisines);
+  const hasHydrated = useQueryStore((s) => s._hasHydrated);
 
   const [value, setValue] = useState(cuisines.join("，"));
 
   useEffect(() => {
-    if (!city) navigate({ to: "/" });
-  }, [city, navigate]);
+    if (hasHydrated && !city) navigate({ to: "/" });
+  }, [hasHydrated, city, navigate]);
+
+  // Sync local input with persisted cuisines once store rehydrates
+  useEffect(() => {
+    if (hasHydrated && !value && cuisines.length) {
+      setValue(cuisines.join("，"));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasHydrated]);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
