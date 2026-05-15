@@ -901,6 +901,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       for (const p of r.places) placeById.set(p.placeId, { cuisine: r.cuisine, place: p });
     }
 
+    const placeByRestaurantId = new Map<string, PlaceCandidate>();
     const groups = data.cuisines
       .map((cuisine) => {
         const aiGroup =
