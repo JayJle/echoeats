@@ -87,7 +87,7 @@ function StepCuisines() {
   };
 
   return (
-    <StepShell step={2} title="想吃什么？" hint="料理类型必填，补充需求可跳过">
+    <StepShell step={2} total={2} title="想吃什么？" hint="料理类型必填，补充需求可跳过">
       <form onSubmit={onSubmit} className="space-y-6">
         <div className="space-y-2">
           <label className="text-sm font-medium text-foreground">料理类型</label>
