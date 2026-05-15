@@ -1,48 +1,50 @@
-# 三步流程改造 + 编辑需求统一 + 结果页重新开始
 
-## 1. 改为三步输入流程
+# 搜索耗时优化方案（最小风险，不改功能）
 
-当前是两步（city → cuisines+freeText 合并），要拆成三步。
+## 优化项
 
-**Step 1 — `src/routes/index.tsx`（地点）**
-- 进度条 `total={3}`，"下一步 →" 跳转 `/cuisines`，逻辑不变。
+所有改动在 `src/lib/echo.functions.ts` + 新增内存缓存模块，不动前端、不动数据结构、不动 prompt 内容（只改候选数量与 token 上限）。
 
-**Step 2 — `src/routes/cuisines.tsx`（料理类型）**
-- 进度条改为 `step=2 total=3`，标题"想吃什么料理？"。
-- 删除"补充需求"Textarea 与所有 `desc` / `freeText` / `parseFn` / `searchFn` 相关代码。
-- 删除提交时的 AI 调用，仅保存 cuisines 后跳转 `/requirements`。
-- 按钮文案：`下一步 →`。
+### A. Tabelog 抓取缩到 Top 12（按 Google rating 排序）
+当前 JP 分支对所有候选（常 30–60 家）抓 Tabelog → 改为 Top 12。最终每组只展示 ≤15 家，长尾低分店即使有 Tabelog 也基本进不了 picks。
+**预计 JP 搜索快 30–50%。**
 
-**Step 3 — 复用并改写 `src/routes/requirements.tsx`（补充需求，可跳过）**
-- 进度条 `step=3 total=3`，标题"还有什么要求？随便写"，提示"可跳过，先看结果再补充"。
-- guard 改成 `if (!city || cuisines.length === 0) navigate("/")`（当前是 `!date`，已无意义）。
-- 输入框初始值 = store 里的 `freeText`（实现编辑回填）。
-- 提交按钮：`AI 帮我找餐厅 →`；额外加一个 `跳过 →` 链接/次按钮，行为 = 把 freeText 设为空字符串后同样触发 parse + search。
-- 提交逻辑：`parseRequirements({ city, cuisines, date: "", freeText })` → `searchRestaurants(parsed)` → `setResults` → 跳转 `/results`（参考 `cuisines.tsx` 现有 onSubmit 的两阶段 stage 文案）。
-- 返回链接指向 `/cuisines`。
+### B. Perplexity 网评 Top 10 → Top 6 + 评分门槛
+- 每组只对 Top 6 抓网评（原 Top 10）
+- 增加门槛：`rating >= 3.5 && userRatingCount >= 30` 才抓
+**预计海外搜索快 25–40%。**
+影响：被门槛过滤掉的店 pros/cons 留空、aiSummary 走"仅基于 Google 数据"分支（已是现有兜底）。
 
-**清理**
-- 删除 `src/routes/when.tsx`、`src/routes/confirm.tsx`（流程中已不再使用）。routeTree 自动重生成。
+### C. 砍掉第 3 条 Google Places 查询（`semanticSuffix`）
+保留主词 + 同义词×2，去掉 `おすすめ/推荐/best` 那条。每组省 1 次 HTTP（约 1–2s），召回率几乎不掉。
 
-## 2. 编辑需求统一入口
+### D. AI 排序 prompt 候选裁剪 + 输出 token 收紧
+- 喂给排序 prompt 的候选每组截断到 Top 25（按 rating 排序）
+- `maxOutputTokens` 10000 → 6000
+**预计 AI 排序快 20–35%。** 已有 fallback 解析兜底超长输出。
 
-**`src/routes/results.tsx`**
-- header 中的"编辑需求"按钮：`<Link to="/confirm">` → `<Link to="/requirements">`。点进去 Textarea 自动显示当前 `freeText`（由 step 3 的初始值逻辑保证）。
-- 删除整段"➕ 继续补充条件，重新筛选"折叠面板（lines 196–233）以及对应 state：`refineOpen`、`extra`、`applyExtraConditions`。
-- 保留 `runSearchAgain`（"↻ 再次搜索"按钮）和 loading overlay。
-- "没有可展示的餐厅"空态里的 `<Link to="/confirm">` 改为 `/requirements`。
+### E. cuisineExpansion 进程内缓存
+新增 `Map<string, CuisineExpansion>` 内存缓存（key = `cuisine|city|language`，TTL 1h）。重复搜索每料理省 1× Gemini 调用（约 1–2s）。
 
-## 3. 结果页"重新开始"按钮
+### F. Perplexity 单次超时 20s → 12s
+慢请求不再拖批尾。已有静默忽略兜底。
 
-**`src/routes/results.tsx`**
-- header 右侧再加一个按钮 `重新开始`（variant outline，size sm），onClick：`useQueryStore.getState().reset(); navigate({ to: "/" })`。
-- 底部已有"重新搜索"按钮逻辑相同，可保留或删除——计划：保留底部那个，header 新增的与它行为一致便于用户随时清空回到 step 1。
+## 不做的事
+
+- 不改前端、不合并 step
+- 不改 AI prompt 文本（仅候选数量 + token 上限）
+- 不改 schema、不动 Restaurant / Results 数据形状
+- 不引入新依赖
+- 不动 client/server 文件、不动 supabase/config.toml
+
+## 预期效果
+
+- 海外（JP）单料理：**40–55% 提速**（~60–90s → ~30–45s）
+- 海外多料理（3+）：**35–50% 提速**
+- 国内（CN）：基本不变（瓶颈在 Dianping，不在本轮）
 
 ## 验证
-- 走通 `/ → /cuisines → /requirements →（提交或跳过）→ /results`。
-- 在 results 点"编辑需求"返回 `/requirements`，文本框预填上次的 freeText，可修改后重搜。
-- 在 results 点"重新开始"，回到 `/`，输入框为空，store 清空。
 
-## 风险
-- 删除 `confirm.tsx`/`when.tsx` 后若有外部书签会 404，可接受（内部流程未引用）。
-- 第 3 步跳过时 freeText 为空字符串，AI 解析仍会基于 city + cuisines 出基础结果，已是当前行为。
+1. 触发一次 JP 搜索，对比 `[Tabelog]` / `[Perplexity]` 日志计数与时长
+2. 同一组 (city, cuisine, freeText) 跑 2 次，第 2 次明显更快（验证 E）
+3. 抽查 JP Top 5 仍带 Tabelog 数据 + pros/cons（验证 A、B 不破坏展示）

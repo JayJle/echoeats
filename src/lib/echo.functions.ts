@@ -255,7 +255,7 @@ async function fetchReviewSummary(
   apiKey: string,
 ): Promise<ReviewSummary | null> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), 12000);
   try {
     const res = await fetch("https://api.perplexity.ai/chat/completions", {
       method: "POST",
@@ -707,11 +707,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       const language = data.language || guessLanguageCode(data.city);
       const region = country || guessRegionCode(data.city);
 
-      const semanticSuffix = (() => {
-        if (language === "ja") return "おすすめ";
-        if (language === "zh-CN" || language === "zh-TW") return "推荐";
-        return "best";
-      })();
+      // (semanticSuffix 查询已移除：主词 + 同义词×2 已足够召回)
       placeResults = await Promise.all(
         data.cuisines.map(async (cuisine) => {
           const expansion = await expandCuisineQueries({
@@ -728,7 +724,6 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             new Set([
               `${expansion.primary} ${data.city}`,
               ...synQueries,
-              `${expansion.primary} ${data.city} ${semanticSuffix}`,
             ]),
           );
           const settled = await Promise.allSettled(
@@ -788,7 +783,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         for (const r of placeResults) {
           const top = [...r.places]
             .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-            .slice(0, 10);
+            .filter((p) => (p.rating ?? 0) >= 3.5 && (p.userRatingCount ?? 0) >= 30)
+            .slice(0, 6);
           for (const p of top) {
             tasks.push(
               fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
@@ -812,12 +808,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
 
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
-    // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
+    // 仅对每组 Top 12（按 Google rating 排序）抓取，长尾低分店即使有 Tabelog 也基本进不了 picks。
     const tabelogById = new Map<string, TabelogInfo>();
     if (!useDianping && pplxKey && country === "JP") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
-        for (const p of r.places) allTargets.push(p);
+        const top = [...r.places]
+          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+          .slice(0, 12);
+        for (const p of top) allTargets.push(p);
       }
       const CONCURRENCY = 8;
       let cursor = 0;
@@ -842,9 +841,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     const candidatesForPrompt = placeResults
       .filter((r) => r.places.length)
-      .map((r) => ({
+      .map((r) => {
+        // 候选裁剪：按 Google rating 排序后取 Top 25，控制 prompt 大小与 AI 排序耗时
+        const topPlaces = [...r.places]
+          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+          .slice(0, 25);
+        return {
         cuisine: r.cuisine,
-        candidates: r.places.map((p) => {
+        candidates: topPlaces.map((p) => {
           const review = reviewById.get(p.placeId) ?? null;
           const tabelog = tabelogById.get(p.placeId) ?? null;
           return {
@@ -877,7 +881,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               : null,
           };
         }),
-      }));
+      };
+      });
 
     const gateway = createLovableAiGatewayProvider(aiKey);
     const model = gateway("google/gemini-3-flash-preview");
@@ -947,7 +952,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       const result = await generateText({
         model,
         prompt,
-        maxOutputTokens: 10000,
+        maxOutputTokens: 6000,
         output: Output.object({
           schema: AiRankingSchema,
           name: "echo_eats_ranking",
@@ -966,7 +971,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           prompt:
             prompt +
             `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-          maxOutputTokens: 10000,
+          maxOutputTokens: 6000,
         });
         const text = fallback.text || "";
         const jsonText = (() => {
