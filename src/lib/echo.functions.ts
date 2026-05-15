@@ -1042,33 +1042,48 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             for (const c of pick.hardFilterChecks ?? []) {
               checksByFilter.set(c.filter, { status: c.status, note: c.note });
             }
-            const checks = data.hardFilters.map((f) => {
-              const c = checksByFilter.get(f);
-              return c ?? { status: "unknown" as const, note: undefined as string | undefined };
+            const checks = data.hardFilters.map((h) => {
+              const c = checksByFilter.get(h.text);
+              return {
+                ...(c ?? { status: "unknown" as const, note: undefined as string | undefined }),
+                weight: h.weight,
+              };
             });
 
-            // 任何 fail → 剔除
-            if (checks.some((c) => c.status === "fail")) return null;
+            // 仅高权重（≥ 0.85）硬条件 fail 才剔除
+            if (checks.some((c) => c.status === "fail" && c.weight >= 0.85)) return null;
 
             const hasUnknown = checks.some((c) => c.status === "unknown");
             const bucket: Bucket = hasUnknown ? "partial" : "ok";
 
-            const score = Math.round(pick.matchScore);
+            // 基于权重重算 matchScore：以 AI 给的分为基准，再用权重微调
+            const aiScore = Math.round(pick.matchScore);
+            let weightAdjust = 0;
+            for (const c of checks) {
+              if (c.status === "fail") weightAdjust -= c.weight * 25;
+              else if (c.status === "unknown") weightAdjust -= c.weight * 4;
+            }
+            const score = Math.max(0, Math.min(100, Math.round(aiScore + weightAdjust)));
+
             let tier =
               pick.matchTier === "perfect" || pick.matchTier === "high" || pick.matchTier === "partial"
                 ? pick.matchTier
                 : tierFromScore(score);
-            // 含 unknown 的不允许 perfect
+            // 含 unknown 的不允许 perfect；权重调分后 tier 也按新分回落
             if (hasUnknown && tier === "perfect") tier = "high";
+            if (score < 80 && tier !== "partial") tier = score >= 92 ? "perfect" : score >= 80 ? "high" : "partial";
 
             // 硬条件 detail 置顶
-            const hardDetails = data.hardFilters.map((f, i) => {
+            const hardDetails = data.hardFilters.map((h, i) => {
               const c = checks[i];
               const noteSuffix = c.note ? ` — ${c.note}` : "";
               if (c.status === "ok") {
-                return { label: `✓ 硬条件：${f}${noteSuffix}`, status: "ok" as const };
+                return { label: `✓ 硬条件：${h.text}${noteSuffix}`, status: "ok" as const };
               }
-              return { label: `？ 硬条件待核实：${f}${noteSuffix}`, status: "warn" as const };
+              if (c.status === "fail") {
+                return { label: `✗ 硬条件未满足：${h.text}${noteSuffix}`, status: "warn" as const };
+              }
+              return { label: `？ 硬条件待核实：${h.text}${noteSuffix}`, status: "warn" as const };
             });
             const aiDetails = (pick.matchDetails ?? []).slice(0, 6);
             const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);
