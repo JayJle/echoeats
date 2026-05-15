@@ -14,7 +14,77 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      search_feedback: {
+        Row: {
+          chosen_external_name: string | null
+          chosen_from_results: string | null
+          comment: string | null
+          created_at: string
+          down_reasons: string[]
+          id: string
+          overall: string
+          session_id: string
+        }
+        Insert: {
+          chosen_external_name?: string | null
+          chosen_from_results?: string | null
+          comment?: string | null
+          created_at?: string
+          down_reasons?: string[]
+          id?: string
+          overall: string
+          session_id: string
+        }
+        Update: {
+          chosen_external_name?: string | null
+          chosen_from_results?: string | null
+          comment?: string | null
+          created_at?: string
+          down_reasons?: string[]
+          id?: string
+          overall?: string
+          session_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "search_feedback_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "search_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      search_sessions: {
+        Row: {
+          anon_id: string
+          city: string
+          created_at: string
+          cuisines: string[]
+          id: string
+          parsed_json: Json | null
+          results_snapshot: Json | null
+        }
+        Insert: {
+          anon_id: string
+          city: string
+          created_at?: string
+          cuisines?: string[]
+          id?: string
+          parsed_json?: Json | null
+          results_snapshot?: Json | null
+        }
+        Update: {
+          anon_id?: string
+          city?: string
+          created_at?: string
+          cuisines?: string[]
+          id?: string
+          parsed_json?: Json | null
+          results_snapshot?: Json | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
