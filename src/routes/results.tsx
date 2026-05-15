@@ -164,12 +164,29 @@ function ResultsPage() {
       )}
 
       <main className="max-w-3xl mx-auto px-4 py-10">
-        <div className="mb-6 bg-card border border-border rounded-2xl p-6">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">搜索结果</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-            {parsed.city} · {parsed.cuisines.join(" / ")}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
+        <div ref={conditionsRef} className="mb-6 bg-card border border-border rounded-2xl p-6">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">搜索结果</p>
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight">
+                {parsed.city} · {parsed.cuisines.join(" / ")}
+              </h1>
+              <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
+            </div>
+            {!editing && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={openEditor}
+                disabled={refining}
+                className="shrink-0 -mr-2 text-muted-foreground hover:text-foreground"
+              >
+                <Pencil className="w-3.5 h-3.5 mr-1" />
+                编辑
+              </Button>
+            )}
+          </div>
           {parsed.hardFilters.length > 0 && (
             <div className="mt-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">硬条件</p>
