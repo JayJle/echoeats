@@ -138,7 +138,7 @@ function StepRequirements() {
                 ) : stage === "searching" ? (
                   "AI 深度搜索中…"
                 ) : (
-                  "AI 深度搜索"
+                  "🔍 深度搜索"
                 )}
               </Button>
               <Popover>
