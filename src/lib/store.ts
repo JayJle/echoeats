@@ -98,6 +98,28 @@ export const useQueryStore = create<QueryState>()(
     }),
     {
       name: "echo-eats-query",
+      version: 2,
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as { parsed?: ParsedRequirements | null } | undefined;
+        if (version < 2 && state?.parsed) {
+          const upgrade = (arr: unknown): WeightedCondition[] => {
+            if (!Array.isArray(arr)) return [];
+            return arr.map((item) =>
+              typeof item === "string"
+                ? { text: item, weight: 0.8 }
+                : (item as WeightedCondition),
+            );
+          };
+          const p = state.parsed as unknown as Record<string, unknown>;
+          state.parsed = {
+            ...(state.parsed as ParsedRequirements),
+            hardFilters: upgrade(p.hardFilters),
+            softPreferences: upgrade(p.softPreferences),
+            negativeFilters: upgrade(p.negativeFilters),
+          };
+        }
+        return state as QueryState;
+      },
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),
       ),
