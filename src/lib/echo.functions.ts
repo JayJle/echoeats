@@ -1013,22 +1013,16 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
     }
 
     // Resolve Google photo URLs for displayed restaurants in parallel
-    const photoNameById = new Map<string, string[]>();
-    for (const r of placeResults) {
-      for (const p of r.places) {
-        if (p.photoNames?.length) photoNameById.set(p.placeId, p.photoNames);
-      }
-    }
     const allRestaurants = groups.flatMap((g) => [
       ...g.restaurants,
       ...(g.partialRestaurants ?? []),
     ]);
     await Promise.all(
       allRestaurants.map(async (r) => {
-        const placeId = r.id.split("-").slice(2).join("-");
-        const names = photoNameById.get(placeId);
-        if (!names?.length) return;
-        const url = await resolvePhotoUrl(names[0], 800);
+        const p = placeByRestaurantId.get(r.id);
+        const name = p?.photoNames?.[0];
+        if (!name) return;
+        const url = await resolvePhotoUrl(name, 800);
         if (url) r.photoUrl = url;
       }),
     );
