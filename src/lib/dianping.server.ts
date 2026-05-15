@@ -52,6 +52,7 @@ function safeId(input: string, fallback: string): string {
 async function fetchDianpingShopsViaPerplexity(opts: {
   city: string;
   cuisine: string;
+  cuisineSynonyms: string[];
   hardFilters: string[];
   apiKey: string;
 }): Promise<RawShop[]> {
@@ -60,6 +61,9 @@ async function fetchDianpingShopsViaPerplexity(opts: {
   try {
     const hardFiltersText = opts.hardFilters.length
       ? `\n用户硬性需求（请在筛选时尽量考虑，但不要因此减少结果数量）：${opts.hardFilters.join("；")}`
+      : "";
+    const synonymsText = opts.cuisineSynonyms.length
+      ? `\n料理同义词（同时检索这些写法以提高召回率）：${opts.cuisineSynonyms.join("、")}`
       : "";
     const res = await fetch("https://api.perplexity.ai/chat/completions", {
       method: "POST",
