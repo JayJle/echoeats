@@ -812,6 +812,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 - 避雷：${data.negativeFilters.join("；") || "无"}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
 
+## 料理保真（最高优先级，先于其它硬条件）
+本次每个分组的「料理类型」就是该组的 cuisine 字段。每个分组的本地化主词、同义词、反例如下：
+${cuisineFidelityBlock || "（无额外扩展）"}
+判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
+- 命中本组反例关键词且未命中本组主词/同义词 → **直接剔除，不进 picks 也不进 partial**。例如本组要"猪肉饭"但候选明显是鳗鱼饭/牛丼/海鲜丼，不要解释，剔除。
+- 候选本身就是主菜的小店（招牌菜与本组料理一致）→ 优先纳入。
+- 候选模糊（综合定食店、菜单不明）→ 允许保留，对应 matchDetails 标 warn 注明"未确认主营是否为${"${"}本组料理${"}"}"。
+- 这条规则**不计入 hardFilterChecks 数组**（hardFilterChecks 仍严格等于 ${hardFiltersList.length} 条用户原始硬条件）。
+
 候选数据（JSON）：
 ${JSON.stringify(candidatesForPrompt, null, 2)}
 
