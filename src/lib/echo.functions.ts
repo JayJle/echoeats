@@ -653,10 +653,23 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       })();
       placeResults = await Promise.all(
         data.cuisines.map(async (cuisine) => {
-          const queries =
-            semanticSuffix === "best"
-              ? [`${cuisine} ${data.city}`, `best ${cuisine} ${data.city}`]
-              : [`${cuisine} ${data.city}`, `${cuisine} ${data.city} ${semanticSuffix}`];
+          const expansion = await expandCuisineQueries({
+            cuisine,
+            city: data.city,
+            language,
+            apiKey: aiKey,
+          });
+          cuisineExpansions.set(cuisine, expansion);
+          const synQueries = expansion.synonyms
+            .slice(0, 2)
+            .map((s) => `${s} ${data.city}`);
+          const queries = Array.from(
+            new Set([
+              `${expansion.primary} ${data.city}`,
+              ...synQueries,
+              `${expansion.primary} ${data.city} ${semanticSuffix}`,
+            ]),
+          );
           const settled = await Promise.allSettled(
             queries.map((query) =>
               searchPlaces({ query, language, region, maxResults: 20 }),
@@ -671,7 +684,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               firstError = s.reason instanceof Error ? s.reason.message : String(s.reason);
             }
           }
-          const places = Array.from(merged.values());
+          const allPlaces = Array.from(merged.values());
+          const places = filterByCuisineRelevance(allPlaces, expansion);
           return { cuisine, places, error: places.length ? null : firstError };
         }),
       );
