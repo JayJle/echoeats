@@ -91,26 +91,40 @@ export async function fetchTabelogInfo(
     }
     const json = await res.json();
     const content = json?.choices?.[0]?.message?.content;
+    const citations: string[] = Array.isArray(json?.citations) ? json.citations : [];
+    const tabelogCitation = citations.find((c) => typeof c === "string" && /tabelog\.com\//i.test(c)) ?? null;
     if (!content) {
+      console.warn(`[Tabelog] ${name}: empty content (citations=${citations.length})`);
       cache.set(cacheKey, null);
       return null;
     }
-    const parsed = JSON.parse(content);
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      console.warn(`[Tabelog] ${name}: JSON parse failed`);
+      cache.set(cacheKey, null);
+      return null;
+    }
 
-    // 反幻觉：URL 必须包含 tabelog.com，否则整体丢弃
-    const rawUrl = typeof parsed.url === "string" ? parsed.url.trim() : null;
-    const url = rawUrl && /tabelog\.com/i.test(rawUrl) ? rawUrl : null;
+    // URL 优先取 JSON 内 url 字段，否则回落到 citations 中第一个 tabelog.com 链接
+    const rawUrl = typeof parsed.url === "string" ? (parsed.url as string).trim() : null;
+    const urlFromJson = rawUrl && /tabelog\.com\//i.test(rawUrl) ? rawUrl : null;
+    const url = urlFromJson ?? tabelogCitation;
 
-    // URL 不可信时，rating/summary 也不再可信（同源失效）
     if (!url) {
+      console.warn(`[Tabelog] ${name}: no tabelog.com url in JSON or citations`);
       cache.set(cacheKey, null);
       return null;
     }
 
+    const ratingRaw = parsed.rating;
     const rating =
-      typeof parsed.rating === "string" && /^\d(\.\d{1,2})?$/.test(parsed.rating.trim())
-        ? parsed.rating.trim()
-        : null;
+      typeof ratingRaw === "string" && /^\d(\.\d{1,2})?$/.test(ratingRaw.trim())
+        ? ratingRaw.trim()
+        : typeof ratingRaw === "number" && ratingRaw > 0 && ratingRaw <= 5
+          ? ratingRaw.toFixed(2)
+          : null;
     const reviewCount =
       typeof parsed.reviewCount === "number" && parsed.reviewCount >= 0
         ? Math.round(parsed.reviewCount)
@@ -124,11 +138,12 @@ export async function fetchTabelogInfo(
         ? parsed.summary.trim().slice(0, 120)
         : null;
 
-    // 至少 rating 或 summary 二者之一有效，否则视为找不到
     if (rating == null && summary == null) {
+      console.warn(`[Tabelog] ${name}: rating & summary both null (url=${url})`);
       cache.set(cacheKey, null);
       return null;
     }
+    console.log(`[Tabelog] ${name}: ok rating=${rating} reviews=${reviewCount}`);
 
     const info: TabelogInfo = { rating, reviewCount, url, priceRange, summary };
     cache.set(cacheKey, info);
