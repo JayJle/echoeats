@@ -146,7 +146,7 @@ function StepRequirements() {
                   <button
                     type="button"
                     aria-label="深度搜索说明"
-                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    className="absolute -top-2 -right-2 z-10 rounded-full bg-background p-0.5 text-muted-foreground hover:text-foreground transition-colors shadow-sm border border-border"
                   >
                     <HelpCircle className="w-4 h-4" />
                   </button>
