@@ -209,6 +209,11 @@ function StepRequirements() {
                 );
               })}
             </ul>
+            <div className="flex justify-end pt-1">
+              <Button type="button" variant="ghost" size="sm" onClick={handleCancel}>
+                取消搜索
+              </Button>
+            </div>
           </div>
         )}
 
