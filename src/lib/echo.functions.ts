@@ -995,7 +995,13 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       const result = await generateText({
         model,
         prompt,
-        maxOutputTokens: 10000,
+        maxOutputTokens: 16000,
+        providerOptions: {
+          lovable: {
+            // 关闭 Gemini 2.5 flash 的 thinking，避免推理消耗光输出预算导致 "No output generated"
+            thinkingConfig: { thinkingBudget: 0 },
+          },
+        },
         output: Output.object({
           schema: AiRankingSchema,
           name: "echo_eats_ranking",
@@ -1014,7 +1020,12 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           prompt:
             prompt +
             `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-          maxOutputTokens: 10000,
+          maxOutputTokens: 16000,
+          providerOptions: {
+            lovable: {
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          },
         });
         const text = fallback.text || "";
         const jsonText = (() => {
