@@ -21,6 +21,8 @@ const ParsedSchema = z.object({
   negativeFilters: z.array(z.string()).default([]),
   dishPreferences: z.array(z.string()).default([]),
   searchStrategy: z.array(z.string()).default([]),
+  country: z.string().default(""), // ISO 3166-1 alpha-2，如 "JP" / "CN" / "KR" / "US"
+  language: z.string().default(""), // BCP 47，如 "ja" / "zh-CN" / "ko" / "en"
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
@@ -87,7 +89,25 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - negativeFilters: ["不要游客店（排除以游客为主、本地评价低的店）"]
 - dishPreferences: ["蟹刺身"]
 
-注意"可以预约"虽然用了"可以"，但属于明确可验证属性，归 hard；"评分高一点"用了弱化语气"一点"，归 soft。`;
+注意"可以预约"虽然用了"可以"，但属于明确可验证属性，归 hard；"评分高一点"用了弱化语气"一点"，归 soft。
+
+## 国家/语言识别（重要）
+
+- **country**：根据 city 推断 ISO 3166-1 alpha-2 国家码（两个大写字母）。覆盖所有城市，不只是大城市：
+  - 函馆/小樽/旭川/轻井泽/由布院/别府/熊本/鹿儿岛/长崎/姬路/和歌山/石垣岛/那霸 → "JP"
+  - 上海/北京/成都/苏州/杭州/重庆/西安等大陆城市 → "CN"
+  - 香港 → "HK"，澳门 → "MO"，台北/高雄/台中 → "TW"
+  - 首尔/釜山/济州 → "KR"
+  - 清迈/曼谷/普吉 → "TH"
+  - 新加坡 → "SG"
+  - 巴黎/里昂 → "FR"，米兰/罗马/佛罗伦萨 → "IT"，纽约/旧金山 → "US"
+  - 实在判断不出来留 ""。
+- **language**：该城市本地主要书面语言的 BCP 47 代码：
+  - JP → "ja"，KR → "ko"
+  - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
+  - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
+  - US/UK/AU/CA/SG → "en"
+  - 其它按国家主语言映射，判断不出留 ""。`;
 
     const runOnce = async () => {
       const { output } = await generateText({
@@ -118,6 +138,8 @@ export const parseRequirements = createServerFn({ method: "POST" })
         city: data.city,
         cuisines: data.cuisines,
         dateTime: data.date || "未指定",
+        country: "",
+        language: "",
       });
     }
   });
