@@ -303,14 +303,20 @@ function ResultsPage() {
                 >
                   取消
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => void applyEdit()}
-                  disabled={refining || draftText.trim() === freeText.trim()}
-                >
-                  {refining ? "搜索中…" : "应用并重新搜索"}
-                </Button>
+                {refining ? (
+                  <Button type="button" variant="outline" size="sm" onClick={cancelRefine}>
+                    取消搜索
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void applyEdit()}
+                    disabled={draftText.trim() === freeText.trim()}
+                  >
+                    应用并重新搜索
+                  </Button>
+                )}
               </div>
             </div>
           )}
