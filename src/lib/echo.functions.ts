@@ -852,6 +852,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
                   rating: tabelog.rating,
                   reviewCount: tabelog.reviewCount,
                   priceRange: tabelog.priceRange,
+                  priceJPY: tabelog.priceJPY,
                   summary: tabelog.summary,
                 }
               : null,
