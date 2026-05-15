@@ -741,13 +741,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           const synQueries = expansion.synonyms
             .slice(0, 2)
             .map((s) => `${s} ${data.city}`);
-          const queries = Array.from(
-            new Set([
-              `${expansion.primary} ${data.city}`,
-              ...synQueries,
-              `${expansion.primary} ${data.city} ${semanticSuffix}`,
-            ]),
-          );
+          const queries = data.mode === "quick"
+            ? [`${expansion.primary} ${data.city}`]
+            : Array.from(
+                new Set([
+                  `${expansion.primary} ${data.city}`,
+                  ...synQueries,
+                  `${expansion.primary} ${data.city} ${semanticSuffix}`,
+                ]),
+              );
           const settled = await Promise.allSettled(
             queries.map((query) =>
               searchPlaces({ query, language, region, maxResults: 20 }),
