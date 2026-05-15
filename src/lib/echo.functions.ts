@@ -692,7 +692,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               city: data.city,
               cuisine,
               cuisineSynonyms: expansion.synonyms,
-              hardFilters: data.hardFilters,
+              hardFilters: data.hardFilters.map((c) => c.text),
               perplexityKey: pplxKey!,
               firecrawlKey,
             });
