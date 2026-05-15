@@ -613,9 +613,17 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       const settled = await Promise.all(
         data.cuisines.map(async (cuisine) => {
           try {
+            const expansion = await expandCuisineQueries({
+              cuisine,
+              city: data.city,
+              language: "zh-CN",
+              apiKey: aiKey,
+            });
+            cuisineExpansions.set(cuisine, expansion);
             const items = await searchDianpingCuisine({
               city: data.city,
               cuisine,
+              cuisineSynonyms: expansion.synonyms,
               hardFilters: data.hardFilters,
               perplexityKey: pplxKey!,
               firecrawlKey,
