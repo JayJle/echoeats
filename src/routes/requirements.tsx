@@ -102,7 +102,7 @@ function StepRequirements() {
           >
             ← 返回
           </Link>
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-3">
+          <div className="flex flex-row gap-2 sm:gap-3 items-center w-full sm:w-auto">
             <Button
               type="button"
               variant="secondary"
