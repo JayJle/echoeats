@@ -905,10 +905,14 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
   note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
 - **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
 - **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用（例：editorialSummary 写明"仅晚市营业"但用户要求午餐；commonComplaints 明确提到"不接受预约"但用户要求可预约）。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。宁可放进 partial 让用户自己核实，也不要错杀。
-- 价格判断（重要）：
-    1. 若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
-    2. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
-    3. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
+- 价格判断（重要，按以下优先级，**前者命中后不再回退**）：
+    1. **Tabelog 价位优先（仅当用户预算币种是 JPY）**：若 candidate.tabelog.priceJPY 存在且用户预算硬条件币种是 JPY → **必须**用 Tabelog 价位判断（覆盖 priceFromReviews 和 Google priceLevel）：
+       - priceJPY.low > 用户预算上限 → fail（note 例："Tabelog ￥6000~7999 > ¥5000"）
+       - priceJPY.high != null 且 priceJPY.high ≤ 用户预算上限 → ok（note 例："Tabelog ￥3000~4500 ≤ ¥5000"）
+       - 区间跨过预算上限（low ≤ 上限 < high，或上限缺一边）→ unknown
+    2. 否则若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
+    3. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
+    4. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
 - **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度，而不是只看 Google 评分；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
 - **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字、提炼具体菜名/服务点，但不得新增事实）。**如果 realWorldReviews 为 null，或 reviewHighlights 与 commonComplaints 都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据（rating、primaryType、editorialSummary、address），不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
 - **pros/cons 必须取真实素材**：当 reviewHighlights 非空时，pros 至少 2 条（不超过可用条数）来自 reviewHighlights 的真实文本浓缩；当 commonComplaints 非空时，cons 至少 1 条来自 commonComplaints（为空则 cons 留空，不要瞎编）。禁止"环境不错""值得一试"等空话。Google Reviews 来源的 highlights 是顾客原文整句，必须提炼成短句（如"出品稳定、服务热情"而不是照抄一整段）。
