@@ -881,7 +881,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               : null,
           };
         }),
-      }));
+      };
+      });
 
     const gateway = createLovableAiGatewayProvider(aiKey);
     const model = gateway("google/gemini-3-flash-preview");
