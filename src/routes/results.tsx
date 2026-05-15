@@ -137,7 +137,7 @@ function ResultsPage() {
               <div className="flex flex-wrap gap-1.5">
                 {parsed.hardFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
-                    {f}
+                    {f.text}
                   </span>
                 ))}
               </div>
@@ -149,7 +149,7 @@ function ResultsPage() {
               <div className="flex flex-wrap gap-1.5">
                 {parsed.softPreferences.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground">
-                    {f}
+                    {f.text}
                   </span>
                 ))}
               </div>
@@ -161,7 +161,7 @@ function ResultsPage() {
               <div className="flex flex-wrap gap-1.5">
                 {parsed.negativeFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
-                    {f}
+                    {f.text}
                   </span>
                 ))}
               </div>

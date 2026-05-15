@@ -12,17 +12,22 @@ const ParseInput = z.object({
   freeText: z.string().default(""),
 });
 
+const WeightedConditionSchema = z.object({
+  text: z.string(),
+  weight: z.number().min(0).max(1).default(0.7),
+});
+
 const ParsedSchema = z.object({
   city: z.string().default(""),
   cuisines: z.array(z.string()).default([]),
   dateTime: z.string().default(""),
-  hardFilters: z.array(z.string()).default([]),
-  softPreferences: z.array(z.string()).default([]),
-  negativeFilters: z.array(z.string()).default([]),
+  hardFilters: z.array(WeightedConditionSchema).default([]),
+  softPreferences: z.array(WeightedConditionSchema).default([]),
+  negativeFilters: z.array(WeightedConditionSchema).default([]),
   dishPreferences: z.array(z.string()).default([]),
   searchStrategy: z.array(z.string()).default([]),
-  country: z.string().default(""), // ISO 3166-1 alpha-2，如 "JP" / "CN" / "KR" / "US"
-  language: z.string().default(""), // BCP 47，如 "ja" / "zh-CN" / "ko" / "en"
+  country: z.string().default(""), // ISO 3166-1 alpha-2
+  language: z.string().default(""), // BCP 47
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
@@ -46,10 +51,8 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 - city / cuisines：原样回传。
 - dateTime：直接用日期字符串，如 "2026/05/20"。
-- hardFilters：用户**强制要求**、必须满足才能入选的条件（详见下方判定规则）。
-- softPreferences：偏好/加分项（详见下方判定规则）。
-- negativeFilters：避雷/排除条件（"不要 X" / "避免 X" / "拒绝 X" / "禁止 X"）。
-- dishPreferences：用户希望吃到的具体菜品名。
+- hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
+- dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight）。
 - searchStrategy：3-5 条搜索策略说明。
 
 ## hardFilters 判定规则（关键，务必严格执行）
@@ -57,39 +60,52 @@ export const parseRequirements = createServerFn({ method: "POST" })
 只要用户原话出现以下任一信号，必须归入 hardFilters：
 
 1. **强制词**：必须 / 一定 / 务必 / 只 / 仅 / 不能 / 不要 / 禁止 / 拒绝 / 不接受 / 得 / 需要
-2. **数值上下限**："X 以内"、"不超过 X"、"至多 X"、"至少 X"、"X 以上"、"≤ / ≥ / < / >" —— 适用于预算、人数、距离、步行分钟、评分、营业时间等。
-3. **明确可验证属性**：可预约 / 接受信用卡 / 有包间 / 有吧台 / 无烟 / 可带宠物 / 适合婴儿车 / 营业到 X 点 / 步行 X 分钟内 / 距离地铁 X 站 等。
-4. 用户用陈述句给出的具体可核实条件（即使没用强制词），例如"两个人"→ 人数=2 是 hardFilter。
+2. **数值上下限**："X 以内"、"不超过 X"、"至多 X"、"至少 X"、"X 以上"、"≤ / ≥ / < / >"。
+3. **明确可验证属性**：可预约 / 接受信用卡 / 有包间 / 有吧台 / 无烟 / 营业到 X 点 / 步行 X 分钟内 等。
+4. 用户用陈述句给出的具体可核实条件，例如"两个人"→ 人数=2。
 
 ## softPreferences 判定规则
 
 仅当满足以下之一才归 soft，否则倾向 hard：
 
-- 模糊形容词："氛围好"、"舒服"、"地道"、"环境不错"、"高级感"
+- 模糊形容词："氛围好"、"舒服"、"地道"、"环境不错"
 - 弱化词："最好"、"希望"、"偏好"、"优先"、"如果可以"、"尽量"
+
+## 权重判定（每条 hard / soft / neg 都必须打 weight，0.1-1.0，保留 1 位小数）
+
+按用户原话语气强度打分：
+- **1.0**：务必 / 绝对 / 一定 + 强调副词（"务必必须"、"绝对不要"、"一定要"）
+- **0.9**：必须 / 一定 / 不能 / 不要 / 只 / 仅 / 拒绝 / 禁止
+- **0.8**：要 / 需要 / 得 / 明确数值上下限（如"15000 以内"哪怕没强制词，也算 0.8，可验证硬约束）
+- **0.6**：最好 / 希望 / 偏好 / 优先
+- **0.4**：如果可以 / 尽量 / 有的话更好
+- **0.3**：随便提一句、轻描淡写
+
+类别先验（与语气取较高值）：
+- **预算上限 / 人数 / 可预约 / 营业时间** 这类「可验证硬属性」基线 ≥ 0.8（即使语气随意也保持 0.8）。
+- **氛围 / 装修 / 服务态度** 这类主观偏好基线 ≤ 0.7。
+- 避雷条目：「不要 X」=0.7，「绝对不要 X」=1.0。
 
 ## 边界与去重
 
 - 否定句一律进 negativeFilters，不要再复制到 hardFilters。
 - 同一条只放一个数组里，不要重复。
-- 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放。
-
-## hardFilters 输出格式
-
-每条 hardFilter 用「用户原话片段 → 标准化条件」格式，便于后续匹配。例：
-- "预算 15000 日元以内 → 人均预算 ≤ 15000 JPY"
-- "必须能预约 → 支持预约"
-- "两个人 → 人数 = 2"
+- 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
 
 ## 示例
 
-输入："两个人预算 15000 日元以内，不要游客店，适合聊天，最好有蟹刺身，评分高一点，可以预约。"
-- hardFilters: ["两个人 → 人数 = 2", "预算 15000 日元以内 → 人均预算 ≤ 15000 JPY", "可以预约 → 支持预约"]
-- softPreferences: ["适合聊天（安静、便于交谈）", "评分高一点（优先 4.0+）", "最好有蟹刺身"]
-- negativeFilters: ["不要游客店（排除以游客为主、本地评价低的店）"]
+输入："两个人务必必须 15000 日元以内，不要游客店，适合聊天，最好有蟹刺身，可以预约。"
+- hardFilters: [
+    {"text":"两个人 → 人数 = 2","weight":0.9},
+    {"text":"务必必须 15000 日元以内 → 人均预算 ≤ 15000 JPY","weight":1.0},
+    {"text":"可以预约 → 支持预约","weight":0.8}
+  ]
+- softPreferences: [
+    {"text":"适合聊天（安静、便于交谈）","weight":0.7},
+    {"text":"最好有蟹刺身","weight":0.6}
+  ]
+- negativeFilters: [{"text":"不要游客店","weight":0.7}]
 - dishPreferences: ["蟹刺身"]
-
-注意"可以预约"虽然用了"可以"，但属于明确可验证属性，归 hard；"评分高一点"用了弱化语气"一点"，归 soft。
 
 ## 国家/语言识别（重要）
 
@@ -676,7 +692,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               city: data.city,
               cuisine,
               cuisineSynonyms: expansion.synonyms,
-              hardFilters: data.hardFilters,
+              hardFilters: data.hardFilters.map((c) => c.text),
               perplexityKey: pplxKey!,
               firecrawlKey,
             });
@@ -882,8 +898,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const gateway = createLovableAiGatewayProvider(aiKey);
     const model = gateway("google/gemini-3-flash-preview");
 
-    const hardFiltersList = data.hardFilters;
-    const hardFiltersJson = JSON.stringify(hardFiltersList);
+    const hardFiltersList = data.hardFilters.map((h) => h.text);
+    const hardFiltersJson = JSON.stringify(
+      data.hardFilters.map((h) => ({ text: h.text, weight: h.weight })),
+    );
+    const softJson = JSON.stringify(
+      data.softPreferences.map((s) => ({ text: s.text, weight: s.weight })),
+    );
+    const negJson = JSON.stringify(
+      data.negativeFilters.map((n) => ({ text: n.text, weight: n.weight })),
+    );
 
     const cuisineFidelityBlock = Array.from(cuisineExpansions.entries())
       .map(([c, exp]) => {
@@ -893,15 +917,17 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       })
       .join("\n");
 
-    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何硬条件被证伪，都应纳入）**，并给出打分和理由。
+    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。
 
 用户需求：
 - 城市：${data.city}
 - 日期/时间：${data.dateTime}
-- 硬条件（数组形式，下面 hardFilterChecks 必须**逐条且按相同顺序**对照）：${hardFiltersJson}
-- 偏好：${data.softPreferences.join("；") || "无"}
-- 避雷：${data.negativeFilters.join("；") || "无"}
+- 硬条件（带 weight 0-1，下面 hardFilterChecks 必须**逐条且按相同顺序**对照）：${hardFiltersJson}
+- 偏好（带 weight）：${softJson === "[]" ? "无" : softJson}
+- 避雷（带 weight）：${negJson === "[]" ? "无" : negJson}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
+
+权重含义：1.0=务必、0.9=必须、0.8=明确硬属性、0.6=希望、0.4=可选。**只有 weight ≥ 0.85 的硬条件 fail 才会真的剔除餐厅**；低权重 fail 会扣分但保留。
 
 ## 料理保真（最高优先级，先于其它硬条件）
 本次每个分组的「料理类型」就是该组的 cuisine 字段。每个分组的本地化主词、同义词、反例如下：
@@ -1016,33 +1042,48 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             for (const c of pick.hardFilterChecks ?? []) {
               checksByFilter.set(c.filter, { status: c.status, note: c.note });
             }
-            const checks = data.hardFilters.map((f) => {
-              const c = checksByFilter.get(f);
-              return c ?? { status: "unknown" as const, note: undefined as string | undefined };
+            const checks = data.hardFilters.map((h) => {
+              const c = checksByFilter.get(h.text);
+              return {
+                ...(c ?? { status: "unknown" as const, note: undefined as string | undefined }),
+                weight: h.weight,
+              };
             });
 
-            // 任何 fail → 剔除
-            if (checks.some((c) => c.status === "fail")) return null;
+            // 仅高权重（≥ 0.85）硬条件 fail 才剔除
+            if (checks.some((c) => c.status === "fail" && c.weight >= 0.85)) return null;
 
             const hasUnknown = checks.some((c) => c.status === "unknown");
             const bucket: Bucket = hasUnknown ? "partial" : "ok";
 
-            const score = Math.round(pick.matchScore);
+            // 基于权重重算 matchScore：以 AI 给的分为基准，再用权重微调
+            const aiScore = Math.round(pick.matchScore);
+            let weightAdjust = 0;
+            for (const c of checks) {
+              if (c.status === "fail") weightAdjust -= c.weight * 25;
+              else if (c.status === "unknown") weightAdjust -= c.weight * 4;
+            }
+            const score = Math.max(0, Math.min(100, Math.round(aiScore + weightAdjust)));
+
             let tier =
               pick.matchTier === "perfect" || pick.matchTier === "high" || pick.matchTier === "partial"
                 ? pick.matchTier
                 : tierFromScore(score);
-            // 含 unknown 的不允许 perfect
+            // 含 unknown 的不允许 perfect；权重调分后 tier 也按新分回落
             if (hasUnknown && tier === "perfect") tier = "high";
+            if (score < 80 && tier !== "partial") tier = score >= 92 ? "perfect" : score >= 80 ? "high" : "partial";
 
             // 硬条件 detail 置顶
-            const hardDetails = data.hardFilters.map((f, i) => {
+            const hardDetails = data.hardFilters.map((h, i) => {
               const c = checks[i];
               const noteSuffix = c.note ? ` — ${c.note}` : "";
               if (c.status === "ok") {
-                return { label: `✓ 硬条件：${f}${noteSuffix}`, status: "ok" as const };
+                return { label: `✓ 硬条件：${h.text}${noteSuffix}`, status: "ok" as const };
               }
-              return { label: `？ 硬条件待核实：${f}${noteSuffix}`, status: "warn" as const };
+              if (c.status === "fail") {
+                return { label: `✗ 硬条件未满足：${h.text}${noteSuffix}`, status: "warn" as const };
+              }
+              return { label: `？ 硬条件待核实：${h.text}${noteSuffix}`, status: "warn" as const };
             });
             const aiDetails = (pick.matchDetails ?? []).slice(0, 6);
             const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);

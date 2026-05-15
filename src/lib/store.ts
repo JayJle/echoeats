@@ -1,13 +1,18 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 
+export type WeightedCondition = {
+  text: string;
+  weight: number; // 0.1 - 1.0
+};
+
 export type ParsedRequirements = {
   city: string;
   cuisines: string[];
   dateTime: string;
-  hardFilters: string[];
-  softPreferences: string[];
-  negativeFilters: string[];
+  hardFilters: WeightedCondition[];
+  softPreferences: WeightedCondition[];
+  negativeFilters: WeightedCondition[];
   dishPreferences: string[];
   searchStrategy: string[];
 };
@@ -93,6 +98,28 @@ export const useQueryStore = create<QueryState>()(
     }),
     {
       name: "echo-eats-query",
+      version: 2,
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as { parsed?: ParsedRequirements | null } | undefined;
+        if (version < 2 && state?.parsed) {
+          const upgrade = (arr: unknown): WeightedCondition[] => {
+            if (!Array.isArray(arr)) return [];
+            return arr.map((item) =>
+              typeof item === "string"
+                ? { text: item, weight: 0.8 }
+                : (item as WeightedCondition),
+            );
+          };
+          const p = state.parsed as unknown as Record<string, unknown>;
+          state.parsed = {
+            ...(state.parsed as ParsedRequirements),
+            hardFilters: upgrade(p.hardFilters),
+            softPreferences: upgrade(p.softPreferences),
+            negativeFilters: upgrade(p.negativeFilters),
+          };
+        }
+        return state as QueryState;
+      },
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),
       ),
