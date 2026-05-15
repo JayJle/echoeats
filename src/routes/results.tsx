@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
 
 export const Route = createFileRoute("/results")({
@@ -130,6 +131,19 @@ function ResultsPage() {
               </section>
             ))}
           </div>
+        )}
+
+        {!isEmpty && (
+          <FeedbackPanel
+            city={parsed.city}
+            cuisines={parsed.cuisines}
+            parsed={parsed}
+            restaurants={results.groups.flatMap((g) => [
+              ...g.restaurants,
+              ...(g.partialRestaurants ?? []),
+            ])}
+            resultsSnapshot={results}
+          />
         )}
 
         <div className="mt-12 flex justify-center">

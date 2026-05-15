@@ -1,121 +1,100 @@
-## 目标
+## 修正后的定位
 
-日本店铺在保留 Google Places 评分/评价的基础上，**额外**抓取 Tabelog 的评分和一句话点评摘要，作为补充信号显示。两边评分**分开展示、互不覆盖**，AI 排序时也能同时看到两个信号。
+明白了 —— 反馈的用途是**评估「这次搜索整体是否准、是否符合预期」**，用来改进**搜索系统本身**（prompt 规则、料理扩展、硬条件解析、Tabelog 触发等），**不影响任何具体店铺以后是否出现**。
 
-## 范围
+也就是说：反馈是**对系统的质检信号**，不是对单店的口碑评分。
 
-只动后端 1 个新文件 + 2 处小改 + 前端 1 处展示块。不影响非日本地区。
+---
 
-```text
-新增  src/lib/tabelog.server.ts        # 拉 Tabelog 评分 + 摘要
-改   src/lib/echo.functions.ts        # JP 分支并发拉 Tabelog，注入到 ratings + 新字段
-改   src/lib/store.ts                  # Restaurant 增加 tabelog 字段
-改   src/routes/results.tsx            # Ratings 区块按"来源分组"展示
-```
+## 收集什么
 
-## 1. Tabelog 抓取层（`src/lib/tabelog.server.ts`）
+每次搜索完成后，在结果页底部放一条非阻断式反馈区：
 
-不直接爬 Tabelog（ToS 风险 + IP 封锁），用 **Perplexity sonar + `search_domain_filter:["tabelog.com"]`** 让 Perplexity 代为读取并返回结构化结果。
+1. **「最后我去了哪家？」**（可选，单选）
+   - 列表里勾一个，或选「都没去 / 去了别的店」
+   - 如果是"别的店"，可输入店名（自由文本）
+2. **「这次推荐准吗？」**
+   - 👍 准 / 👎 不准
+3. **如果👎，勾选不准的原因**（多选 chips，降低填写成本）：
+   - 推荐的店不符合我的硬条件
+   - 推荐的店不是我想要的料理
+   - 评分/评价信息不靠谱
+   - 漏掉了我知道的好店
+   - 排序不合理
+   - 其它（短文本）
 
-接口：
+关键：**店名只是上下文信息**，不会进入"以后封杀这家店"的逻辑。
 
-```ts
-fetchTabelogInfo(name: string, address: string, city: string): Promise<TabelogInfo | null>
+---
 
-type TabelogInfo = {
-  rating: string | null;        // 例 "3.62"，原样字符串
-  reviewCount: number | null;   // 例 412
-  url: string | null;           // tabelog 店铺页 URL
-  priceRange: string | null;    // 例 "￥6,000〜￥7,999"
-  summary: string | null;       // 1-2 句中文摘要，归纳 Tabelog 用户评价
-};
-```
+## 数据怎么用（这才是和上一版的核心差异）
 
-实现要点：
-- prompt 明确："只参考 tabelog.com 的页面，找到与「${name} / ${address}」最匹配的那一家"
-- `response_format: json_schema` 直接拿结构化 JSON，不解析自由文本
-- 失败/找不到 → 返回 `null`，不抛错（调用侧静默降级）
-- in-memory 缓存（key = `${name}|${address}`）避免同会话重复调用
-- 单次超时 12s，超时 → `null`
+收集到的反馈**只用于聚合分析系统级问题**，不做 per-restaurant 调权：
 
-## 2. 接入点（`echo.functions.ts`）
+### A. 搜索质量看板（仅给你 / 开发自己看）
+- 整体 👍 率、按城市/料理拆分
+- 高频👎原因分布 → 直接告诉你"硬条件解析"还是"料理扩展"是当前最大短板
 
-仅在 `regionCode === "JP"` 分支启用。位置：在 `reviewById`（Perplexity 通用召回）构建完之后，AI 排序之前，并发批量拉 Tabelog：
+### B. 反向校验 prompt 规则
+例如：发现「关西 / 烤肉」👎 率显著高于平均，且原因集中在"不是我想要的料理"——
+→ 说明 `cuisine-expand.server.ts` 在该地区的 synonym/negativeKeyword 不够好
+→ 你手工调 prompt 或词表，**不是写死封杀某家店**
 
-```ts
-if (regionCode === "JP") {
-  const top = topCandidatesByPlaceId; // AI 排序前的候选并集，取每 cuisine 前 ~8 家
-  const tabelogById = new Map<string, TabelogInfo>();
-  await Promise.all(top.map(async (p) => {
-    const info = await fetchTabelogInfo(p.name, p.address, data.city);
-    if (info) tabelogById.set(p.placeId, info);
-  }));
-}
-```
+### C. 「最后选了哪家」的用法（重要）
+- 仅作为**搜索召回是否覆盖到用户意图**的指标：
+  - 若用户选的是结果列表里的店 → 召回 OK
+  - 若用户填"去了别的店 XX" → 召回缺失，那个店名值得你人工看一下为什么没被 Google Places 召回（关键词？区域？）
+- **不会**因为某店被选多次就把它推到前面，也**不会**因为某店没人选就降权。
 
-并发上限 ~8（与现状 Perplexity 召回保持一致），整体新增延迟 < 一次 Perplexity 调用。
+---
 
-## 3. 数据结构改动
+## 数据模型（极简）
 
-**`Restaurant`（store.ts + RestaurantSchema）** 新增字段：
-
-```ts
-tabelog: {
-  rating: string | null;
-  reviewCount: number | null;
-  url: string | null;
-  summary: string | null;
-} | null;
-```
-
-**`ratings` 数组保持现有结构**，但 JP 分支组装时追加一条 `{ platform: "Tabelog", score: "3.62 (412)" }`，与 Google 评分并列。这样旧 UI 不改也能直接看到两个分数。
-
-## 4. AI 排序 prompt 增强（极小改动）
-
-在塞给排序 LLM 的 candidate 描述里加一行（仅当有 tabelog 数据）：
-
-```
-candidate.tabelog: rating=3.62, reviews=412, summary="..."
-```
-
-并在 prompt 注释里说明：「Google 和 Tabelog 评分体系不同（Tabelog 普遍偏低，3.5+ 已是优质），不要简单相加，而是作为两路独立信号交叉验证」。
-
-不改 `hardFilters` 合约，不影响其它逻辑。
-
-## 5. 前端展示（`results.tsx`）
-
-**Ratings 区块改成两栏**（仅在有 Tabelog 数据时分组）：
+启用 Lovable Cloud，建两张表：
 
 ```text
-┌─ Ratings ──────────────────────────────┐
-│  Google              4.3 ★ (1.2k)      │
-│  Google 评价摘要     "..."             │
-├────────────────────────────────────────┤
-│  Tabelog             3.62 ★ (412)      │
-│  Tabelog 摘要        "..."             │
-│  [在 Tabelog 查看 →]                   │
-└────────────────────────────────────────┘
+search_sessions
+  id, anon_id, city, cuisines[], parsed_json,
+  results_snapshot (jsonb：当时返回的店 id+名称+排名), created_at
+
+search_feedback
+  id, session_id,
+  chosen_from_results (restaurant_id | null),
+  chosen_external_name (text | null),   -- 用户填的"别的店"
+  overall ('up' | 'down'),
+  down_reasons (text[]),                -- 勾选的原因
+  comment (text | null),
+  created_at
 ```
 
-实现：
-- 复用现有 `r.ratings.map(...)` 渲染分数
-- 在其下方新增条件块 `{r.tabelog && <TabelogCard … />}`，渲染摘要 + 跳转链接
-- 链接：`r.tabelog.url`（target="_blank"），无 URL 不显示按钮
-- 视觉上用一条 `border-t` 分隔，与 Google 信号清晰区分
+**RLS**：匿名 insert 允许，select 只允许 service role（看板走 server fn）。
 
-非日本店铺：`r.tabelog === null`，整块不渲染，UI 与现状完全一致。
+---
 
-## 6. 风险与回退
+## UI 改动（results.tsx）
 
-| 风险 | 处理 |
-|---|---|
-| Perplexity 找错店（同名重名） | prompt 强制带 address；返回的 url 必须含 `tabelog.com`，否则丢弃 |
-| Perplexity 编造分数 | 摘要里要求"如果未找到 Tabelog 页面则 rating 返回 null"；前端 null → 整块不渲染 |
-| 额外延迟 | Tabelog 拉取与 Google 评分排序**并行**，不阻塞主流程；单店超时 12s |
-| 成本 | JP 分支 cuisine × 候选数 ~24 次 Perplexity 调用/搜索，可接受；后续可加 KV 持久化缓存 |
+- 每张卡片右下角小 checkbox：「✓ 我去了这家」（点一下高亮，再点取消）
+- 结果列表底部固定一个浅色反馈卡：
+  - 👍 / 👎 两个大按钮
+  - 点👎后展开原因 chips + 可选评论
+  - 提交后变成 "感谢反馈 ✓"
+- 不阻断、不强制、不弹窗。
 
-## 7. 后续可选（本期不做）
+---
 
-- 把 Tabelog 摘要也喂给 `aiSummary` 合成（让最终总结引用两边评价）
-- 同模式扩展 Naver Place（韩国）/ OpenRice（港澳）
-- 持久化缓存到 D1/KV，跨 session 复用
+## 实施步骤（建议本轮一次做完）
+
+1. 启用 Lovable Cloud
+2. 建 `search_sessions` + `search_feedback` 表 + RLS
+3. `feedback.functions.ts`：`createSession` / `submitFeedback`
+4. `echo.functions.ts` 在搜索成功后调用 `createSession`，把 sessionId 写进 store
+5. `results.tsx` 加「✓ 我去了这家」+ 底部反馈卡
+6. （可选）一个简单的 `/admin/feedback` 路由展示聚合数据，仅本地查看
+
+---
+
+## 需要你确认
+
+1. 反馈匿名（基于浏览器生成的 anon_id）即可，对吗？还是想强制登录？
+2. 是否同意启用 Lovable Cloud（前置条件）？
+3. MVP 范围按上面来，还是某些字段（比如"不准的原因"chips）想精简掉？
