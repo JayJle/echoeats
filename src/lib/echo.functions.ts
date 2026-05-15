@@ -841,9 +841,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     const candidatesForPrompt = placeResults
       .filter((r) => r.places.length)
-      .map((r) => ({
+      .map((r) => {
+        // 候选裁剪：按 Google rating 排序后取 Top 25，控制 prompt 大小与 AI 排序耗时
+        const topPlaces = [...r.places]
+          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+          .slice(0, 25);
+        return {
         cuisine: r.cuisine,
-        candidates: r.places.map((p) => {
+        candidates: topPlaces.map((p) => {
           const review = reviewById.get(p.placeId) ?? null;
           const tabelog = tabelogById.get(p.placeId) ?? null;
           return {
