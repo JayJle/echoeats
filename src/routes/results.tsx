@@ -82,6 +82,39 @@ function ResultsPage() {
     }
   };
 
+  const openEditor = () => {
+    setDraftText(freeText);
+    setEditing(true);
+    setTimeout(() => {
+      conditionsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 50);
+  };
+
+  const applyEdit = async () => {
+    if (!parsed) return;
+    const text = draftText.trim();
+    setRefineError(null);
+    setRefining(true);
+    try {
+      const newParsed = await parseFn({
+        data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: text },
+      });
+      const merged = { ...newParsed, mode: parsed.mode };
+      setFreeText(text);
+      setParsed(merged);
+      const response = await searchFn({ data: merged });
+      setResults(response);
+      setEditing(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "搜索失败";
+      if (msg.includes("429")) setRefineError("请求过于频繁，请稍后再试");
+      else if (msg.includes("402")) setRefineError("AI 额度已用完，请在 Settings → Workspace 添加额度");
+      else setRefineError(msg);
+    } finally {
+      setRefining(false);
+    }
+  };
+
   const restartFlow = () => {
     useQueryStore.getState().reset();
     navigate({ to: "/" });
