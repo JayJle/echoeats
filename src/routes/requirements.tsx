@@ -100,22 +100,27 @@ function StepRequirements() {
           </div>
         )}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:flex-wrap">
-          <Link
-            to="/cuisines"
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors order-last sm:order-first text-center sm:text-left"
-          >
-            ← 返回
-          </Link>
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-3 sm:flex-wrap">
+          <div className="flex gap-2 order-last sm:order-first">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => navigate({ to: "/cuisines" })}
+              disabled={loading}
+              className="flex-1 sm:flex-none"
+            >
+              ← 返回
+            </Button>
             <Button
               type="button"
               variant="ghost"
               onClick={onSkip}
               disabled={loading}
-              className="w-full sm:w-auto"
+              className="flex-1 sm:flex-none"
             >
               跳过 →
             </Button>
+          </div>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-3 sm:flex-wrap">
             <Button
               type="button"
               variant="secondary"
@@ -157,7 +162,7 @@ function StepRequirements() {
                     <span className="font-medium">⚡ 快速搜索</span>：只取主流地图候选 + AI 排序，几秒出结果。
                   </p>
                   <p>
-                    <span className="font-medium">AI 深度搜索</span>：根据所在地区综合多个本地点评/美食平台，抓真实网友口碑、价位等信号再交给 AI 综合判断，更准但更慢。
+                    <span className="font-medium">🔍 深度搜索</span>：根据所在地区综合多个本地点评/美食平台，抓真实网友口碑、价位等信号再交给 AI 综合判断，更准但更慢。
                   </p>
                 </PopoverContent>
               </Popover>
