@@ -99,7 +99,7 @@ function ResultsPage() {
       const newParsed = await parseFn({
         data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: text },
       });
-      const merged = { ...newParsed, mode: parsed.mode };
+      const merged = { ...newParsed, mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep" };
       setFreeText(text);
       setParsed(merged);
       const response = await searchFn({ data: merged });
