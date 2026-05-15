@@ -1,13 +1,18 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 
+export type WeightedCondition = {
+  text: string;
+  weight: number; // 0.1 - 1.0
+};
+
 export type ParsedRequirements = {
   city: string;
   cuisines: string[];
   dateTime: string;
-  hardFilters: string[];
-  softPreferences: string[];
-  negativeFilters: string[];
+  hardFilters: WeightedCondition[];
+  softPreferences: WeightedCondition[];
+  negativeFilters: WeightedCondition[];
   dishPreferences: string[];
   searchStrategy: string[];
 };
