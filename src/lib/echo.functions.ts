@@ -89,11 +89,11 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 注意"可以预约"虽然用了"可以"，但属于明确可验证属性，归 hard；"评分高一点"用了弱化语气"一点"，归 soft。`;
 
-    try {
+    const runOnce = async () => {
       const { output } = await generateText({
         model,
         prompt,
-        maxOutputTokens: 2000,
+        maxOutputTokens: 4000,
         output: Output.object({
           schema: ParsedSchema,
           name: "parsed_restaurant_requirements",
@@ -101,9 +101,24 @@ export const parseRequirements = createServerFn({ method: "POST" })
         }),
       });
       return output;
+    };
+
+    try {
+      try {
+        return await runOnce();
+      } catch {
+        // 一次重试，模型偶发返回不匹配 schema 的 JSON
+        return await runOnce();
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      throw new Error(`AI 解析失败：${msg}`);
+      // 兜底：返回最小可用结构，避免整页崩溃
+      console.warn("[parseRequirements] AI 解析失败，使用兜底结构：", msg);
+      return ParsedSchema.parse({
+        city: data.city,
+        cuisines: data.cuisines,
+        dateTime: data.date,
+      });
     }
   });
 
