@@ -38,15 +38,7 @@ export type Restaurant = {
     reviewCount: number | null;
     url: string | null;
     priceRange: string | null;
-    dinnerBudget: string | null;
-    lunchBudget: string | null;
     summary: string | null;
-    topDishes: string[];
-    goodPoints: string[];
-    badPoints: string[];
-    reviewQuotes: string[];
-    awards: string | null;
-    recommendedScene: string | null;
   } | null;
 };
 
