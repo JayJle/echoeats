@@ -136,9 +136,9 @@ function StepRequirements() {
                 {stage === "parsing" ? (
                   "AI 正在理解需求…"
                 ) : stage === "searching" ? (
-                  "AI 深度搜索中…"
+                  "深度搜索中…"
                 ) : (
-                  "AI 深度搜索"
+                  "🔍 深度搜索"
                 )}
               </Button>
               <Popover>
