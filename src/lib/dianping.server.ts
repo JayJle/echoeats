@@ -87,7 +87,7 @@ async function fetchDianpingShopsViaPerplexity(opts: {
           },
           {
             role: "user",
-            content: `检索「${opts.city}」的「${opts.cuisine}」餐厅，返回 12-15 家本地真实存在、口碑较好的店。优先用大众点评数据，找不到时可参考其它中文美食媒体。${hardFiltersText}
+            content: `检索「${opts.city}」的「${opts.cuisine}」餐厅，返回 12-15 家本地真实存在、口碑较好的店。优先用大众点评数据，找不到时可参考其它中文美食媒体。${synonymsText}${hardFiltersText}
 
 每家店给出（**所有字段必须直接来自大众点评页面，不要凭推测**）：
 - name: 店名（中文原名）
