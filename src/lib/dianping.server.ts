@@ -527,6 +527,7 @@ function shopToReview(shop: RawShop, extra?: ShopExtras | null): DianpingReview 
 export async function searchDianpingCuisine(opts: {
   city: string;
   cuisine: string;
+  cuisineSynonyms?: string[];
   hardFilters: string[];
   perplexityKey: string;
   firecrawlKey: string | null;
@@ -534,6 +535,7 @@ export async function searchDianpingCuisine(opts: {
   const shops = await fetchDianpingShopsViaPerplexity({
     city: opts.city,
     cuisine: opts.cuisine,
+    cuisineSynonyms: opts.cuisineSynonyms ?? [],
     hardFilters: opts.hardFilters,
     apiKey: opts.perplexityKey,
   });
