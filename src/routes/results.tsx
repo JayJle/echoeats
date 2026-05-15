@@ -162,44 +162,11 @@ function ResultsPage() {
           )}
         </div>
 
-        <div className="mb-8 bg-card border border-border rounded-2xl overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setRefineOpen((v) => !v)}
-            className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-muted/40 transition-colors"
-          >
-            <span className="text-sm font-medium">➕ 继续补充条件，重新筛选</span>
-            <span className="text-xs text-muted-foreground">
-              {refineOpen ? "收起 ▲" : "展开 ▼"}
-            </span>
-          </button>
-          {refineOpen && (
-            <div className="px-6 pb-5 space-y-3 border-t border-border">
-              <Textarea
-                value={extra}
-                onChange={(e) => setExtra(e.target.value)}
-                placeholder="例如：预算 8000 日元以内、必须有吧台、避开游客店…"
-                className="min-h-[100px] text-sm resize-none mt-4"
-                maxLength={500}
-                disabled={refining}
-              />
-              {refineError && (
-                <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
-                  {refineError}
-                </div>
-              )}
-              <div className="flex justify-end">
-                <Button
-                  onClick={applyExtraConditions}
-                  disabled={refining || !extra.trim()}
-                  size="sm"
-                >
-                  应用并重新搜索
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
+        {refineError && (
+          <div className="mb-6 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
+            {refineError}
+          </div>
+        )}
 
         {results.error && (
           <div className="mb-6 bg-warning/10 border border-warning/30 rounded-2xl p-5">
