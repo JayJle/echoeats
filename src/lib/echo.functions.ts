@@ -783,7 +783,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         for (const r of placeResults) {
           const top = [...r.places]
             .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-            .slice(0, 10);
+            .filter((p) => (p.rating ?? 0) >= 3.5 && (p.userRatingCount ?? 0) >= 30)
+            .slice(0, 6);
           for (const p of top) {
             tasks.push(
               fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
