@@ -840,8 +840,8 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
-              pros: pick.pros.length ? pick.pros : ["匹配当前搜索方向"],
-              cons: pick.cons.length ? pick.cons : ["请到 Google Maps 确认最新营业时间"],
+              pros: pick.pros,
+              cons: pick.cons,
               links: buildLinks(p, data.city),
             };
             return { bucket, restaurant };
