@@ -2,10 +2,9 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
-import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
+import { searchRestaurants } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
