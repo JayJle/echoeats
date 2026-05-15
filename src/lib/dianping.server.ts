@@ -442,30 +442,48 @@ function shopToCandidate(shop: RawShop, city: string, idx: number): PlaceCandida
   };
 }
 
-function shopToReview(shop: RawShop, extra?: { extraHighlights: string[]; extraComplaints: string[] } | null): DianpingReview {
-  const highlights = [
+type ShopExtras = {
+  fcHighlights: string[];
+  fcComplaints: string[];
+  pplxPros: string[];
+  pplxCons: string[];
+  sourceCount: number; // 大致来源条数（用于 sourceCount）
+};
+
+function shopToReview(shop: RawShop, extra?: ShopExtras | null): DianpingReview {
+  const allHighlights = [
     ...shop.highlights,
     ...(shop.highlightDishes.length ? [`招牌：${shop.highlightDishes.slice(0, 3).join("、")}`] : []),
-    ...(extra?.extraHighlights ?? []),
+    ...(extra?.pplxPros ?? []),
+    ...(extra?.fcHighlights ?? []),
   ];
-  const dedupedH = Array.from(new Set(highlights)).slice(0, 5);
-  const complaints = Array.from(
-    new Set([...shop.complaints, ...(extra?.extraComplaints ?? [])]),
-  ).slice(0, 3);
+  const dedupedH = Array.from(new Set(allHighlights.map((s) => s.trim()).filter(Boolean))).slice(0, 12);
+  const allComplaints = [
+    ...shop.complaints,
+    ...(extra?.pplxCons ?? []),
+    ...(extra?.fcComplaints ?? []),
+  ];
+  const complaints = Array.from(new Set(allComplaints.map((s) => s.trim()).filter(Boolean))).slice(0, 8);
   const sentiment: DianpingReview["sentiment"] =
-    complaints.length === 0 && dedupedH.length > 0
-      ? "positive"
-      : complaints.length > 0 && dedupedH.length > 0
-        ? "mixed"
+    dedupedH.length === 0 && complaints.length === 0
+      ? "unknown"
+      : complaints.length === 0
+        ? "positive"
         : dedupedH.length === 0
-          ? "unknown"
-          : "positive";
+          ? "negative"
+          : complaints.length >= dedupedH.length
+            ? "negative"
+            : "mixed";
+  const sources: string[] = ["大众点评"];
+  if ((extra?.pplxPros.length ?? 0) + (extra?.pplxCons.length ?? 0) > 0) {
+    sources.push("美团", "小红书", "知乎");
+  }
   return {
     reviewHighlights: dedupedH,
     commonComplaints: complaints,
     sentiment,
-    sourceCount: dedupedH.length + complaints.length > 0 ? 1 : 0,
-    sources: ["大众点评"],
+    sourceCount: extra?.sourceCount ?? (dedupedH.length + complaints.length > 0 ? 1 : 0),
+    sources,
     dianpingRating: shop.rating,
     dianpingRatingSource: shop.rating != null ? "dianping" : "unknown",
     priceLevel: shop.perCapita,
@@ -499,30 +517,69 @@ export async function searchDianpingCuisine(opts: {
     dedup.push(s);
   }
 
-  // Firecrawl 增强 top 5（按评分降序，需有 dianpingUrl）
-  let extras: Map<string, { extraHighlights: string[]; extraComplaints: string[] }> = new Map();
+  // 选择"重点店铺"（按评分降序 top N）做深度评论增强
+  const topShops = [...dedup]
+    .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+    .slice(0, FIRECRAWL_TOP_N);
+
+  // A: Firecrawl 多页评论抓取
+  const fcMap = new Map<string, { extraHighlights: string[]; extraComplaints: string[]; rawComments: string[] }>();
   if (opts.firecrawlKey) {
-    const top5 = [...dedup]
-      .filter((s) => s.dianpingUrl)
-      .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-      .slice(0, 5);
     const settled = await Promise.allSettled(
-      top5.map(async (s) => ({
-        name: s.name,
-        result: await enrichShopWithFirecrawl(s, opts.firecrawlKey!),
-      })),
+      topShops
+        .filter((s) => s.dianpingUrl)
+        .map(async (s) => ({
+          name: s.name,
+          result: await enrichShopWithFirecrawl(s, opts.firecrawlKey!),
+        })),
     );
     for (const r of settled) {
       if (r.status === "fulfilled" && r.value.result) {
-        extras.set(r.value.name, r.value.result);
+        fcMap.set(r.value.name, r.value.result);
       }
     }
+    console.log(`[Dianping/Firecrawl] enriched ${fcMap.size}/${topShops.length} shops`);
   }
 
-  return dedup.map((shop, idx) => ({
-    candidate: shopToCandidate(shop, opts.city, idx),
-    review: shopToReview(shop, extras.get(shop.name)),
-  }));
+  // B: Perplexity sonar-pro 网评聚合（基于 fc 拿到的原始片段做二次提炼，没有也兜底搜索）
+  const pplxMap = new Map<string, { pros: string[]; cons: string[] }>();
+  const pplxSettled = await Promise.allSettled(
+    topShops.map(async (s) => ({
+      name: s.name,
+      result: await summarizeShopReviewsViaPerplexity({
+        shopName: s.name,
+        city: opts.city,
+        rawComments: fcMap.get(s.name)?.rawComments ?? [],
+        apiKey: opts.perplexityKey,
+      }),
+    })),
+  );
+  for (const r of pplxSettled) {
+    if (r.status === "fulfilled" && r.value.result) {
+      pplxMap.set(r.value.name, r.value.result);
+    }
+  }
+  console.log(`[Dianping/PPLX-summary] aggregated ${pplxMap.size}/${topShops.length} shops`);
+
+  return dedup.map((shop, idx) => {
+    const fc = fcMap.get(shop.name);
+    const pplx = pplxMap.get(shop.name);
+    const extras: ShopExtras | null = (fc || pplx)
+      ? {
+          fcHighlights: fc?.extraHighlights ?? [],
+          fcComplaints: fc?.extraComplaints ?? [],
+          pplxPros: pplx?.pros ?? [],
+          pplxCons: pplx?.cons ?? [],
+          sourceCount:
+            (fc?.rawComments.length ?? 0) +
+            (pplx ? pplx.pros.length + pplx.cons.length : 0),
+        }
+      : null;
+    return {
+      candidate: shopToCandidate(shop, opts.city, idx),
+      review: shopToReview(shop, extras),
+    };
+  });
 }
 
 // 中国大陆城市判定：含中文字符 + 不在港澳台/日韩英文/中文白名单中
