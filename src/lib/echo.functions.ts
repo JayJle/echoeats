@@ -800,7 +800,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           if (baseline) reviewById.set(p.placeId, baseline);
         }
       }
-      if (pplxKey) {
+      if (pplxKey && data.mode !== "quick") {
         const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
         for (const r of placeResults) {
           const top = [...r.places]
