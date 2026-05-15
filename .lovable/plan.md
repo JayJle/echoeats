@@ -1,43 +1,47 @@
 
-# 把"编辑需求"挪进条件框,支持原地改写
+# 在搜索过程中加「取消」按钮
 
-## 改动文件
-仅 `src/routes/results.tsx`(以及可能用到 `Textarea`,已存在)。后端 `parseRequirements` / `searchRestaurants` 复用,不动。
+## 目标
+用户在 ① 深度/快速搜索(`/requirements`)和 ② 结果页"应用并重新搜索" / "↻ 再次搜索"(`/results`)期间,可以随时点取消,立刻退出 loading 状态、丢弃即将返回的结果、不跳转。
 
-## 具体改动
+## 取消的语义(说人话)
+- **客户端**:立刻 abort 当前 fetch(浏览器层会切 TCP),UI 立刻恢复可用、清空进度条,后续返回的数据全部忽略。
+- **服务端**:本次请求在 worker 上可能还会跑完一两秒(因为后端 server function 内部已经在并发抓 Google/Perplexity/Tabelog,中途的子请求不会回头取消)。这部分用户感知不到,只是浪费一点配额。**不改后端**,因为改造成贯穿式 `AbortSignal` 传递改动面太大、收益小。
 
-### 1. 顶部 header
-- 移除右上角的 `编辑需求` 按钮(那个 `<Link to="/requirements">`)
-- 保留 `↻ 再次搜索` 和 `重新开始`
+## 实现
 
-### 2. 条件展示框(`<div className="mb-6 bg-card ...">`)右上角加一个小按钮 `✎ 编辑`
-- 默认收起。点击后在该框最底部展开一块编辑区:
-  - 一个 `Textarea`(`min-h-[120px]`),`defaultValue` = 当前 store 里的 `freeText`(也就是上次输入的原话)
-  - 下方两个按钮:`取消`(收起,丢弃改动) / `应用并重新搜索`(主按钮)
-  - 一行小字提示:"改完点应用,会用新条件重新排一次,店铺会刷新"
-- 编辑区出现时,原来 `freeText` 的 `<details>原始描述</details>` 隐藏(避免重复)
+### 共用机制:AbortController + 请求代次 id
+两道保险:
+1. `new AbortController()`,把 `signal` 透传给 `parseFn` / `searchFn` 调用(`useServerFn` 调用支持 `{ data, signal }`,fetch 会被取消)
+2. 每次开始搜索时 `runIdRef.current++`,记下本次 `myRunId`;promise resolve 后比对,若 `myRunId !== runIdRef.current` 说明已取消,直接 `return`,不写 store、不跳转
 
-### 3. 应用逻辑
-- 点"应用并重新搜索":
-  1. `setRefining(true)`(复用现有全屏 loading 蒙层"AI 正在重新搜索餐厅…")
-  2. 调 `parseFn({ data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: 新文本 } })`
-  3. `setFreeText(新文本)` + `setParsed({ ...newParsed, mode: parsed.mode })` (沿用之前的 quick/deep 模式)
-  4. 调 `searchFn({ data: 新 parsed })`
-  5. `setResults(...)`,收起编辑区
-- 错误处理走现有 `refineError` 通道
-- 编辑期间不离开本页,用户能边看现有店铺边改
+第 2 点是兜底,即使 abort 没把 promise reject 掉,陈旧结果也不会污染状态。
 
-### 4. 行为细节
-- `Textarea` `maxLength={1000}`,与 requirements 页一致
-- 应用按钮在文本与原 `freeText` 完全相同时禁用(避免无意义重搜)
-- `refining` 期间编辑区按钮全部 disabled
-- 编辑区展开时滚动到条件框,确保用户看见(`scrollIntoView({ behavior: "smooth", block: "nearest" })`)
+### `src/routes/requirements.tsx`
+- 新增 `abortRef = useRef<AbortController | null>(null)` 和 `runIdRef = useRef(0)`
+- `runSearch` 开头:`runIdRef.current++; const myRunId = runIdRef.current; const ac = new AbortController(); abortRef.current = ac;`
+- 调用改成 `parseFn({ data, signal: ac.signal })` / `searchFn({ data, signal: ac.signal })`
+- 每次 await 后 `if (myRunId !== runIdRef.current) return;` 提前退出
+- catch 里识别 `err.name === "AbortError"` 或 signal aborted → 不显示错误、静默退出
+- 新增 `handleCancel`:`abortRef.current?.abort(); runIdRef.current++; clearTimers(); setLoading(false); setCurrentStage(null); setError(null);`
+- UI:在进度卡片右上角加一个小 `取消` 按钮(`variant="ghost" size="sm"`),loading 期间显示
+- 卸载 effect 里也调用 `abortRef.current?.abort()`(避免离开页面后回调还在跑)
+
+### `src/routes/results.tsx`
+两个调用点都加同样机制:
+- `runSearchAgain`(顶栏「↻ 再次搜索」):新建 controller,传 signal,加请求代次守卫
+- `applyEdit`(框内「应用并重新搜索」):同上
+- `handleCancel`:abort + 代次自增 + `setRefining(false)` + 清错误
+- UI:
+  - 全屏 refining 蒙层里的卡片增加一个「取消」按钮
+  - 内嵌编辑区里,refining 时把现有「应用并重新搜索」按钮文案/状态保持,旁边的「取消」按钮在 refining 期间从"取消编辑"变为"取消搜索"(共用同一个按钮,根据 `refining` 切换 onClick 和文案)
 
 ## 不做的事
-- 不改变条件 chips(硬条件/偏好/排除/菜品)的展示位置或样式
-- 不加在线 AI 流式预览
-- 不动 RestaurantCard、FeedbackPanel、底部"重新搜索"按钮
-- 不新增路由、不动 store schema
+- 不改 `src/lib/echo.functions.ts`、不改其他 server function 签名
+- 不在服务端传播 abort 信号到 Google Places / Perplexity / Tabelog 子请求(改造面太大)
+- 不引入新依赖
+- 不改 store schema
 
-## 视觉
-全部用现有 design tokens(`bg-muted/30`、`border-border`、`text-muted-foreground` 等),不引入新色。编辑区与条件框同卡片内,用 `border-t border-border pt-4 mt-4` 分隔。
+## 风险与注意
+- TanStack Start 的 `useServerFn` 调用约定是 `(opts: { data, signal? })`;如果运行时不接受 `signal`(传错被忽略),代次 id 兜底依然能保证 UI 正确性,只是 fetch 不会被真的中断。我会先按文档传 signal,无效再退化为只用代次 id。
+- abort 抛出的 Error 在不同 runtime 名字不同(`AbortError` / `DOMException`),catch 里用 `ac.signal.aborted` 直接判断更稳。
