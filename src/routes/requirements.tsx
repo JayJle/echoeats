@@ -38,7 +38,7 @@ function StepRequirements() {
     if (!city || cuisines.length === 0) navigate({ to: "/" });
   }, [city, cuisines, navigate]);
 
-  const runSearch = async (text: string) => {
+  const runSearch = async (text: string, mode: "quick" | "deep" = "deep") => {
     setError(null);
     setLoading(true);
     setFreeText(text);
@@ -47,10 +47,11 @@ function StepRequirements() {
       const parsed = await parseFn({
         data: { city, cuisines, date: "", freeText: text },
       });
-      setParsed(parsed);
+      const parsedWithMode = { ...parsed, mode };
+      setParsed(parsedWithMode);
 
       setStage("searching");
-      const response = await searchFn({ data: parsed });
+      const response = await searchFn({ data: parsedWithMode });
       setResults(response);
       navigate({ to: "/results" });
     } catch (err) {
@@ -64,13 +65,8 @@ function StepRequirements() {
     }
   };
 
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    await runSearch(value);
-  };
-
   const onSkip = async () => {
-    await runSearch("");
+    await runSearch("", "deep");
   };
 
   return (
@@ -80,7 +76,13 @@ function StepRequirements() {
       title="还有什么要求？随便写"
       hint="可跳过，先看结果再补充。预算、人数、氛围、菜品偏好、避雷……越具体越好"
     >
-      <form onSubmit={onSubmit} className="space-y-6">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void runSearch(value, "deep");
+        }}
+        className="space-y-6"
+      >
         <Textarea
           autoFocus
           value={value}
@@ -95,14 +97,14 @@ function StepRequirements() {
             {error}
           </div>
         )}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <Link
             to="/cuisines"
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             ← 返回
           </Link>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <Button
               type="button"
               variant="ghost"
@@ -111,11 +113,20 @@ function StepRequirements() {
             >
               跳过 →
             </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="lg"
+              disabled={loading || !value.trim()}
+              onClick={() => void runSearch(value, "quick")}
+            >
+              {stage === "searching" ? "搜索中…" : "⚡ 快速搜索"}
+            </Button>
             <Button type="submit" disabled={loading || !value.trim()} size="lg">
               {stage === "parsing"
                 ? "AI 正在理解需求…"
                 : stage === "searching"
-                  ? "AI 正在搜索餐厅…"
+                  ? "AI 深度搜索中…"
                   : "AI 深度搜索 →"}
             </Button>
           </div>

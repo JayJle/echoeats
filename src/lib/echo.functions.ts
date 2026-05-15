@@ -28,6 +28,7 @@ const ParsedSchema = z.object({
   searchStrategy: z.array(z.string()).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
+  mode: z.enum(["quick", "deep"]).default("deep"),
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
@@ -740,13 +741,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           const synQueries = expansion.synonyms
             .slice(0, 2)
             .map((s) => `${s} ${data.city}`);
-          const queries = Array.from(
-            new Set([
-              `${expansion.primary} ${data.city}`,
-              ...synQueries,
-              `${expansion.primary} ${data.city} ${semanticSuffix}`,
-            ]),
-          );
+          const queries = data.mode === "quick"
+            ? [`${expansion.primary} ${data.city}`]
+            : Array.from(
+                new Set([
+                  `${expansion.primary} ${data.city}`,
+                  ...synQueries,
+                  `${expansion.primary} ${data.city} ${semanticSuffix}`,
+                ]),
+              );
           const settled = await Promise.allSettled(
             queries.map((query) =>
               searchPlaces({ query, language, region, maxResults: 20 }),
@@ -799,7 +802,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           if (baseline) reviewById.set(p.placeId, baseline);
         }
       }
-      if (pplxKey) {
+      if (pplxKey && data.mode !== "quick") {
         const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
         for (const r of placeResults) {
           const top = [...r.places]
@@ -830,7 +833,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
-    if (!useDianping && pplxKey && country === "JP") {
+    if (!useDianping && pplxKey && country === "JP" && data.mode !== "quick") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
