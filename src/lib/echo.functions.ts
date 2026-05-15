@@ -527,23 +527,6 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-const MAX_AI_CANDIDATES_PER_CUISINE = 10;
-const MAX_LIVE_REVIEW_FETCH_PER_CUISINE = 4;
-const MAX_LIVE_TABELOG_FETCH_PER_CUISINE = 5;
-
-function candidateQualityScore(p: PlaceCandidate): number {
-  const ratingScore = (p.rating ?? 0) * 100;
-  const popularityScore = Math.log10((p.userRatingCount ?? 0) + 1) * 18;
-  const evidenceScore = p.reviews.length * 4 + p.photoNames.length * 2;
-  return ratingScore + popularityScore + evidenceScore;
-}
-
-function topCandidatesForCuisine(places: PlaceCandidate[], limit: number): PlaceCandidate[] {
-  return [...places]
-    .sort((a, b) => candidateQualityScore(b) - candidateQualityScore(a))
-    .slice(0, limit);
-}
-
 function buildLinks(p: PlaceCandidate, city: string, country: string) {
   const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
@@ -806,12 +789,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           if (baseline) reviewById.set(p.placeId, baseline);
         }
       }
-      const liveReviewLimit = country === "JP" ? 0 : MAX_LIVE_REVIEW_FETCH_PER_CUISINE;
-      if (pplxKey && liveReviewLimit > 0) {
+      if (pplxKey) {
         // 先批量查缓存
         const topCandidates: PlaceCandidate[] = [];
         for (const r of placeResults) {
-          topCandidates.push(...topCandidatesForCuisine(r.places, liveReviewLimit));
+          const top = [...r.places]
+            .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+            .slice(0, 10);
+          topCandidates.push(...top);
         }
         let cacheHits = 0;
         const toFetch: PlaceCandidate[] = [];
@@ -861,7 +846,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     if (!useDianping && pplxKey && country === "JP") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
-        allTargets.push(...topCandidatesForCuisine(r.places, MAX_LIVE_TABELOG_FETCH_PER_CUISINE));
+        for (const p of r.places) allTargets.push(p);
       }
       // 先批量查缓存
       let tabelogCacheHits = 0;
@@ -879,7 +864,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       );
       console.log(`[Cache] tabelog hit ${tabelogCacheHits}/${allTargets.length}`);
 
-      const CONCURRENCY = 4;
+      const CONCURRENCY = 8;
       let cursor = 0;
       const runWorker = async () => {
         while (true) {
@@ -887,7 +872,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           if (i >= toFetchTabelog.length) return;
           const p = toFetchTabelog[i];
           try {
-            const info = await fetchTabelogInfo(p.name, p.address, data.city, { fast: true });
+            const info = await fetchTabelogInfo(p.name, p.address, data.city);
             if (info) {
               tabelogById.set(p.placeId, info);
               void putCachedTabelog(p.placeId, info);
@@ -907,7 +892,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       .filter((r) => r.places.length)
       .map((r) => ({
         cuisine: r.cuisine,
-        candidates: topCandidatesForCuisine(r.places, MAX_AI_CANDIDATES_PER_CUISINE).map((p) => {
+        candidates: r.places.map((p) => {
           const review = reviewById.get(p.placeId) ?? null;
           const tabelog = tabelogById.get(p.placeId) ?? null;
           return {
@@ -956,7 +941,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       })
       .join("\n");
 
-    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**从每组最多 ${MAX_AI_CANDIDATES_PER_CUISINE} 家高质量候选中挑出符合的店；只要没有任何硬条件被证伪，都应纳入**，并给出打分和理由。
+    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何硬条件被证伪，都应纳入）**，并给出打分和理由。
 
 用户需求：
 - 城市：${data.city}
@@ -1010,7 +995,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       const result = await generateText({
         model,
         prompt,
-        maxOutputTokens: 8000,
+        maxOutputTokens: 16000,
         providerOptions: {
           lovable: {
             // 关闭 Gemini 2.5 flash 的 thinking，避免推理消耗光输出预算导致 "No output generated"
@@ -1035,7 +1020,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           prompt:
             prompt +
             `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-          maxOutputTokens: 8000,
+          maxOutputTokens: 16000,
           providerOptions: {
             lovable: {
               thinkingConfig: { thinkingBudget: 0 },
