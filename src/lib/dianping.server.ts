@@ -471,6 +471,7 @@ function shopToCandidate(shop: RawShop, city: string, idx: number): PlaceCandida
       .join("；") || null,
     location: null,
     reviews: [],
+    photoNames: [],
   };
 }
 
