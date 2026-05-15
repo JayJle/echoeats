@@ -28,6 +28,7 @@ const ParsedSchema = z.object({
   searchStrategy: z.array(z.string()).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
+  mode: z.enum(["quick", "deep"]).default("deep"),
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
