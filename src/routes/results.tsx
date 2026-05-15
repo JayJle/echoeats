@@ -194,7 +194,7 @@ function ResultsPage() {
               请回到上一步调整需求后重新搜索。
             </p>
             <Button asChild className="mt-5">
-              <Link to="/confirm">返回编辑需求</Link>
+              <Link to="/requirements">返回编辑需求</Link>
             </Button>
           </div>
         ) : (
