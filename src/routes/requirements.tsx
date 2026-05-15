@@ -5,13 +5,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { useQueryStore } from "@/lib/store";
 import { useServerFn } from "@tanstack/react-start";
-import { parseRequirements } from "@/lib/echo.functions";
+import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/requirements")({
   head: () => ({
     meta: [
       { title: "Echo Eats — 描述你的需求" },
-      { name: "description", content: "用自然语言描述预算、氛围、菜品偏好和避雷需求。" },
+      { name: "description", content: "用自然语言描述预算、氛围、菜品偏好和避雷需求。可跳过。" },
     ],
   }),
   component: StepRequirements,
@@ -19,46 +19,66 @@ export const Route = createFileRoute("/requirements")({
 
 function StepRequirements() {
   const navigate = useNavigate();
-  const { city, cuisines, date, freeText } = useQueryStore();
+  const city = useQueryStore((s) => s.city);
+  const cuisines = useQueryStore((s) => s.cuisines);
+  const freeText = useQueryStore((s) => s.freeText);
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
   const setResults = useQueryStore((s) => s.setResults);
+
   const [value, setValue] = useState(freeText);
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState<"idle" | "parsing" | "searching">("idle");
   const [error, setError] = useState<string | null>(null);
+
   const parseFn = useServerFn(parseRequirements);
+  const searchFn = useServerFn(searchRestaurants);
 
   useEffect(() => {
-    if (!date) navigate({ to: "/" });
-  }, [date, navigate]);
+    if (!city || cuisines.length === 0) navigate({ to: "/" });
+  }, [city, cuisines, navigate]);
 
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const runSearch = async (text: string) => {
     setError(null);
     setLoading(true);
-    setFreeText(value);
+    setFreeText(text);
     try {
+      setStage("parsing");
       const parsed = await parseFn({
-        data: { city, cuisines, date, freeText: value },
+        data: { city, cuisines, date: "", freeText: text },
       });
       setParsed(parsed);
-      setResults(null);
-      navigate({ to: "/confirm" });
+
+      setStage("searching");
+      const response = await searchFn({ data: parsed });
+      setResults(response);
+      navigate({ to: "/results" });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "解析失败，请重试";
+      const msg = err instanceof Error ? err.message : "搜索失败，请重试";
       if (msg.includes("429")) setError("请求过于频繁，请稍后再试");
       else if (msg.includes("402")) setError("AI 额度已用完，请在 Settings → Workspace 添加额度");
       else setError(msg);
     } finally {
       setLoading(false);
+      setStage("idle");
     }
+  };
+
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    await runSearch(value);
+  };
+
+  const onSkip = async () => {
+    await runSearch("");
   };
 
   return (
     <StepShell
-      step={4}
+      step={3}
+      total={3}
       title="还有什么要求？随便写"
-      hint="预算、人数、氛围、菜品偏好、避雷……越具体越好"
+      hint="可跳过，先看结果再补充。预算、人数、氛围、菜品偏好、避雷……越具体越好"
     >
       <form onSubmit={onSubmit} className="space-y-6">
         <Textarea
@@ -77,14 +97,28 @@ function StepRequirements() {
         )}
         <div className="flex items-center justify-between">
           <Link
-            to="/when"
+            to="/cuisines"
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             ← 返回
           </Link>
-          <Button type="submit" disabled={loading} size="lg">
-            {loading ? "AI 正在理解需求…" : "AI 帮我找餐厅 →"}
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onSkip}
+              disabled={loading}
+            >
+              跳过 →
+            </Button>
+            <Button type="submit" disabled={loading || !value.trim()} size="lg">
+              {stage === "parsing"
+                ? "AI 正在理解需求…"
+                : stage === "searching"
+                  ? "AI 正在搜索餐厅…"
+                  : "AI 帮我找餐厅 →"}
+            </Button>
+          </div>
         </div>
       </form>
     </StepShell>
