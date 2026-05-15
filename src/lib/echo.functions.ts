@@ -694,26 +694,39 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       };
     }
 
-    // 海外城市：再走 Perplexity 网评摘要（国内已在大众点评流程里拿到）
-    if (!useDianping && pplxKey) {
-      const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
+    // 海外城市：先把 Google Places 一手 reviews 作为基线证据塞入（零幻觉），
+    // 再用 Perplexity 网评做补充合并；Perplexity 失败也不影响 pros/cons 显示。
+    if (!useDianping) {
       for (const r of placeResults) {
-        const top = [...r.places]
-          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-          .slice(0, 10);
-        for (const p of top) {
-          tasks.push(
-            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
-              id: p.placeId,
-              summary: s,
-            })),
-          );
+        for (const p of r.places) {
+          const baseline = googleReviewsToSummary(p);
+          if (baseline) reviewById.set(p.placeId, baseline);
         }
       }
-      const settled = await Promise.allSettled(tasks);
-      for (const s of settled) {
-        if (s.status === "fulfilled" && s.value.summary && s.value.summary.sourceCount > 0) {
-          reviewById.set(s.value.id, s.value.summary);
+      if (pplxKey) {
+        const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
+        for (const r of placeResults) {
+          const top = [...r.places]
+            .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+            .slice(0, 10);
+          for (const p of top) {
+            tasks.push(
+              fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
+                id: p.placeId,
+                summary: s,
+              })),
+            );
+          }
+        }
+        const settled = await Promise.allSettled(tasks);
+        for (const s of settled) {
+          if (s.status === "fulfilled" && s.value.summary) {
+            const existing = reviewById.get(s.value.id);
+            reviewById.set(
+              s.value.id,
+              existing ? mergeReviewSummaries(existing, s.value.summary) : s.value.summary,
+            );
+          }
         }
       }
     }
