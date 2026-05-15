@@ -1,62 +1,88 @@
 ## 目标
-- **缩短前置流程**：用户只需输入"城市"+"料理"，描述可选，直接出结果。
-- **结果页可继续夹条件**：边看边补充需求并重新筛选。
-- **结果页加两个动作**：
-  - **重新搜索**：清空所有条件回到首页。
-  - **再次搜索**：用当前条件再跑一次（不改条件）。
 
-## 新流程
+冷门城市（函馆、轻井泽、由布院、清迈、釜山郊区、佛罗伦萨…）当前因为白名单正则覆盖不到，被错误路由（例如"函馆"被当成中国城市走大众点评分支）。
 
-```text
-/  (城市)
-   ↓
-/cuisines  (料理 + 可选描述 + [开始搜索] 按钮)
-   ↓ 后台一次性 parse + search
-/results
+让 AI 在 parse 阶段就输出 `country`（ISO 3166-1 alpha-2），下游所有"该走哪个数据源 / 用什么语言 / 要不要查 Tabelog"的判断改用这个字段，丢弃白名单正则。
+
+## 改动清单（4 个文件）
+
+### 1. `src/lib/echo.functions.ts` — parseRequirements 输出 country
+
+**ParsedSchema 增加字段**：
+```ts
+country: z.string().length(2).default("")  // ISO 3166-1 alpha-2，如 "JP" / "CN" / "KR" / "US"
+language: z.string().default("")           // BCP 47，如 "ja" / "zh-CN" / "ko" / "en"
 ```
 
-`/when`、`/requirements`、`/confirm` 三个独立步骤页 **从主流程移除**（路由文件保留但不再链入；`/confirm` 仍保留入口，从结果页"编辑需求"可选进入做精细编辑，但默认不走）。
+**Prompt 末尾新增章节**：
+> ## 国家/语言识别
+> - country：根据 city 推断 ISO 3166-1 alpha-2 国家码。包括非著名城市：函馆/小樽/旭川/轻井泽 → JP；清迈 → TH；佛罗伦萨/米兰 → IT 等。识别不出留 ""。
+> - language：该城市本地主要语言的 BCP 47 代码（JP→ja, CN/HK/TW→zh-CN/zh-HK/zh-TW, KR→ko, 否则按国家映射，识别不出留 ""）。
 
-## 改动清单
+**兜底分支**（catch 里）也带上 `country: ""`, `language: ""`，下游处理空值。
 
-### 1. 后端 `src/lib/echo.functions.ts`
-- `RequirementsInputSchema` 的 `date` 改为 `z.string().default("")`（可选）。
-- `parseRequirements` prompt 中：当 date 为空时说明"用户未指定日期，dateTime 字段填 '未指定'，不要把日期当硬条件"。
-- 不动 search 主体逻辑。
+### 2. `src/lib/echo.functions.ts` — searchRestaurants 改用 parsed.country
 
-### 2. `src/routes/cuisines.tsx`
-- 在原料理输入下方加一个 `Textarea`（可选描述，placeholder 与原 requirements 页一致）。
-- 提交按钮文案改为 **"AI 帮我找餐厅 →"**，点击后：
-  1. `setCuisines` + `setFreeText` + `setDate("")`
-  2. 调用 `parseRequirements`（与现 requirements 页同款逻辑）
-  3. 调用 `searchRestaurants`
-  4. 跳 `/results`
-- 显示统一的 loading 文案（"AI 正在理解需求…" → "AI 正在搜索餐厅…"）和错误处理（429 / 402 / 其他）。
+**目前**：
+```ts
+const useDianping = isMainlandChinaCity(data.city);                  // 行 617
+const language = guessLanguageCode(data.city);                       // 行 688
+const region = guessRegionCode(data.city);                           // 行 689
+if (!useDianping && pplxKey && guessRegionCode(data.city) === "JP")  // 行 798
+```
 
-### 3. `src/routes/results.tsx` 新增三块
-- **重新搜索**（已存在）：保留底部按钮，行为不变（reset store 回 `/`）。
-- **再次搜索**（新）：放在头部 `编辑需求` 按钮旁，点击后用当前 `parsed` 再跑一次 `searchRestaurants`，loading 期间页面遮罩 + 刷新 `results`。
-- **补充条件面板**（新，放在结果列表上方）：
-  - 折叠卡片，标题"➕ 继续补充条件"，展开后显示 textarea + "应用并重新搜索" 按钮。
-  - 提交时：把新文本与原 `freeText` 拼接（"\n\n[补充] " 前缀），重新 `parseRequirements` + `searchRestaurants`，更新 store，原地刷新。
-  - 成功后清空补充输入框并自动收起。
+**改为**（基于 parsed 数据，正则只作 fallback）：
+```ts
+const country = parsed.country || guessRegionCode(data.city) || "";
+const language = parsed.language || guessLanguageCode(data.city);
+const useDianping = country === "CN" || country === "HK" || country === "MO";
+const region = country || undefined;
+if (!useDianping && pplxKey && country === "JP") { /* Tabelog 补充 */ }
+```
 
-### 4. `/when` 与 `/requirements` 页面
-- 路由文件保留（避免 routeTree 重生成失败和老 URL 访问），但 `/when` 页面顶部 `useEffect` 改为直接 redirect 到 `/cuisines`（防呆）。
-- `/requirements` 仍可工作，作为"编辑需求"进阶入口。
+`buildLinks` 里的 `isChineseCity` / `isJapaneseCity` 调用同样改为接收 country 参数。
+
+### 3. `searchRestaurants` 接收 country/language
+
+`SearchInput` schema 增加可选 `country`、`language` 字段，前端调 `searchRestaurants` 时把 `parsed.country` / `parsed.language` 一并传入。这样 country 不需要在 server 里二次推断。
+
+### 4. `src/routes/cuisines.tsx` 与 `src/routes/results.tsx` 传递 country
+
+`cuisines.tsx` 调 `searchFn` 时：
+```ts
+await searchFn({ data: { city, cuisines, freeText, country: parsed.country, language: parsed.language } })
+```
+
+`results.tsx` 的"再次搜索"和"应用补充条件"两处同样传递。
 
 ## 不动的部分
-- 后端搜索主流程、Tabelog 抓取、排序、价格筛选逻辑全部不变。
-- `useQueryStore` 字段不增减（`date` 允许为空字符串，已经是 string）。
-- `/results` 卡片渲染、`FeedbackPanel` 不动。
 
-## 风险与边界
-- 历史 sessionStorage 中可能有旧 `date` 值，新流程 setDate("") 会覆盖；用户从老链接进 `/when` 自动跳 `/cuisines`。
-- 后端 prompt 在 dateTime="未指定" 时需要明确不把"今天/明天营业"当硬条件，避免误判。
-- "再次搜索"在条件未变时的结果可能与上次相同（AI 有随机性，通常会略有差异），属预期。
+- `dianping.server.ts` / `google-places.server.ts` / `tabelog.server.ts` 内部逻辑全部不动。
+- `isMainlandChinaCity` / `guessRegionCode` / `guessLanguageCode` **保留**作为 AI 失败时的 fallback，不删除。
+- 评论摘要、Tabelog 抓取、价格筛选、AI 评估 prompt 全部不动。
+- `useQueryStore` 不增字段（country/language 只在内存里流转，不持久化到 sessionStorage）。
+
+## 数据流
+
+```text
+/cuisines  →  parseRequirements → parsed { country: "JP", language: "ja", ... }
+                                     ↓
+                              searchRestaurants({ ...parsed })
+                                     ↓
+              country=="CN/HK/MO"?  → 大众点评分支
+              country=="JP"?         → Google Places + Tabelog 补充
+              其它                   → Google Places 纯 Google 分支
+```
 
 ## 验证
-- 进入首页→输入"东京"→不填描述直接点"AI 帮我找餐厅"→应在 ~10–20s 内看到结果。
-- 在结果页展开补充条件输入"预算 8000 日元以内"→应用→列表刷新且原料理分组保留。
-- 点"再次搜索"→loading→列表刷新。
-- 点"重新搜索"→回首页且所有输入清空。
+
+1. 输入"函馆 寿司"→ parse 应返回 `country:"JP"`、`language:"ja"` → 走 Google Places + Tabelog → 出店、链接含 Tabelog 跳转。
+2. 输入"轻井泽 法餐"→ 同上走 JP 分支。
+3. 输入"清迈 泰餐"→ `country:"TH"` → 走纯 Google 分支，不触发 Tabelog/大众点评。
+4. 输入"上海 本帮菜"→ `country:"CN"` → 仍然走大众点评分支（与现状一致）。
+5. AI parse 失败时（罕见）→ fallback 到正则，行为与今天一致，不崩。
+
+## 风险
+
+- 模型偶发把 city 国家判错（如把 "Springfield" 判成 US 但其实在 UK）。fallback 正则不覆盖时仍可能走错，但这种边缘情况比现在好得多（现在是大量城市都走错）。
+- AI parse 多输出 2 个字段，token 消耗忽略不计。
