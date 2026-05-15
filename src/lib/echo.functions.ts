@@ -12,17 +12,22 @@ const ParseInput = z.object({
   freeText: z.string().default(""),
 });
 
+const WeightedConditionSchema = z.object({
+  text: z.string(),
+  weight: z.number().min(0).max(1).default(0.7),
+});
+
 const ParsedSchema = z.object({
   city: z.string().default(""),
   cuisines: z.array(z.string()).default([]),
   dateTime: z.string().default(""),
-  hardFilters: z.array(z.string()).default([]),
-  softPreferences: z.array(z.string()).default([]),
-  negativeFilters: z.array(z.string()).default([]),
+  hardFilters: z.array(WeightedConditionSchema).default([]),
+  softPreferences: z.array(WeightedConditionSchema).default([]),
+  negativeFilters: z.array(WeightedConditionSchema).default([]),
   dishPreferences: z.array(z.string()).default([]),
   searchStrategy: z.array(z.string()).default([]),
-  country: z.string().default(""), // ISO 3166-1 alpha-2，如 "JP" / "CN" / "KR" / "US"
-  language: z.string().default(""), // BCP 47，如 "ja" / "zh-CN" / "ko" / "en"
+  country: z.string().default(""), // ISO 3166-1 alpha-2
+  language: z.string().default(""), // BCP 47
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
