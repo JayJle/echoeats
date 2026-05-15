@@ -162,6 +162,18 @@ async function fetchDianpingShopsViaPerplexity(opts: {
       console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: empty content`);
       return [];
     }
+    // 反幻觉：必须有 citations，否则模型很可能在编造
+    const rawCitations: unknown = json?.citations ?? json?.search_results ?? [];
+    const citationCount = Array.isArray(rawCitations)
+      ? (rawCitations as unknown[]).filter((c) => {
+          const u = typeof c === "string" ? c : (c as { url?: string })?.url;
+          return typeof u === "string" && /^https?:\/\//i.test(u);
+        }).length
+      : 0;
+    if (citationCount === 0) {
+      console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: no citations → discard (likely hallucinated)`);
+      return [];
+    }
     let parsed: { shops?: unknown };
     try {
       parsed = JSON.parse(content);
@@ -183,7 +195,7 @@ async function fetchDianpingShopsViaPerplexity(opts: {
       console.warn(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: no shops. parsed=${JSON.stringify(parsed).slice(0, 300)}`);
       return [];
     }
-    console.log(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: got ${parsed.shops.length} shops`);
+    console.log(`[Dianping/PPLX] ${opts.cuisine}@${opts.city}: got ${parsed.shops.length} shops, ${citationCount} citations`);
     const out: RawShop[] = [];
     for (const raw of parsed.shops) {
       if (!raw || typeof raw !== "object") continue;
@@ -386,6 +398,21 @@ async function summarizeShopReviewsViaPerplexity(opts: {
     const json = await res.json();
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return null;
+
+    // 反幻觉：要么有 Perplexity citations，要么我们已经从 Firecrawl 喂了真实片段；
+    // 两者都没有 → 模型只是凭空生成，整条丢弃
+    const rawCitations: unknown = json?.citations ?? json?.search_results ?? [];
+    const citationCount = Array.isArray(rawCitations)
+      ? (rawCitations as unknown[]).filter((c) => {
+          const u = typeof c === "string" ? c : (c as { url?: string })?.url;
+          return typeof u === "string" && /^https?:\/\//i.test(u);
+        }).length
+      : 0;
+    if (citationCount === 0 && opts.rawComments.length === 0) {
+      console.warn(`[Dianping/PPLX-summary] ${opts.shopName}: no citations & no firecrawl evidence → discard`);
+      return null;
+    }
+
     let parsed: { pros?: unknown; cons?: unknown };
     try {
       parsed = JSON.parse(content);
