@@ -255,7 +255,7 @@ async function fetchReviewSummary(
   apiKey: string,
 ): Promise<ReviewSummary | null> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), 12000);
   try {
     const res = await fetch("https://api.perplexity.ai/chat/completions", {
       method: "POST",
