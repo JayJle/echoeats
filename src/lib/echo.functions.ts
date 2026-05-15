@@ -828,6 +828,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             primaryType: p.primaryType,
             editorialSummary: p.editorialSummary,
             realWorldReviews: review,
+            tabelog: tabelog
+              ? {
+                  rating: tabelog.rating,
+                  reviewCount: tabelog.reviewCount,
+                  priceRange: tabelog.priceRange,
+                  summary: tabelog.summary,
+                }
+              : null,
           };
         }),
       }));
