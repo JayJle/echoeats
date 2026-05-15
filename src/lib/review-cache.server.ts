@@ -47,7 +47,7 @@ export async function putCachedReview(
     const { error } = await supabaseAdmin
       .from("review_cache")
       .upsert(
-        { place_id: placeId, city, payload: payload as object, fetched_at: new Date().toISOString() },
+        { place_id: placeId, city, payload: payload as never, fetched_at: new Date().toISOString() },
         { onConflict: "place_id" },
       );
     if (error) console.warn(`[Cache] review put error: ${error.message}`);
@@ -87,7 +87,7 @@ export async function putCachedTabelog(
     const { error } = await supabaseAdmin
       .from("tabelog_cache")
       .upsert(
-        { place_id: placeId, payload: info as unknown as object, fetched_at: new Date().toISOString() },
+        { place_id: placeId, payload: info as never, fetched_at: new Date().toISOString() },
         { onConflict: "place_id" },
       );
     if (error) console.warn(`[Cache] tabelog put error: ${error.message}`);
