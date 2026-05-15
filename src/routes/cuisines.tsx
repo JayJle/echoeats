@@ -22,12 +22,13 @@ function StepCuisines() {
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
   const setCuisines = useQueryStore((s) => s.setCuisines);
+  const hasHydrated = useQueryStore((s) => s._hasHydrated);
 
   const [value, setValue] = useState(cuisines.join("，"));
 
   useEffect(() => {
-    if (!city) navigate({ to: "/" });
-  }, [city, navigate]);
+    if (hasHydrated && !city) navigate({ to: "/" });
+  }, [hasHydrated, city, navigate]);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
