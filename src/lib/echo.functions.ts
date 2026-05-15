@@ -728,7 +728,6 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             new Set([
               `${expansion.primary} ${data.city}`,
               ...synQueries,
-              `${expansion.primary} ${data.city} ${semanticSuffix}`,
             ]),
           );
           const settled = await Promise.allSettled(
