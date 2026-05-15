@@ -351,19 +351,19 @@ async function fetchReviewSummary(
         ? parsed.priceContext.slice(0, 30)
         : null;
     // 仅在有 citation 时认可 sources（按真实 citation 数为 sourceCount）
-    const sources =
+    const sources: string[] =
       citationUrls.length > 0 && Array.isArray(parsed.sources)
         ? Array.from(
             new Set(
-              parsed.sources.filter((s: unknown): s is string =>
+              (parsed.sources as unknown[]).filter((s): s is string =>
                 typeof s === "string" && (SOURCE_ENUM as readonly string[]).includes(s),
               ),
             ),
           )
         : [];
     return {
-      reviewHighlights: highlights,
-      commonComplaints: complaints,
+      reviewHighlights: highlights as string[],
+      commonComplaints: complaints as string[],
       sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
       sourceCount: citationUrls.length,
       sources,
