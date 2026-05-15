@@ -95,33 +95,19 @@ function StepRequirements() {
             {error}
           </div>
         )}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:flex-wrap">
-          <div className="flex gap-2 order-last sm:order-first">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => navigate({ to: "/cuisines" })}
-              disabled={loading}
-              className="flex-1 sm:flex-none"
-            >
-              ← 返回
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={onSkip}
-              disabled={loading}
-              className="flex-1 sm:flex-none"
-            >
-              跳过 →
-            </Button>
-          </div>
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-3 sm:flex-wrap">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <Link
+            to="/cuisines"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            ← 返回
+          </Link>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-3">
             <Button
               type="button"
               variant="secondary"
               size="lg"
-              disabled={loading || !value.trim()}
+              disabled={loading}
               onClick={() => void runSearch(value, "quick")}
               className="w-full sm:w-auto"
             >
@@ -130,7 +116,7 @@ function StepRequirements() {
             <div className="relative w-full sm:w-auto">
               <Button
                 type="submit"
-                disabled={loading || !value.trim()}
+                disabled={loading}
                 size="lg"
                 className="w-full sm:w-auto"
               >
