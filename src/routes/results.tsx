@@ -135,9 +135,6 @@ function ResultsPage() {
           >
             ↻ 再次搜索
           </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link to="/requirements">编辑需求</Link>
-          </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="outline" size="sm">重新开始</Button>
