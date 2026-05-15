@@ -65,10 +65,11 @@ async function callPerplexity(opts: {
   address: string;
   city: string;
   area: string;
+  timeoutMs?: number;
 }): Promise<{ json: unknown; ok: boolean; status: number } | null> {
-  const { apiKey, stage, name, address, city, area } = opts;
+  const { apiKey, stage, name, address, city, area, timeoutMs = 20000 } = opts;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const isFirst = stage === "sonar";
     const userPrompt = isFirst
@@ -238,6 +239,7 @@ export async function fetchTabelogInfo(
   name: string,
   address: string,
   city: string,
+  opts: { fast?: boolean } = {},
 ): Promise<TabelogInfo | null> {
   const apiKey = process.env.PERPLEXITY_API_KEY;
   if (!apiKey) return null;
@@ -248,11 +250,19 @@ export async function fetchTabelogInfo(
   const area = extractJPArea(address);
 
   // Stage 1
-  const r1 = await callPerplexity({ apiKey, stage: "sonar", name, address, city, area });
+  const r1 = await callPerplexity({
+    apiKey,
+    stage: "sonar",
+    name,
+    address,
+    city,
+    area,
+    timeoutMs: opts.fast ? 7000 : 20000,
+  });
   let info = r1?.ok ? parseStage(name, "sonar", r1.json) : null;
 
   // Stage 2 fallback
-  if (!info) {
+  if (!info && !opts.fast) {
     const r2 = await callPerplexity({
       apiKey,
       stage: "sonar-pro",
