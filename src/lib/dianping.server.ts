@@ -466,6 +466,7 @@ function shopToCandidate(shop: RawShop, city: string, idx: number): PlaceCandida
       .filter(Boolean)
       .join("；") || null,
     location: null,
+    reviews: [],
   };
 }
 
