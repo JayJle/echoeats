@@ -124,6 +124,7 @@ import {
   filterByCuisineRelevance,
   type CuisineExpansion,
 } from "./cuisine-expand.server";
+import { fetchTabelogInfo, type TabelogInfo } from "./tabelog.server";
 
 // Perplexity 真实网评摘要
 type ReviewSummary = {
