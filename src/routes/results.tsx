@@ -1,8 +1,11 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
+import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
@@ -30,6 +33,21 @@ function ResultsPage() {
   const navigate = useNavigate();
   const parsed = useQueryStore((s) => s.parsed);
   const results = useQueryStore((s) => s.results);
+  const city = useQueryStore((s) => s.city);
+  const cuisines = useQueryStore((s) => s.cuisines);
+  const freeText = useQueryStore((s) => s.freeText);
+  const setFreeText = useQueryStore((s) => s.setFreeText);
+  const setParsed = useQueryStore((s) => s.setParsed);
+  const setResults = useQueryStore((s) => s.setResults);
+
+  const parseFn = useServerFn(parseRequirements);
+  const searchFn = useServerFn(searchRestaurants);
+
+  const [refining, setRefining] = useState(false);
+  const [refineStage, setRefineStage] = useState<"idle" | "parsing" | "searching">("idle");
+  const [refineError, setRefineError] = useState<string | null>(null);
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [extra, setExtra] = useState("");
 
   useEffect(() => {
     if (!results || !parsed) navigate({ to: "/" });
@@ -39,19 +57,81 @@ function ResultsPage() {
 
   const isEmpty = results.groups.length === 0;
 
+  const runSearchAgain = async () => {
+    setRefineError(null);
+    setRefining(true);
+    setRefineStage("searching");
+    try {
+      const response = await searchFn({ data: parsed });
+      setResults(response);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "搜索失败";
+      setRefineError(msg.includes("429") ? "请求过于频繁，请稍后再试" : msg);
+    } finally {
+      setRefining(false);
+      setRefineStage("idle");
+    }
+  };
+
+  const applyExtraConditions = async () => {
+    const trimmed = extra.trim();
+    if (!trimmed) return;
+    const combined = freeText ? `${freeText}\n\n[补充] ${trimmed}` : trimmed;
+    setRefineError(null);
+    setRefining(true);
+    try {
+      setRefineStage("parsing");
+      const newParsed = await parseFn({
+        data: { city, cuisines, date: "", freeText: combined },
+      });
+      setFreeText(combined);
+      setParsed(newParsed);
+
+      setRefineStage("searching");
+      const response = await searchFn({ data: newParsed });
+      setResults(response);
+      setExtra("");
+      setRefineOpen(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "搜索失败";
+      setRefineError(msg.includes("429") ? "请求过于频繁，请稍后再试" : msg);
+    } finally {
+      setRefining(false);
+      setRefineStage("idle");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <header className="px-6 py-5 flex items-center justify-between border-b border-border/60">
         <Link to="/" className="font-semibold tracking-tight">
           Echo <span className="text-primary">Eats</span>
         </Link>
-        <Button asChild variant="outline" size="sm">
-          <Link to="/confirm">编辑需求</Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={runSearchAgain}
+            disabled={refining}
+          >
+            ↻ 再次搜索
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/confirm">编辑需求</Link>
+          </Button>
+        </div>
       </header>
 
+      {refining && (
+        <div className="fixed inset-0 z-50 bg-background/70 backdrop-blur-sm flex items-center justify-center">
+          <div className="bg-card border border-border rounded-2xl px-6 py-5 shadow-lg text-sm">
+            {refineStage === "parsing" ? "AI 正在理解新条件…" : "AI 正在重新搜索餐厅…"}
+          </div>
+        </div>
+      )}
+
       <main className="max-w-3xl mx-auto px-4 py-10">
-        <div className="mb-8 bg-card border border-border rounded-2xl p-6">
+        <div className="mb-6 bg-card border border-border rounded-2xl p-6">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">搜索结果</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">
             {parsed.city} · {parsed.cuisines.join(" / ")}
@@ -67,6 +147,45 @@ function ResultsPage() {
               </span>
             ))}
           </div>
+        </div>
+
+        <div className="mb-8 bg-card border border-border rounded-2xl overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setRefineOpen((v) => !v)}
+            className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-muted/40 transition-colors"
+          >
+            <span className="text-sm font-medium">➕ 继续补充条件，重新筛选</span>
+            <span className="text-xs text-muted-foreground">
+              {refineOpen ? "收起 ▲" : "展开 ▼"}
+            </span>
+          </button>
+          {refineOpen && (
+            <div className="px-6 pb-5 space-y-3 border-t border-border">
+              <Textarea
+                value={extra}
+                onChange={(e) => setExtra(e.target.value)}
+                placeholder="例如：预算 8000 日元以内、必须有吧台、避开游客店…"
+                className="min-h-[100px] text-sm resize-none mt-4"
+                maxLength={500}
+                disabled={refining}
+              />
+              {refineError && (
+                <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
+                  {refineError}
+                </div>
+              )}
+              <div className="flex justify-end">
+                <Button
+                  onClick={applyExtraConditions}
+                  disabled={refining || !extra.trim()}
+                  size="sm"
+                >
+                  应用并重新搜索
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         {results.error && (

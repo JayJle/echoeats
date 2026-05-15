@@ -8,7 +8,7 @@ const PLATFORMS = ["Google Maps", "Tabelog", "Yelp", "大众点评", "美团"];
 const ParseInput = z.object({
   city: z.string().min(1),
   cuisines: z.array(z.string()).min(1),
-  date: z.string().min(1),
+  date: z.string().default(""),
   freeText: z.string().default(""),
 });
 
@@ -35,7 +35,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 - 城市：${data.city}
 - 料理类型：${data.cuisines.join("、")}
-- 日期：${data.date}
+- 日期：${data.date || "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）"}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
 请把需求结构化为 JSON。所有内容用简体中文。如果用户没提到某类，返回空数组。
@@ -117,7 +117,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
       return ParsedSchema.parse({
         city: data.city,
         cuisines: data.cuisines,
-        dateTime: data.date,
+        dateTime: data.date || "未指定",
       });
     }
   });
