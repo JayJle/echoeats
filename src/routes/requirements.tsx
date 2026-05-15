@@ -38,7 +38,7 @@ function StepRequirements() {
     if (!city || cuisines.length === 0) navigate({ to: "/" });
   }, [city, cuisines, navigate]);
 
-  const runSearch = async (text: string) => {
+  const runSearch = async (text: string, mode: "quick" | "deep" = "deep") => {
     setError(null);
     setLoading(true);
     setFreeText(text);
@@ -47,10 +47,11 @@ function StepRequirements() {
       const parsed = await parseFn({
         data: { city, cuisines, date: "", freeText: text },
       });
-      setParsed(parsed);
+      const parsedWithMode = { ...parsed, mode };
+      setParsed(parsedWithMode);
 
       setStage("searching");
-      const response = await searchFn({ data: parsed });
+      const response = await searchFn({ data: parsedWithMode });
       setResults(response);
       navigate({ to: "/results" });
     } catch (err) {
@@ -64,13 +65,8 @@ function StepRequirements() {
     }
   };
 
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    await runSearch(value);
-  };
-
   const onSkip = async () => {
-    await runSearch("");
+    await runSearch("", "deep");
   };
 
   return (
