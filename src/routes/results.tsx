@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
 
 export const Route = createFileRoute("/results")({
