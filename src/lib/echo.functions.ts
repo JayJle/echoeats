@@ -792,29 +792,33 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }
     }
 
-    // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要，作为 Google 之外的独立信号
+    // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
+    // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
     if (!useDianping && pplxKey && guessRegionCode(data.city) === "JP") {
-      const tasks: Array<Promise<{ id: string; info: TabelogInfo | null }>> = [];
+      const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
-        const top = [...r.places]
-          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-          .slice(0, 15);
-        for (const p of top) {
-          tasks.push(
-            fetchTabelogInfo(p.name, p.address, data.city).then((info) => ({
-              id: p.placeId,
-              info,
-            })),
-          );
-        }
+        for (const p of r.places) allTargets.push(p);
       }
-      const settled = await Promise.allSettled(tasks);
-      for (const s of settled) {
-        if (s.status === "fulfilled" && s.value.info) {
-          tabelogById.set(s.value.id, s.value.info);
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const runWorker = async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= allTargets.length) return;
+          const p = allTargets[i];
+          try {
+            const info = await fetchTabelogInfo(p.name, p.address, data.city);
+            if (info) tabelogById.set(p.placeId, info);
+          } catch (e) {
+            console.warn(`[Tabelog] ${p.name} task error:`, e instanceof Error ? e.message : e);
+          }
         }
-      }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+      );
+      console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
 
     const candidatesForPrompt = placeResults
