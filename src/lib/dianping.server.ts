@@ -52,6 +52,7 @@ function safeId(input: string, fallback: string): string {
 async function fetchDianpingShopsViaPerplexity(opts: {
   city: string;
   cuisine: string;
+  cuisineSynonyms: string[];
   hardFilters: string[];
   apiKey: string;
 }): Promise<RawShop[]> {
@@ -60,6 +61,9 @@ async function fetchDianpingShopsViaPerplexity(opts: {
   try {
     const hardFiltersText = opts.hardFilters.length
       ? `\n用户硬性需求（请在筛选时尽量考虑，但不要因此减少结果数量）：${opts.hardFilters.join("；")}`
+      : "";
+    const synonymsText = opts.cuisineSynonyms.length
+      ? `\n料理同义词（同时检索这些写法以提高召回率）：${opts.cuisineSynonyms.join("、")}`
       : "";
     const res = await fetch("https://api.perplexity.ai/chat/completions", {
       method: "POST",
@@ -83,7 +87,7 @@ async function fetchDianpingShopsViaPerplexity(opts: {
           },
           {
             role: "user",
-            content: `检索「${opts.city}」的「${opts.cuisine}」餐厅，返回 12-15 家本地真实存在、口碑较好的店。优先用大众点评数据，找不到时可参考其它中文美食媒体。${hardFiltersText}
+            content: `检索「${opts.city}」的「${opts.cuisine}」餐厅，返回 12-15 家本地真实存在、口碑较好的店。优先用大众点评数据，找不到时可参考其它中文美食媒体。${synonymsText}${hardFiltersText}
 
 每家店给出（**所有字段必须直接来自大众点评页面，不要凭推测**）：
 - name: 店名（中文原名）
@@ -523,6 +527,7 @@ function shopToReview(shop: RawShop, extra?: ShopExtras | null): DianpingReview 
 export async function searchDianpingCuisine(opts: {
   city: string;
   cuisine: string;
+  cuisineSynonyms?: string[];
   hardFilters: string[];
   perplexityKey: string;
   firecrawlKey: string | null;
@@ -530,6 +535,7 @@ export async function searchDianpingCuisine(opts: {
   const shops = await fetchDianpingShopsViaPerplexity({
     city: opts.city,
     cuisine: opts.cuisine,
+    cuisineSynonyms: opts.cuisineSynonyms ?? [],
     hardFilters: opts.hardFilters,
     apiKey: opts.perplexityKey,
   });

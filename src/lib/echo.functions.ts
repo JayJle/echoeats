@@ -118,6 +118,11 @@ import {
   searchDianpingCuisine,
   type DianpingReview,
 } from "./dianping.server";
+import {
+  expandCuisineQueries,
+  filterByCuisineRelevance,
+  type CuisineExpansion,
+} from "./cuisine-expand.server";
 
 // Perplexity 真实网评摘要
 type ReviewSummary = {
@@ -595,6 +600,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
 
     const reviewById = new Map<string, ReviewSummary>();
+    const cuisineExpansions = new Map<string, CuisineExpansion>();
     let placeResults: Array<{
       cuisine: string;
       places: PlaceCandidate[];
@@ -607,9 +613,17 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       const settled = await Promise.all(
         data.cuisines.map(async (cuisine) => {
           try {
+            const expansion = await expandCuisineQueries({
+              cuisine,
+              city: data.city,
+              language: "zh-CN",
+              apiKey: aiKey,
+            });
+            cuisineExpansions.set(cuisine, expansion);
             const items = await searchDianpingCuisine({
               city: data.city,
               cuisine,
+              cuisineSynonyms: expansion.synonyms,
               hardFilters: data.hardFilters,
               perplexityKey: pplxKey!,
               firecrawlKey,
@@ -648,10 +662,23 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       })();
       placeResults = await Promise.all(
         data.cuisines.map(async (cuisine) => {
-          const queries =
-            semanticSuffix === "best"
-              ? [`${cuisine} ${data.city}`, `best ${cuisine} ${data.city}`]
-              : [`${cuisine} ${data.city}`, `${cuisine} ${data.city} ${semanticSuffix}`];
+          const expansion = await expandCuisineQueries({
+            cuisine,
+            city: data.city,
+            language,
+            apiKey: aiKey,
+          });
+          cuisineExpansions.set(cuisine, expansion);
+          const synQueries = expansion.synonyms
+            .slice(0, 2)
+            .map((s) => `${s} ${data.city}`);
+          const queries = Array.from(
+            new Set([
+              `${expansion.primary} ${data.city}`,
+              ...synQueries,
+              `${expansion.primary} ${data.city} ${semanticSuffix}`,
+            ]),
+          );
           const settled = await Promise.allSettled(
             queries.map((query) =>
               searchPlaces({ query, language, region, maxResults: 20 }),
@@ -666,7 +693,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               firstError = s.reason instanceof Error ? s.reason.message : String(s.reason);
             }
           }
-          const places = Array.from(merged.values());
+          const allPlaces = Array.from(merged.values());
+          const places = filterByCuisineRelevance(allPlaces, expansion);
           return { cuisine, places, error: places.length ? null : firstError };
         }),
       );
@@ -766,6 +794,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const hardFiltersList = data.hardFilters;
     const hardFiltersJson = JSON.stringify(hardFiltersList);
 
+    const cuisineFidelityBlock = Array.from(cuisineExpansions.entries())
+      .map(([c, exp]) => {
+        const syn = exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
+        const neg = exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
+        return `- 「${c}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`;
+      })
+      .join("\n");
+
     const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何硬条件被证伪，都应纳入）**，并给出打分和理由。
 
 用户需求：
@@ -775,6 +811,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 - 偏好：${data.softPreferences.join("；") || "无"}
 - 避雷：${data.negativeFilters.join("；") || "无"}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
+
+## 料理保真（最高优先级，先于其它硬条件）
+本次每个分组的「料理类型」就是该组的 cuisine 字段。每个分组的本地化主词、同义词、反例如下：
+${cuisineFidelityBlock || "（无额外扩展）"}
+判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
+- 命中本组反例关键词且未命中本组主词/同义词 → **直接剔除，不进 picks 也不进 partial**。例如本组要"猪肉饭"但候选明显是鳗鱼饭/牛丼/海鲜丼，不要解释，剔除。
+- 候选本身就是主菜的小店（招牌菜与本组料理一致）→ 优先纳入。
+- 候选模糊（综合定食店、菜单不明）→ 允许保留，对应 matchDetails 标 warn 注明"未确认主营是否为${"${"}本组料理${"}"}"。
+- 这条规则**不计入 hardFilterChecks 数组**（hardFilterChecks 仍严格等于 ${hardFiltersList.length} 条用户原始硬条件）。
 
 候选数据（JSON）：
 ${JSON.stringify(candidatesForPrompt, null, 2)}

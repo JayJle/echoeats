@@ -1,56 +1,126 @@
-## 现状诊断
+## 问题诊断
 
-「高频好评/差评」大面积空白的真实原因：
+用户搜「猪肉饭」结果第一条是「鳗鱼饭」。根因有 4 个：
 
-**海外流程（Google Places + Perplexity）**
-- `fetchReviewSummary` 用 `sonar` 模型 + 9 秒超时，且**无 citations 即整条丢弃**。冷门店 sonar 经常返回 0 citations → 整条 `realWorldReviews = null` → AI 强制 pros/cons 留空。
-- 没有用 Google Places 的 `reviews` 字段——而这正是**第一手真实评价**，零幻觉风险，却完全没接入。
-- 单一模型、单一查询，没有任何 fallback。
+1. **查询词没本地化**：`searchPlaces` 用 `cuisine` 中文原文 + 城市拼接（"猪肉饭 Tokyo"），日语区 Google Places 在中文 query 下会做语义模糊匹配，把所有「丼物」一起召回，包含鳗鱼饭、牛丼。
+2. **没有同义词扩展**：「猪肉饭」在日本叫「豚丼 / 豚バラ丼」，在港台叫「叉烧饭 / 烧肉饭」，英文是「pork rice / pork bowl」。当前只做 1-2 个 query。
+3. **召回后无相关性过滤**：所有 `placeResults[].places` 不分料理对错，全量塞给 AI 排序 prompt。AI 看到 20 个候选，会按 rating 高低挑，鳗鱼饭店因为评分高就被选上。
+4. **AI prompt 没把"料理类型本身"列为 hardFilter**：`cuisine` 字段只是分组键，prompt 里没明确"店必须实际卖这个料理"。
 
-**国内流程（Perplexity + Firecrawl）**
-- 只有 top **10** 家店做 Firecrawl + sonar-pro 二次聚合，其余店只能拿 PPLX 初次返回的稀疏 highlights/complaints，多数为空。
-- Firecrawl 抓 dianping.com 反爬严重，常返回 < 100 字 markdown → 直接 null → `summarizeShopReviewsViaPerplexity` 拿不到 rawComments → 若 PPLX 也无 citation 就丢弃。
-- 没有 Yelp/小红书/美团/知乎等其它真实证据兜底。
+## 改动范围
 
-## 修复方案（4 项，按性价比排序）
+只改后端 3 个文件：`google-places.server.ts`、`echo.functions.ts`、`dianping.server.ts`（轻改）。前端 `results.tsx` 不动。
 
-### 1. 海外：接入 Google Places Reviews 字段（最大收益，零幻觉）
+## 1. 新增「料理本地化与同义词扩展」模块
 
-`src/lib/google-places.server.ts`
-- `FIELD_MASK` 增加 `places.reviews`（最多返回 5 条，含 `text.text` / `rating` / `authorAttribution`）。
-- `PlaceCandidate` 类型加 `reviews: { text: string; rating: number }[]`。
+新增 `src/lib/cuisine-expand.server.ts`，导出：
 
-`src/lib/echo.functions.ts`
-- 海外流程：先把 Google reviews 直接塞进 `realWorldReviews`（sourceCount = reviews.length, sources = ["Google Reviews"]），highlights/complaints 由模型基于这些**真实文本**抽取——这一步可改为本地启发式或一次轻量 AI 调用，不依赖 Perplexity。
-- Perplexity 调用变成"补充层"：失败也不影响 pros/cons 显示。
+```ts
+expandCuisineQueries(cuisine: string, city: string, lang: string): {
+  primary: string;           // 最准确的本地化主词
+  synonyms: string[];        // 同义词（用于 query 扩展和召回过滤）
+  negativeKeywords: string[];// 排除关键词（如搜「猪肉饭」时，"鳗"、"牛"、"鸡"算反例）
+}
+```
 
-### 2. 海外：放宽 Perplexity 丢弃逻辑 + 多次尝试
+实现策略：用 `gemini-3-flash-preview` 做一次轻量 LLM 调用（缓存 in-memory by `${cuisine}|${lang}`），输出结构化 JSON，例如：
 
-`fetchReviewSummary`：
-- 超时从 9s → 20s（sonar 慢查询很常见）。
-- citation 为 0 时**不再整条丢弃**：若模型返回 highlights，标 `sources: []` + `sourceCount: 0`，下游与 Google reviews 合并；只有当 highlights 也为空才丢。
-- 加一次 sonar-pro 重试（仅当首轮 0 citation 且 0 highlights 时）。
+```
+猪肉饭 + ja → { primary:"豚丼", synonyms:["豚バラ丼","焼豚丼","チャーシュー丼","pork rice bowl"], negativeKeywords:["鰻","うなぎ","牛丼","親子丼","海鮮丼"] }
+猪肉饭 + en → { primary:"pork rice bowl", synonyms:["char siu rice","pork donburi"], negativeKeywords:["eel","beef","chicken"] }
+寿司 + ja → { primary:"寿司", synonyms:["sushi","鮨"], negativeKeywords:[] }   // 通用词不需要 negative
+```
 
-### 3. 国内：把深度增强从 top 10 扩到全部候选
+成本：每个 cuisine 一次 ~200 token 调用，缓存命中后 0 成本。
 
-`src/lib/dianping.server.ts`
-- `FIRECRAWL_TOP_N = 10` → 改为对**全部 dedup 候选**跑 `summarizeShopReviewsViaPerplexity`（Firecrawl 仍只对 top 10 跑，控制成本）。
-- 即使没有 Firecrawl rawComments，PPLX summarizer 只要有 citation 就保留——已是真实证据。
-- 加并发限流（Promise.all 一次跑 12-15 家 PPLX 没问题，但加 8 路并发上限保险）。
+## 2. `searchPlaces` 多 query 召回
 
-### 4. 国内：加 site 兜底，绕开大众点评反爬
+`echo.functions.ts` 海外分支当前只用 `[cuisine + city, cuisine + city + suffix]` 两条 query。改为：
 
-`fetchDianpingShopsViaPerplexity` 与 `summarizeShopReviewsViaPerplexity` 的 user prompt 显式建议模型搜索 `site:xiaohongshu.com` / `site:meituan.com` / `site:zhihu.com` / `site:dianping.com`，提高 citation 命中率。
+```
+queries = [
+  `${primary} ${city}`,
+  ...synonyms.slice(0, 2).map(s => `${s} ${city}`),
+  `${primary} ${city} ${semanticSuffix}`,
+]
+```
 
-## 不动的部分
+最多 4 条 query 并发，结果按 placeId 去重，与现状一致。
 
-- AI ranking prompt 中"绝对禁止编造网评"的铁律保留。
-- `pros 至少 2 条来自 reviewHighlights / cons 至少 1 条来自 commonComplaints` 规则保留——上游网评变多后，这些约束自然被满足。
-- `src/routes/results.tsx` UI 不动。
-- 国内/海外路由判定不动。
+## 3. 召回后做"料理相关性过滤"
+
+去重后的 `places` 数组在塞给 AI 排序前，先过一道关键词过滤：
+
+```
+function filterByCuisineRelevance(places, primary, synonyms, negativeKeywords) {
+  return places.filter(p => {
+    const haystack = `${p.name} ${p.primaryType ?? ""} ${p.editorialSummary ?? ""}`.toLowerCase();
+    const negHit = negativeKeywords.some(n => haystack.includes(n.toLowerCase()));
+    if (negHit) {
+      // 命中 negative 但同时命中 positive，仍保留（混合店）
+      const posHit = [primary, ...synonyms].some(k => haystack.includes(k.toLowerCase()));
+      if (!posHit) return false;
+    }
+    return true;
+  });
+}
+```
+
+关键点：
+- 仅过滤"明显反例"，不强求 positive hit（避免误杀只有店名没有类型描述的小店）。
+- 过滤后若候选数 < 3，回退到不过滤的全集（保留召回宽度，由 AI 再判）。
+- 只过滤 `primaryType + editorialSummary + name` 命中 negative 且无 positive 的，比较保守。
+
+## 4. AI 排序 prompt 加「料理保真」硬条件
+
+在 `searchRestaurants` handler 里，把「店实际卖 ${cuisine}」作为 **隐式硬条件第 0 条**注入 prompt（不写入 `data.hardFilters`，仅在 prompt 里说明），新增段落：
+
+```
+## 料理保真（最高优先级）
+本组的料理类型是「${cuisine}」（本地化主词：${primary}；同义词：${synonyms.join("、")}）。
+candidate.primaryType / editorialSummary / name 必须能合理对应这个料理，否则**不要放进 picks**（视为 fail，不进 partial）。
+明确属于其它料理（如本组要"猪肉饭"但候选是鳗鱼饭/牛丼/海鲜丼）→ 直接剔除，不解释。
+仅在候选模糊（如"日式定食店"且菜单不明）时允许保留并标 unknown。
+```
+
+注意：这条**不计入 `hardFilterChecks` 数组长度**，只在自然语言段落里强制。`hardFilterChecks` 仍严格 = `data.hardFilters.length`，不破坏现有合约。
+
+## 5. 国内分支同步加同义词
+
+`dianping.server.ts` 的 `searchDianpingCuisine` 里调 Perplexity 找候选时，prompt 把同义词列出，例如「请找上海的猪肉饭/烧肉饭/叉烧饭餐厅」，提升召回准确度。改动很小：在拼 user prompt 时插一行同义词 hint。
+
+## 6. （可选）UI 提示
+
+不改 UI；如需后续可在结果页显示 `parsed.cuisines[i] → 本地化为 "豚丼/pork rice"`，让用户感知本地化。本期先不做。
+
+## 技术细节
+
+```text
+用户 cuisine ─┐
+              ├─► expandCuisineQueries (LLM, 缓存)
+city/lang ────┘    │
+                   ▼
+        { primary, synonyms[], negativeKeywords[] }
+                   │
+                   ├─► searchPlaces(多 query 并发)
+                   │        ▼
+                   │   去重 places[]
+                   │        ▼
+                   └─► filterByCuisineRelevance
+                            ▼
+                   reviewById 合并 + AI 排序 prompt
+                   （prompt 内嵌料理保真硬条件）
+```
+
+## 风险与回退
+
+- LLM 扩展失败 → fallback 到 `{ primary: cuisine, synonyms: [], negativeKeywords: [] }`，行为退化为现状。
+- 过滤后候选 < 3 → 自动回退到不过滤集合，不让用户看到空结果。
+- 缓存仅 in-memory，per-Worker；冷启动会多一次 LLM 调用，可接受。
 
 ## 预期效果
 
-- 海外：几乎所有 Google Maps 上 ≥10 条评价的店都能显示 pros/cons（来自 Google Reviews 一手数据）。
-- 国内：大众点评 PPLX 候选店里，pros/cons 命中率从当前 ~30% 提升到 ~80%+（top 10 有 Firecrawl 增强，其余靠 PPLX summarizer + 多 site 兜底）。
-- 真实性不降级：仍然只接受 (a) Google Places 一手 reviews、(b) Perplexity 带 citation 的回答、(c) Firecrawl 实际抓到的 markdown 片段——三者都是真实证据。
+- 「猪肉饭 + Tokyo」→ 召回 query 变成 `豚丼 Tokyo`、`豚バラ丼 Tokyo`、`pork rice bowl Tokyo`，自然不会再大规模召回鳗鱼饭店。
+- 即使有少量鳗鱼饭混入，过滤层（negativeKeywords 命中"鰻"）会剔除它们。
+- AI 排序层兜底：即使前两层漏网，prompt 明确禁止把鳗鱼饭挑进猪肉饭分组。
+- 通用大类（寿司、拉面）negativeKeywords 为空，行为不变，无回归风险。
