@@ -408,6 +408,15 @@ const RestaurantSchema = z.object({
   cons: z.array(z.string()),
   links: z.array(z.object({ label: z.string(), url: z.string() })),
   photoUrls: z.array(z.string()),
+  tabelog: z
+    .object({
+      rating: z.string().nullable(),
+      reviewCount: z.number().nullable(),
+      url: z.string().nullable(),
+      priceRange: z.string().nullable(),
+      summary: z.string().nullable(),
+    })
+    .nullable(),
 });
 
 const ResultsSchema = z.object({
@@ -540,7 +549,11 @@ function formatPriceFromReview(review: ReviewSummary | null): string | null {
   return `${amount}${ctx}`;
 }
 
-function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
+function candidateRatings(
+  p: PlaceCandidate,
+  review: ReviewSummary | null,
+  tabelog: TabelogInfo | null,
+) {
   const score =
     p.rating != null
       ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
@@ -550,14 +563,16 @@ function candidateRatings(p: PlaceCandidate, review: ReviewSummary | null) {
       ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
       : null;
   const priceFromReview = formatPriceFromReview(review);
-  // 仅展示从网评直接抓到的人均；Google priceLevel ($/$$) 太粗，不展示以免误导。
   const priceScore = priceFromReview ?? null;
+  const tabelogScore =
+    tabelog?.rating != null
+      ? `${tabelog.rating} / 5${tabelog.reviewCount ? ` (${tabelog.reviewCount})` : ""}`
+      : null;
   return [
     { platform: "Google Maps", score },
+    { platform: "Tabelog", score: tabelogScore },
     { platform: "大众点评", score: dpScore },
     { platform: "人均价格", score: priceScore },
-    { platform: "Tabelog", score: null },
-    { platform: "Yelp", score: null },
   ];
 }
 
