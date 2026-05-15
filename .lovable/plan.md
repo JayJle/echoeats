@@ -1,47 +1,56 @@
-## 问题
+## 现状诊断
 
-所有店的高频好评只显示「匹配当前搜索方向」、高频差评只显示「请到 Google Maps 确认最新营业时间」。
+「高频好评/差评」大面积空白的真实原因：
 
-## 根因
+**海外流程（Google Places + Perplexity）**
+- `fetchReviewSummary` 用 `sonar` 模型 + 9 秒超时，且**无 citations 即整条丢弃**。冷门店 sonar 经常返回 0 citations → 整条 `realWorldReviews = null` → AI 强制 pros/cons 留空。
+- 没有用 Google Places 的 `reviews` 字段——而这正是**第一手真实评价**，零幻觉风险，却完全没接入。
+- 单一模型、单一查询，没有任何 fallback。
 
-上一轮反幻觉改造里，prompt 已经要求 AI 在没有可信网评时 **必须返回空 pros/cons 数组**。但 `src/lib/echo.functions.ts` 第 843–844 行仍保留了旧的占位兜底：
+**国内流程（Perplexity + Firecrawl）**
+- 只有 top **10** 家店做 Firecrawl + sonar-pro 二次聚合，其余店只能拿 PPLX 初次返回的稀疏 highlights/complaints，多数为空。
+- Firecrawl 抓 dianping.com 反爬严重，常返回 < 100 字 markdown → 直接 null → `summarizeShopReviewsViaPerplexity` 拿不到 rawComments → 若 PPLX 也无 citation 就丢弃。
+- 没有 Yelp/小红书/美团/知乎等其它真实证据兜底。
 
-```ts
-pros: pick.pros.length ? pick.pros : ["匹配当前搜索方向"],
-cons: pick.cons.length ? pick.cons : ["请到 Google Maps 确认最新营业时间"],
-```
+## 修复方案（4 项，按性价比排序）
 
-于是 AI 老老实实返回 `[]`，前端却被这两条假数据覆盖，导致每张卡片看起来都一样、且和"绝对禁止编造"的承诺自相矛盾。
+### 1. 海外：接入 Google Places Reviews 字段（最大收益，零幻觉）
 
-另外 `src/routes/results.tsx` 里 `r.pros.map / r.cons.map` 在数组为空时不会渲染任何内容，也没有"暂无网评"提示，用户会以为是 bug。
+`src/lib/google-places.server.ts`
+- `FIELD_MASK` 增加 `places.reviews`（最多返回 5 条，含 `text.text` / `rating` / `authorAttribution`）。
+- `PlaceCandidate` 类型加 `reviews: { text: string; rating: number }[]`。
 
-## 修复
+`src/lib/echo.functions.ts`
+- 海外流程：先把 Google reviews 直接塞进 `realWorldReviews`（sourceCount = reviews.length, sources = ["Google Reviews"]），highlights/complaints 由模型基于这些**真实文本**抽取——这一步可改为本地启发式或一次轻量 AI 调用，不依赖 Perplexity。
+- Perplexity 调用变成"补充层"：失败也不影响 pros/cons 显示。
 
-### 1. `src/lib/echo.functions.ts` (第 843–844 行)
+### 2. 海外：放宽 Perplexity 丢弃逻辑 + 多次尝试
 
-直接透传 AI 返回的真实数组，不再注入占位：
+`fetchReviewSummary`：
+- 超时从 9s → 20s（sonar 慢查询很常见）。
+- citation 为 0 时**不再整条丢弃**：若模型返回 highlights，标 `sources: []` + `sourceCount: 0`，下游与 Google reviews 合并；只有当 highlights 也为空才丢。
+- 加一次 sonar-pro 重试（仅当首轮 0 citation 且 0 highlights 时）。
 
-```ts
-pros: pick.pros,
-cons: pick.cons,
-```
+### 3. 国内：把深度增强从 top 10 扩到全部候选
 
-### 2. `src/routes/results.tsx`「高频好评 / 高频差评」区块
+`src/lib/dianping.server.ts`
+- `FIRECRAWL_TOP_N = 10` → 改为对**全部 dedup 候选**跑 `summarizeShopReviewsViaPerplexity`（Firecrawl 仍只对 top 10 跑，控制成本）。
+- 即使没有 Firecrawl rawComments，PPLX summarizer 只要有 citation 就保留——已是真实证据。
+- 加并发限流（Promise.all 一次跑 12-15 家 PPLX 没问题，但加 8 路并发上限保险）。
 
-当 `r.pros.length === 0` 或 `r.cons.length === 0` 时，渲染一行灰色小字：
+### 4. 国内：加 site 兜底，绕开大众点评反爬
 
-- 好评空 → `暂无可信网评`
-- 差评空 → `暂无明显差评` （或同上文案，二选一）
-
-如果两边都为空，整个 grid 仍然渲染（保持卡片高度一致），只是各自显示"暂无"。
+`fetchDianpingShopsViaPerplexity` 与 `summarizeShopReviewsViaPerplexity` 的 user prompt 显式建议模型搜索 `site:xiaohongshu.com` / `site:meituan.com` / `site:zhihu.com` / `site:dianping.com`，提高 citation 命中率。
 
 ## 不动的部分
 
-- AI prompt 不改（已经在反幻觉那一轮定型）
-- `dianping.server.ts` 不动
-- 卡片其它区域（AI 总结、匹配详情、Ratings）不动
+- AI ranking prompt 中"绝对禁止编造网评"的铁律保留。
+- `pros 至少 2 条来自 reviewHighlights / cons 至少 1 条来自 commonComplaints` 规则保留——上游网评变多后，这些约束自然被满足。
+- `src/routes/results.tsx` UI 不动。
+- 国内/海外路由判定不动。
 
 ## 预期效果
 
-- 有真实网评的店：显示真实的好评/差评要点
-- 没有可信网评的店（小城市/冷门料理）：显示"暂无可信网评"，与 AI 总结末尾的"（暂无可信网评，仅基于 Google 数据）"前后一致，用户一眼能看懂为什么这家没有评论摘要
+- 海外：几乎所有 Google Maps 上 ≥10 条评价的店都能显示 pros/cons（来自 Google Reviews 一手数据）。
+- 国内：大众点评 PPLX 候选店里，pros/cons 命中率从当前 ~30% 提升到 ~80%+（top 10 有 Firecrawl 增强，其余靠 PPLX summarizer + 多 site 兜底）。
+- 真实性不降级：仍然只接受 (a) Google Places 一手 reviews、(b) Perplexity 带 citation 的回答、(c) Firecrawl 实际抓到的 markdown 片段——三者都是真实证据。

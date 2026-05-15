@@ -149,13 +149,69 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 
 const SOURCE_ENUM = ["大众点评", "小红书", "Tabelog", "Google Reviews", "Yelp", "其它"] as const;
 
+// 把 Google Places 一手 reviews 转成 ReviewSummary（零幻觉，第一手数据）
+function googleReviewsToSummary(p: PlaceCandidate): ReviewSummary | null {
+  if (!p.reviews || p.reviews.length === 0) return null;
+  const trim = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 80);
+  const highlights: string[] = [];
+  const complaints: string[] = [];
+  for (const r of p.reviews) {
+    const t = trim(r.text);
+    if (!t) continue;
+    if (r.rating != null && r.rating <= 2) {
+      if (complaints.length < 3) complaints.push(t);
+    } else {
+      if (highlights.length < 5) highlights.push(t);
+    }
+  }
+  if (highlights.length === 0 && complaints.length === 0) return null;
+  const sentiment: ReviewSummary["sentiment"] =
+    complaints.length === 0
+      ? "positive"
+      : highlights.length === 0
+        ? "negative"
+        : complaints.length >= highlights.length
+          ? "mixed"
+          : "positive";
+  return {
+    reviewHighlights: highlights,
+    commonComplaints: complaints,
+    sentiment,
+    sourceCount: p.reviews.length,
+    sources: ["Google Reviews"],
+    dianpingRating: null,
+    dianpingRatingSource: "unknown",
+    priceLevel: null,
+    priceCurrency: null,
+    priceContext: null,
+  };
+}
+
+function mergeReviewSummaries(base: ReviewSummary, extra: ReviewSummary): ReviewSummary {
+  const dedup = (arr: string[]) =>
+    Array.from(new Set(arr.map((s) => s.trim()).filter(Boolean)));
+  return {
+    reviewHighlights: dedup([...base.reviewHighlights, ...extra.reviewHighlights]).slice(0, 8),
+    commonComplaints: dedup([...base.commonComplaints, ...extra.commonComplaints]).slice(0, 5),
+    sentiment: extra.sentiment !== "unknown" ? extra.sentiment : base.sentiment,
+    sourceCount: base.sourceCount + extra.sourceCount,
+    sources: Array.from(new Set([...base.sources, ...extra.sources])),
+    dianpingRating: extra.dianpingRating ?? base.dianpingRating,
+    dianpingRatingSource:
+      extra.dianpingRating != null ? extra.dianpingRatingSource : base.dianpingRatingSource,
+    priceLevel: extra.priceLevel ?? base.priceLevel,
+    priceCurrency: extra.priceCurrency ?? base.priceCurrency,
+    priceContext: extra.priceContext ?? base.priceContext,
+  };
+}
+
 async function fetchReviewSummary(
   name: string,
   city: string,
   apiKey: string,
 ): Promise<ReviewSummary | null> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 9000);
+  const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const res = await fetch("https://api.perplexity.ai/chat/completions", {
       method: "POST",
@@ -244,19 +300,32 @@ async function fetchReviewSummary(
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return null;
 
-    // 反幻觉：Perplexity 必须返回 citations，否则视为模型在凭空编造，整条丢弃
+    // 反幻觉：收集 Perplexity citation；0 citation 时不直接丢弃，而是标记 sourceCount=0、
+    // sources=[]，让下游与 Google 一手 reviews 合并。仅当模型既无 citation 又没给出任何
+    // highlights/complaints 时才视为彻底无证据丢弃。
     const rawCitations: unknown = json?.citations ?? json?.search_results ?? [];
     const citationUrls: string[] = Array.isArray(rawCitations)
       ? (rawCitations as unknown[])
           .map((c) => (typeof c === "string" ? c : (c as { url?: string })?.url))
           .filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
       : [];
-    if (citationUrls.length === 0) {
-      console.warn(`[Perplexity] ${name}: no citations → discard (likely hallucinated)`);
-      return null;
-    }
 
     const parsed = JSON.parse(content);
+    const highlights = Array.isArray(parsed.reviewHighlights)
+      ? parsed.reviewHighlights.slice(0, 5)
+      : [];
+    const complaints = Array.isArray(parsed.commonComplaints)
+      ? parsed.commonComplaints.slice(0, 3)
+      : [];
+
+    if (citationUrls.length === 0 && highlights.length === 0 && complaints.length === 0) {
+      console.warn(`[Perplexity] ${name}: no citations & no content → discard`);
+      return null;
+    }
+    if (citationUrls.length === 0) {
+      console.warn(`[Perplexity] ${name}: no citations but model returned content → keep with sourceCount=0`);
+    }
+
     const rawRating = parsed.dianpingRating;
     const rating =
       typeof rawRating === "number" && rawRating >= 0 && rawRating <= 5
@@ -281,21 +350,23 @@ async function fetchReviewSummary(
       priceLevel != null && typeof parsed.priceContext === "string"
         ? parsed.priceContext.slice(0, 30)
         : null;
-    return {
-      reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
-      commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
-      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
-      // 用真实 citation 数覆盖模型自报的 sourceCount，杜绝虚高
-      sourceCount: citationUrls.length,
-      sources: Array.isArray(parsed.sources)
+    // 仅在有 citation 时认可 sources（按真实 citation 数为 sourceCount）
+    const sources: string[] =
+      citationUrls.length > 0 && Array.isArray(parsed.sources)
         ? Array.from(
             new Set(
-              parsed.sources.filter((s: unknown): s is string =>
+              (parsed.sources as unknown[]).filter((s): s is string =>
                 typeof s === "string" && (SOURCE_ENUM as readonly string[]).includes(s),
               ),
             ),
           )
-        : [],
+        : [];
+    return {
+      reviewHighlights: highlights as string[],
+      commonComplaints: complaints as string[],
+      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
+      sourceCount: citationUrls.length,
+      sources,
       dianpingRating: rating,
       dianpingRatingSource: rating == null ? "unknown" : ratingSource,
       priceLevel,
@@ -623,26 +694,39 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       };
     }
 
-    // 海外城市：再走 Perplexity 网评摘要（国内已在大众点评流程里拿到）
-    if (!useDianping && pplxKey) {
-      const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
+    // 海外城市：先把 Google Places 一手 reviews 作为基线证据塞入（零幻觉），
+    // 再用 Perplexity 网评做补充合并；Perplexity 失败也不影响 pros/cons 显示。
+    if (!useDianping) {
       for (const r of placeResults) {
-        const top = [...r.places]
-          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-          .slice(0, 10);
-        for (const p of top) {
-          tasks.push(
-            fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
-              id: p.placeId,
-              summary: s,
-            })),
-          );
+        for (const p of r.places) {
+          const baseline = googleReviewsToSummary(p);
+          if (baseline) reviewById.set(p.placeId, baseline);
         }
       }
-      const settled = await Promise.allSettled(tasks);
-      for (const s of settled) {
-        if (s.status === "fulfilled" && s.value.summary && s.value.summary.sourceCount > 0) {
-          reviewById.set(s.value.id, s.value.summary);
+      if (pplxKey) {
+        const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
+        for (const r of placeResults) {
+          const top = [...r.places]
+            .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+            .slice(0, 10);
+          for (const p of top) {
+            tasks.push(
+              fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
+                id: p.placeId,
+                summary: s,
+              })),
+            );
+          }
+        }
+        const settled = await Promise.allSettled(tasks);
+        for (const s of settled) {
+          if (s.status === "fulfilled" && s.value.summary) {
+            const existing = reviewById.get(s.value.id);
+            reviewById.set(
+              s.value.id,
+              existing ? mergeReviewSummaries(existing, s.value.summary) : s.value.summary,
+            );
+          }
         }
       }
     }
@@ -709,8 +793,8 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
     2. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
     3. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
 - **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度，而不是只看 Google 评分；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
-- **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可少量改写但不得新增事实）。**如果 realWorldReviews 为 null 或 sourceCount === 0**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据（rating、primaryType、editorialSummary、address），不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
-- **pros/cons 必须取真实素材**：有 realWorldReviews 且 sourceCount>0 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（commonComplaints 为空则 cons 留空，不要瞎编）。禁止"环境不错""值得一试"等空话。
+- **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字、提炼具体菜名/服务点，但不得新增事实）。**如果 realWorldReviews 为 null，或 reviewHighlights 与 commonComplaints 都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据（rating、primaryType、editorialSummary、address），不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
+- **pros/cons 必须取真实素材**：当 reviewHighlights 非空时，pros 至少 2 条（不超过可用条数）来自 reviewHighlights 的真实文本浓缩；当 commonComplaints 非空时，cons 至少 1 条来自 commonComplaints（为空则 cons 留空，不要瞎编）。禁止"环境不错""值得一试"等空话。Google Reviews 来源的 highlights 是顾客原文整句，必须提炼成短句（如"出品稳定、服务热情"而不是照抄一整段）。
 - aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
 - matchDetails: 3-6 条短描述，每条带 status (ok/warn)。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。**严格限定范围**：只能围绕用户实际提到的需求（hardFilters / softPreferences / negativeFilters / dishPreferences）来写。**绝对禁止**对用户没有提到的维度发出 warn 或提醒——例如用户没提预算/价格，就不准出现"价格偏高""人均较贵""超出预算"之类的条目；用户没提氛围，就不准提"氛围一般"；用户没提服务，就不准提"服务慢"。如果某维度用户没提，哪怕网评有相关吐槽，也只能放进 cons，不能进 matchDetails。

@@ -351,7 +351,7 @@ async function summarizeShopReviewsViaPerplexity(opts: {
     const sample = opts.rawComments.slice(0, 30).join("\n");
     const userMsg = `店铺：${opts.shopName}（${opts.city}）
 
-请从大众点评、美团、小红书、知乎等网评中，聚合这家店真实顾客的评价倾向。${sample ? `\n\n以下是已抓取到的部分原始片段（可作为参考，但不要照抄，要二次提炼）：\n${sample.slice(0, 3000)}` : ""}
+请从大众点评、美团、小红书、知乎等网评中，聚合这家店真实顾客的评价倾向。优先尝试搜索 site:dianping.com、site:meituan.com、site:xiaohongshu.com、site:zhihu.com，找到带 URL 的真实页面后再总结。${sample ? `\n\n以下是已抓取到的部分原始片段（可作为参考，但不要照抄，要二次提炼）：\n${sample.slice(0, 3000)}` : ""}
 
 请给出：
 - pros: 8-12 条网友普遍称赞的点（每条 ≤ 25 字，具体到菜品/口味/环境/服务/性价比，不要空话）
@@ -466,6 +466,7 @@ function shopToCandidate(shop: RawShop, city: string, idx: number): PlaceCandida
       .filter(Boolean)
       .join("；") || null,
     location: null,
+    reviews: [],
   };
 }
 
@@ -568,10 +569,11 @@ export async function searchDianpingCuisine(opts: {
     console.log(`[Dianping/Firecrawl] enriched ${fcMap.size}/${topShops.length} shops`);
   }
 
-  // B: Perplexity sonar-pro 网评聚合（基于 fc 拿到的原始片段做二次提炼，没有也兜底搜索）
+  // B: Perplexity sonar-pro 网评聚合 — 对**全部 dedup 候选**跑（之前只跑 top N，覆盖太低），
+  // 凡是有 Firecrawl 原始片段或 Perplexity citation 的店都能拿到 pros/cons。
   const pplxMap = new Map<string, { pros: string[]; cons: string[] }>();
   const pplxSettled = await Promise.allSettled(
-    topShops.map(async (s) => ({
+    dedup.map(async (s) => ({
       name: s.name,
       result: await summarizeShopReviewsViaPerplexity({
         shopName: s.name,
@@ -586,7 +588,7 @@ export async function searchDianpingCuisine(opts: {
       pplxMap.set(r.value.name, r.value.result);
     }
   }
-  console.log(`[Dianping/PPLX-summary] aggregated ${pplxMap.size}/${topShops.length} shops`);
+  console.log(`[Dianping/PPLX-summary] aggregated ${pplxMap.size}/${dedup.length} shops`);
 
   return dedup.map((shop, idx) => {
     const fc = fcMap.get(shop.name);
