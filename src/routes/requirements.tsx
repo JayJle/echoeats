@@ -133,11 +133,13 @@ function StepRequirements() {
                 size="lg"
                 className="flex-1 sm:flex-none"
               >
-                {stage === "parsing"
-                  ? "AI 正在理解需求…"
-                  : stage === "searching"
-                    ? "AI 深度搜索中…"
-                    : <>AI 深度搜索 <span aria-hidden>→</span></>}
+                {stage === "parsing" ? (
+                  "AI 正在理解需求…"
+                ) : stage === "searching" ? (
+                  "AI 深度搜索中…"
+                ) : (
+                  <>AI 深度搜索 <ArrowRight className="w-4 h-4" /></>
+                )}
               </Button>
               <Popover>
                 <PopoverTrigger asChild>
