@@ -569,10 +569,11 @@ export async function searchDianpingCuisine(opts: {
     console.log(`[Dianping/Firecrawl] enriched ${fcMap.size}/${topShops.length} shops`);
   }
 
-  // B: Perplexity sonar-pro 网评聚合（基于 fc 拿到的原始片段做二次提炼，没有也兜底搜索）
+  // B: Perplexity sonar-pro 网评聚合 — 对**全部 dedup 候选**跑（之前只跑 top N，覆盖太低），
+  // 凡是有 Firecrawl 原始片段或 Perplexity citation 的店都能拿到 pros/cons。
   const pplxMap = new Map<string, { pros: string[]; cons: string[] }>();
   const pplxSettled = await Promise.allSettled(
-    topShops.map(async (s) => ({
+    dedup.map(async (s) => ({
       name: s.name,
       result: await summarizeShopReviewsViaPerplexity({
         shopName: s.name,
@@ -587,7 +588,7 @@ export async function searchDianpingCuisine(opts: {
       pplxMap.set(r.value.name, r.value.result);
     }
   }
-  console.log(`[Dianping/PPLX-summary] aggregated ${pplxMap.size}/${topShops.length} shops`);
+  console.log(`[Dianping/PPLX-summary] aggregated ${pplxMap.size}/${dedup.length} shops`);
 
   return dedup.map((shop, idx) => {
     const fc = fcMap.get(shop.name);
