@@ -13,14 +13,14 @@ const ParseInput = z.object({
 });
 
 const ParsedSchema = z.object({
-  city: z.string(),
-  cuisines: z.array(z.string()),
-  dateTime: z.string(),
-  hardFilters: z.array(z.string()),
-  softPreferences: z.array(z.string()),
-  negativeFilters: z.array(z.string()),
-  dishPreferences: z.array(z.string()),
-  searchStrategy: z.array(z.string()),
+  city: z.string().default(""),
+  cuisines: z.array(z.string()).default([]),
+  dateTime: z.string().default(""),
+  hardFilters: z.array(z.string()).default([]),
+  softPreferences: z.array(z.string()).default([]),
+  negativeFilters: z.array(z.string()).default([]),
+  dishPreferences: z.array(z.string()).default([]),
+  searchStrategy: z.array(z.string()).default([]),
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
