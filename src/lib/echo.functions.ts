@@ -21,6 +21,8 @@ const ParsedSchema = z.object({
   negativeFilters: z.array(z.string()).default([]),
   dishPreferences: z.array(z.string()).default([]),
   searchStrategy: z.array(z.string()).default([]),
+  country: z.string().default(""), // ISO 3166-1 alpha-2，如 "JP" / "CN" / "KR" / "US"
+  language: z.string().default(""), // BCP 47，如 "ja" / "zh-CN" / "ko" / "en"
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
@@ -87,7 +89,25 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - negativeFilters: ["不要游客店（排除以游客为主、本地评价低的店）"]
 - dishPreferences: ["蟹刺身"]
 
-注意"可以预约"虽然用了"可以"，但属于明确可验证属性，归 hard；"评分高一点"用了弱化语气"一点"，归 soft。`;
+注意"可以预约"虽然用了"可以"，但属于明确可验证属性，归 hard；"评分高一点"用了弱化语气"一点"，归 soft。
+
+## 国家/语言识别（重要）
+
+- **country**：根据 city 推断 ISO 3166-1 alpha-2 国家码（两个大写字母）。覆盖所有城市，不只是大城市：
+  - 函馆/小樽/旭川/轻井泽/由布院/别府/熊本/鹿儿岛/长崎/姬路/和歌山/石垣岛/那霸 → "JP"
+  - 上海/北京/成都/苏州/杭州/重庆/西安等大陆城市 → "CN"
+  - 香港 → "HK"，澳门 → "MO"，台北/高雄/台中 → "TW"
+  - 首尔/釜山/济州 → "KR"
+  - 清迈/曼谷/普吉 → "TH"
+  - 新加坡 → "SG"
+  - 巴黎/里昂 → "FR"，米兰/罗马/佛罗伦萨 → "IT"，纽约/旧金山 → "US"
+  - 实在判断不出来留 ""。
+- **language**：该城市本地主要书面语言的 BCP 47 代码：
+  - JP → "ja"，KR → "ko"
+  - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
+  - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
+  - US/UK/AU/CA/SG → "en"
+  - 其它按国家主语言映射，判断不出留 ""。`;
 
     const runOnce = async () => {
       const { output } = await generateText({
@@ -118,6 +138,8 @@ export const parseRequirements = createServerFn({ method: "POST" })
         city: data.city,
         cuisines: data.cuisines,
         dateTime: data.date || "未指定",
+        country: "",
+        language: "",
       });
     }
   });
@@ -499,22 +521,14 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-function isChineseCity(city: string, name: string): boolean {
-  return /[\u4e00-\u9fff]/.test(name) || /china|中国|北京|上海|广州|深圳|成都|杭州|重庆|武汉|南京|苏州|天津|西安|青岛|厦门|长沙|郑州|香港|hong\s*kong|hk|澳门|macau|台北|taipei/i.test(city);
-}
-
-function isJapaneseCity(city: string, name: string): boolean {
-  return /[\u3040-\u30ff]/.test(name) || /japan|日本|tokyo|kyoto|osaka|东京|京都|大阪|nagoya|fukuoka|sapporo|yokohama|札幌|横滨|名古屋|福冈/i.test(city);
-}
-
-function buildLinks(p: PlaceCandidate, city: string) {
+function buildLinks(p: PlaceCandidate, city: string, country: string) {
   const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
   const qName = encodeURIComponent(p.name);
   const qCity = encodeURIComponent(city);
 
-  const isCN = isChineseCity(city, p.name);
-  const isJP = isJapaneseCity(city, p.name);
+  const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
+  const isJP = country === "JP";
 
   if (isCN) {
     // 大众点评 H5 搜索深链（手机会拉起 App）
@@ -614,7 +628,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     if (!aiKey) {
       return { groups: [], error: "服务未配置 AI 凭据", suggestions: [] };
     }
-    const useDianping = isMainlandChinaCity(data.city);
+    // country/language 优先取 AI parse 结果，正则只做 fallback
+    const country =
+      (data.country && data.country.toUpperCase()) ||
+      guessRegionCode(data.city) ||
+      (isMainlandChinaCity(data.city) ? "CN" : "");
+    const useDianping = country === "CN";
     const pplxKey = process.env.PERPLEXITY_API_KEY;
 
     if (!useDianping && !process.env.GOOGLE_PLACES_API_KEY) {
@@ -685,8 +704,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       placeResults = settled;
     } else {
       // 海外城市：Google Places + Perplexity 网评（原流程）
-      const language = guessLanguageCode(data.city);
-      const region = guessRegionCode(data.city);
+      const language = data.language || guessLanguageCode(data.city);
+      const region = country || guessRegionCode(data.city);
 
       const semanticSuffix = (() => {
         if (language === "ja") return "おすすめ";
@@ -795,7 +814,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
-    if (!useDianping && pplxKey && guessRegionCode(data.city) === "JP") {
+    if (!useDianping && pplxKey && country === "JP") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
@@ -1050,7 +1069,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               matchDetails,
               pros: pick.pros,
               cons: pick.cons,
-              links: buildLinks(p, data.city),
+              links: buildLinks(p, data.city, country),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
             };
