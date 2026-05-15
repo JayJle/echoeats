@@ -707,11 +707,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       const language = data.language || guessLanguageCode(data.city);
       const region = country || guessRegionCode(data.city);
 
-      const semanticSuffix = (() => {
-        if (language === "ja") return "おすすめ";
-        if (language === "zh-CN" || language === "zh-TW") return "推荐";
-        return "best";
-      })();
+      // (semanticSuffix 查询已移除：主词 + 同义词×2 已足够召回)
       placeResults = await Promise.all(
         data.cuisines.map(async (cuisine) => {
           const expansion = await expandCuisineQueries({
