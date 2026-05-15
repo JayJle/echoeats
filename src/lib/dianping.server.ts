@@ -38,6 +38,11 @@ type RawShop = {
 
 const PPLX_TIMEOUT_MS = 25_000;
 const FIRECRAWL_TIMEOUT_MS = 20_000;
+const PPLX_SUMMARY_TIMEOUT_MS = 30_000;
+const FIRECRAWL_TOP_N = 10; // A: expand from 5 → 10
+const FIRECRAWL_REVIEW_PAGES = 3; // A: fetch first 3 pages of review_all
+const PER_SHOP_HIGHLIGHT_CAP = 12;
+const PER_SHOP_COMPLAINT_CAP = 8;
 
 function safeId(input: string, fallback: string): string {
   const cleaned = input.replace(/[^a-zA-Z0-9]+/g, "-").toLowerCase().slice(0, 60);
