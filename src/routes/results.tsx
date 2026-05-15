@@ -1,7 +1,9 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Pencil } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,7 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
-import { searchRestaurants } from "@/lib/echo.functions";
+import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
@@ -45,8 +47,15 @@ function ResultsPage() {
   const results = useQueryStore((s) => s.results);
   const freeText = useQueryStore((s) => s.freeText);
   const setResults = useQueryStore((s) => s.setResults);
+  const setParsed = useQueryStore((s) => s.setParsed);
+  const setFreeText = useQueryStore((s) => s.setFreeText);
 
   const searchFn = useServerFn(searchRestaurants);
+  const parseFn = useServerFn(parseRequirements);
+
+  const [editing, setEditing] = useState(false);
+  const [draftText, setDraftText] = useState(freeText);
+  const conditionsRef = useRef<HTMLDivElement>(null);
 
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
@@ -73,6 +82,39 @@ function ResultsPage() {
     }
   };
 
+  const openEditor = () => {
+    setDraftText(freeText);
+    setEditing(true);
+    setTimeout(() => {
+      conditionsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 50);
+  };
+
+  const applyEdit = async () => {
+    if (!parsed) return;
+    const text = draftText.trim();
+    setRefineError(null);
+    setRefining(true);
+    try {
+      const newParsed = await parseFn({
+        data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: text },
+      });
+      const merged = { ...newParsed, mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep" };
+      setFreeText(text);
+      setParsed(merged);
+      const response = await searchFn({ data: merged });
+      setResults(response);
+      setEditing(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "搜索失败";
+      if (msg.includes("429")) setRefineError("请求过于频繁，请稍后再试");
+      else if (msg.includes("402")) setRefineError("AI 额度已用完，请在 Settings → Workspace 添加额度");
+      else setRefineError(msg);
+    } finally {
+      setRefining(false);
+    }
+  };
+
   const restartFlow = () => {
     useQueryStore.getState().reset();
     navigate({ to: "/" });
@@ -92,9 +134,6 @@ function ResultsPage() {
             disabled={refining}
           >
             ↻ 再次搜索
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link to="/requirements">编辑需求</Link>
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
@@ -125,12 +164,29 @@ function ResultsPage() {
       )}
 
       <main className="max-w-3xl mx-auto px-4 py-10">
-        <div className="mb-6 bg-card border border-border rounded-2xl p-6">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">搜索结果</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-            {parsed.city} · {parsed.cuisines.join(" / ")}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
+        <div ref={conditionsRef} className="mb-6 bg-card border border-border rounded-2xl p-6">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">搜索结果</p>
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight">
+                {parsed.city} · {parsed.cuisines.join(" / ")}
+              </h1>
+              <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
+            </div>
+            {!editing && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={openEditor}
+                disabled={refining}
+                className="shrink-0 -mr-2 text-muted-foreground hover:text-foreground"
+              >
+                <Pencil className="w-3.5 h-3.5 mr-1" />
+                编辑
+              </Button>
+            )}
+          </div>
           {parsed.hardFilters.length > 0 && (
             <div className="mt-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">硬条件</p>
@@ -179,11 +235,52 @@ function ResultsPage() {
               </div>
             </div>
           )}
-          {freeText && (
+          {freeText && !editing && (
             <details className="mt-3">
               <summary className="text-[11px] uppercase tracking-wider text-muted-foreground cursor-pointer hover:text-foreground">原始描述 ▾</summary>
               <p className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">{freeText}</p>
             </details>
+          )}
+          {editing && (
+            <div className="mt-4 pt-4 border-t border-border space-y-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                改写需求(原话已填好,可以直接改)
+              </p>
+              <Textarea
+                autoFocus
+                value={draftText}
+                onChange={(e) => setDraftText(e.target.value)}
+                maxLength={1000}
+                disabled={refining}
+                className="min-h-[120px] text-sm resize-none"
+                placeholder="例如:把人均提高到 2 万日元,改成想要安静的店,去掉有蟹的硬要求…"
+              />
+              <p className="text-xs text-muted-foreground">
+                改完点应用,会用新条件重新排一次,店铺会刷新。
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setEditing(false);
+                    setDraftText(freeText);
+                  }}
+                  disabled={refining}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void applyEdit()}
+                  disabled={refining || draftText.trim() === freeText.trim()}
+                >
+                  {refining ? "搜索中…" : "应用并重新搜索"}
+                </Button>
+              </div>
+            </div>
           )}
         </div>
 
