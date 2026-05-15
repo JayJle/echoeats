@@ -201,20 +201,28 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
       </div>
 
       <div className="px-6 pb-2">
-        {r.photoUrl ? (
-          <a
-            href={r.googleMapsUri}
-            target="_blank"
-            rel="noreferrer"
-            className="block aspect-[16/9] rounded-lg overflow-hidden bg-muted"
+        {r.photoUrls && r.photoUrls.length > 0 ? (
+          <div
+            className="flex gap-2 overflow-x-auto snap-x snap-mandatory scroll-smooth -mx-1 px-1 pb-1"
+            style={{ scrollbarWidth: "thin" }}
           >
-            <img
-              src={r.photoUrl}
-              alt={displayName}
-              loading="lazy"
-              className="w-full h-full object-cover hover:scale-105 transition-transform duration-500"
-            />
-          </a>
+            {r.photoUrls.map((url, i) => (
+              <a
+                key={i}
+                href={r.googleMapsUri}
+                target="_blank"
+                rel="noreferrer"
+                className="snap-start shrink-0 w-full aspect-[16/9] rounded-lg overflow-hidden bg-muted"
+              >
+                <img
+                  src={url}
+                  alt={`${displayName} 照片 ${i + 1}`}
+                  loading="lazy"
+                  className="w-full h-full object-cover hover:scale-105 transition-transform duration-500"
+                />
+              </a>
+            ))}
+          </div>
         ) : (
           <a
             href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(displayName + " " + (r.address || ""))}`}
