@@ -406,6 +406,7 @@ const RestaurantSchema = z.object({
   pros: z.array(z.string()),
   cons: z.array(z.string()),
   links: z.array(z.object({ label: z.string(), url: z.string() })),
+  photoUrl: z.string().nullable(),
 });
 
 const ResultsSchema = z.object({
