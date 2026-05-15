@@ -149,13 +149,69 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 
 const SOURCE_ENUM = ["大众点评", "小红书", "Tabelog", "Google Reviews", "Yelp", "其它"] as const;
 
+// 把 Google Places 一手 reviews 转成 ReviewSummary（零幻觉，第一手数据）
+function googleReviewsToSummary(p: PlaceCandidate): ReviewSummary | null {
+  if (!p.reviews || p.reviews.length === 0) return null;
+  const trim = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 80);
+  const highlights: string[] = [];
+  const complaints: string[] = [];
+  for (const r of p.reviews) {
+    const t = trim(r.text);
+    if (!t) continue;
+    if (r.rating != null && r.rating <= 2) {
+      if (complaints.length < 3) complaints.push(t);
+    } else {
+      if (highlights.length < 5) highlights.push(t);
+    }
+  }
+  if (highlights.length === 0 && complaints.length === 0) return null;
+  const sentiment: ReviewSummary["sentiment"] =
+    complaints.length === 0
+      ? "positive"
+      : highlights.length === 0
+        ? "negative"
+        : complaints.length >= highlights.length
+          ? "mixed"
+          : "positive";
+  return {
+    reviewHighlights: highlights,
+    commonComplaints: complaints,
+    sentiment,
+    sourceCount: p.reviews.length,
+    sources: ["Google Reviews"],
+    dianpingRating: null,
+    dianpingRatingSource: "unknown",
+    priceLevel: null,
+    priceCurrency: null,
+    priceContext: null,
+  };
+}
+
+function mergeReviewSummaries(base: ReviewSummary, extra: ReviewSummary): ReviewSummary {
+  const dedup = (arr: string[]) =>
+    Array.from(new Set(arr.map((s) => s.trim()).filter(Boolean)));
+  return {
+    reviewHighlights: dedup([...base.reviewHighlights, ...extra.reviewHighlights]).slice(0, 8),
+    commonComplaints: dedup([...base.commonComplaints, ...extra.commonComplaints]).slice(0, 5),
+    sentiment: extra.sentiment !== "unknown" ? extra.sentiment : base.sentiment,
+    sourceCount: base.sourceCount + extra.sourceCount,
+    sources: Array.from(new Set([...base.sources, ...extra.sources])),
+    dianpingRating: extra.dianpingRating ?? base.dianpingRating,
+    dianpingRatingSource:
+      extra.dianpingRating != null ? extra.dianpingRatingSource : base.dianpingRatingSource,
+    priceLevel: extra.priceLevel ?? base.priceLevel,
+    priceCurrency: extra.priceCurrency ?? base.priceCurrency,
+    priceContext: extra.priceContext ?? base.priceContext,
+  };
+}
+
 async function fetchReviewSummary(
   name: string,
   city: string,
   apiKey: string,
 ): Promise<ReviewSummary | null> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 9000);
+  const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const res = await fetch("https://api.perplexity.ai/chat/completions", {
       method: "POST",
