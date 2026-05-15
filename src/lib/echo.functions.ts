@@ -600,6 +600,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
 
     const reviewById = new Map<string, ReviewSummary>();
+    const cuisineExpansions = new Map<string, CuisineExpansion>();
     let placeResults: Array<{
       cuisine: string;
       places: PlaceCandidate[];
