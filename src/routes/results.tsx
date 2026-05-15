@@ -235,11 +235,52 @@ function ResultsPage() {
               </div>
             </div>
           )}
-          {freeText && (
+          {freeText && !editing && (
             <details className="mt-3">
               <summary className="text-[11px] uppercase tracking-wider text-muted-foreground cursor-pointer hover:text-foreground">原始描述 ▾</summary>
               <p className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">{freeText}</p>
             </details>
+          )}
+          {editing && (
+            <div className="mt-4 pt-4 border-t border-border space-y-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                改写需求(原话已填好,可以直接改)
+              </p>
+              <Textarea
+                autoFocus
+                value={draftText}
+                onChange={(e) => setDraftText(e.target.value)}
+                maxLength={1000}
+                disabled={refining}
+                className="min-h-[120px] text-sm resize-none"
+                placeholder="例如:把人均提高到 2 万日元,改成想要安静的店,去掉有蟹的硬要求…"
+              />
+              <p className="text-xs text-muted-foreground">
+                改完点应用,会用新条件重新排一次,店铺会刷新。
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setEditing(false);
+                    setDraftText(freeText);
+                  }}
+                  disabled={refining}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void applyEdit()}
+                  disabled={refining || draftText.trim() === freeText.trim()}
+                >
+                  {refining ? "搜索中…" : "应用并重新搜索"}
+                </Button>
+              </div>
+            </div>
           )}
         </div>
 
