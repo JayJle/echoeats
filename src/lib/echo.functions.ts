@@ -928,7 +928,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }));
 
     const gateway = createLovableAiGatewayProvider(aiKey);
-    const model = gateway("google/gemini-2.5-flash");
+    const model = gateway("google/gemini-3-flash-preview");
 
     const hardFiltersList = data.hardFilters;
     const hardFiltersJson = JSON.stringify(hardFiltersList);
