@@ -33,6 +33,13 @@ export type Restaurant = {
   cons: string[];
   links: { label: string; url: string }[];
   photoUrls: string[];
+  tabelog: {
+    rating: string | null;
+    reviewCount: number | null;
+    url: string | null;
+    priceRange: string | null;
+    summary: string | null;
+  } | null;
 };
 
 export type ResultsGroup = { cuisine: string; restaurants: Restaurant[]; partialRestaurants?: Restaurant[] };
