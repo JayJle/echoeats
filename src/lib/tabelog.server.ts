@@ -138,10 +138,9 @@ export async function fetchTabelogInfo(
         ? parsed.summary.trim().slice(0, 120)
         : null;
 
-    if (rating == null && summary == null) {
-      console.warn(`[Tabelog] ${name}: rating & summary both null (url=${url})`);
-      cache.set(cacheKey, null);
-      return null;
+    // 只要有 tabelog.com URL 就保留（前端可让用户点过去自己看），评分/摘要可缺。
+    if (rating == null && summary == null && reviewCount == null && priceRange == null) {
+      console.log(`[Tabelog] ${name}: url-only (no rating/summary/price) url=${url}`);
     }
     console.log(`[Tabelog] ${name}: ok rating=${rating} reviews=${reviewCount}`);
 
