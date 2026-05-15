@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useState } from "react";
-import { HelpCircle } from "lucide-react";
+import { HelpCircle, ArrowRight } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
@@ -133,11 +133,13 @@ function StepRequirements() {
                 size="lg"
                 className="flex-1 sm:flex-none"
               >
-                {stage === "parsing"
-                  ? "AI 正在理解需求…"
-                  : stage === "searching"
-                    ? "AI 深度搜索中…"
-                    : "AI 深度搜索 →"}
+                {stage === "parsing" ? (
+                  "AI 正在理解需求…"
+                ) : stage === "searching" ? (
+                  "AI 深度搜索中…"
+                ) : (
+                  <>AI 深度搜索 <ArrowRight className="w-4 h-4" /></>
+                )}
               </Button>
               <Popover>
                 <PopoverTrigger asChild>
