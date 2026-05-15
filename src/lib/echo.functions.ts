@@ -698,7 +698,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 - **pros/cons 必须取真实素材**：有 realWorldReviews 时，pros 至少 2 条来自 reviewHighlights；cons 至少 1 条来自 commonComplaints（commonComplaints 为空则用候选其它弱点）。禁止"环境不错""值得一试"等空话。
 - aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
-- matchDetails: 3-6 条短描述，每条带 status (ok/warn)。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。
+- matchDetails: 3-6 条短描述，每条带 status (ok/warn)。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。**严格限定范围**：只能围绕用户实际提到的需求（hardFilters / softPreferences / negativeFilters / dishPreferences）来写。**绝对禁止**对用户没有提到的维度发出 warn 或提醒——例如用户没提预算/价格，就不准出现"价格偏高""人均较贵""超出预算"之类的条目；用户没提氛围，就不准提"氛围一般"；用户没提服务，就不准提"服务慢"。如果某维度用户没提，哪怕网评有相关吐槽，也只能放进 cons，不能进 matchDetails。
 
 输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
 
