@@ -118,6 +118,11 @@ import {
   searchDianpingCuisine,
   type DianpingReview,
 } from "./dianping.server";
+import {
+  expandCuisineQueries,
+  filterByCuisineRelevance,
+  type CuisineExpansion,
+} from "./cuisine-expand.server";
 
 // Perplexity 真实网评摘要
 type ReviewSummary = {
