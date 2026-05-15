@@ -83,7 +83,10 @@ function ResultsPage() {
             ↻ 再次搜索
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link to="/confirm">编辑需求</Link>
+            <Link to="/requirements">编辑需求</Link>
+          </Button>
+          <Button variant="outline" size="sm" onClick={restartFlow}>
+            重新开始
           </Button>
         </div>
       </header>
@@ -91,7 +94,7 @@ function ResultsPage() {
       {refining && (
         <div className="fixed inset-0 z-50 bg-background/70 backdrop-blur-sm flex items-center justify-center">
           <div className="bg-card border border-border rounded-2xl px-6 py-5 shadow-lg text-sm">
-            {refineStage === "parsing" ? "AI 正在理解新条件…" : "AI 正在重新搜索餐厅…"}
+            AI 正在重新搜索餐厅…
           </div>
         </div>
       )}
