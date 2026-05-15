@@ -47,6 +47,8 @@ function StepRequirements() {
   const [searchMode, setSearchMode] = useState<"quick" | "deep">("deep");
   const [error, setError] = useState<string | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const runIdRef = useRef(0);
 
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
@@ -57,6 +59,7 @@ function StepRequirements() {
 
   useEffect(() => () => {
     timersRef.current.forEach(clearTimeout);
+    abortRef.current?.abort();
   }, []);
 
   const clearTimers = () => {
