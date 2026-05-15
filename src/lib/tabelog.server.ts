@@ -91,18 +91,29 @@ export async function fetchTabelogInfo(
     }
     const json = await res.json();
     const content = json?.choices?.[0]?.message?.content;
+    const citations: string[] = Array.isArray(json?.citations) ? json.citations : [];
+    const tabelogCitation = citations.find((c) => typeof c === "string" && /tabelog\.com\//i.test(c)) ?? null;
     if (!content) {
+      console.warn(`[Tabelog] ${name}: empty content (citations=${citations.length})`);
       cache.set(cacheKey, null);
       return null;
     }
-    const parsed = JSON.parse(content);
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      console.warn(`[Tabelog] ${name}: JSON parse failed`);
+      cache.set(cacheKey, null);
+      return null;
+    }
 
-    // 反幻觉：URL 必须包含 tabelog.com，否则整体丢弃
-    const rawUrl = typeof parsed.url === "string" ? parsed.url.trim() : null;
-    const url = rawUrl && /tabelog\.com/i.test(rawUrl) ? rawUrl : null;
+    // URL 优先取 JSON 内 url 字段，否则回落到 citations 中第一个 tabelog.com 链接
+    const rawUrl = typeof parsed.url === "string" ? (parsed.url as string).trim() : null;
+    const urlFromJson = rawUrl && /tabelog\.com\//i.test(rawUrl) ? rawUrl : null;
+    const url = urlFromJson ?? tabelogCitation;
 
-    // URL 不可信时，rating/summary 也不再可信（同源失效）
     if (!url) {
+      console.warn(`[Tabelog] ${name}: no tabelog.com url in JSON or citations`);
       cache.set(cacheKey, null);
       return null;
     }
