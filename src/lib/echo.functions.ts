@@ -974,6 +974,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               pros: pick.pros,
               cons: pick.cons,
               links: buildLinks(p, data.city),
+              photoUrl: null as string | null,
             };
             return { bucket, restaurant };
           })
