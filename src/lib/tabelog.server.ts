@@ -51,14 +51,14 @@ export async function fetchTabelogInfo(
 
 要求：
 - 必须是 tabelog.com 上**真实存在**的店铺页（URL 形如 https://tabelog.com/xx/A.../...../...../）。
-- 店名和地址必须能合理对应（同名不同店一律算找不到）。
-- rating: Tabelog 综合评分（数字字符串，如 "3.62"）。Tabelog 评分体系特殊（满分 5，3.5+ 即优秀），原样返回。找不到 → null。
-- reviewCount: 口コミ件数（整数）。找不到 → null。
-- url: 该店铺 Tabelog 页面 URL（必须包含 "tabelog.com"）。找不到 → null。
-- priceRange: "夜の予算" 或 "ランチ予算" 字段原文（如 "￥6,000〜￥7,999"）。找不到 → null。
-- summary: 1-2 句简体中文，归纳 Tabelog 用户口碑（具体菜品/服务/氛围），≤ 60 字。找不到 → null。
+- 店名和地址必须能合理对应（同名不同店一律算找不到，宁可返回 null）。
+- url: 该店铺 Tabelog 页面 URL（必须包含 "tabelog.com"）。**只要找到了对应店铺页就返回 URL，即使评分/口コミ件数/价格/摘要暂时读取不到也照常返回 URL**。找不到对应店铺 → null。
+- rating: Tabelog 综合评分（数字字符串，如 "3.62"）。Tabelog 评分体系特殊（满分 5，3.5+ 即优秀），原样返回。读不到 → null（不要编）。
+- reviewCount: 口コミ件数（整数）。读不到 → null。
+- priceRange: "夜の予算" 或 "ランチ予算" 字段原文（如 "￥6,000〜￥7,999"）。读不到 → null。
+- summary: 1-2 句简体中文，归纳 Tabelog 用户口碑（具体菜品/服务/氛围），≤ 60 字。读不到 → null。
 
-只输出 JSON 对象。如果找不到任何匹配，所有字段返回 null。`,
+只输出 JSON 对象。如果找不到任何匹配店铺，所有字段返回 null。`,
           },
         ],
         max_tokens: 400,
@@ -138,10 +138,9 @@ export async function fetchTabelogInfo(
         ? parsed.summary.trim().slice(0, 120)
         : null;
 
-    if (rating == null && summary == null) {
-      console.warn(`[Tabelog] ${name}: rating & summary both null (url=${url})`);
-      cache.set(cacheKey, null);
-      return null;
+    // 只要有 tabelog.com URL 就保留（前端可让用户点过去自己看），评分/摘要可缺。
+    if (rating == null && summary == null && reviewCount == null && priceRange == null) {
+      console.log(`[Tabelog] ${name}: url-only (no rating/summary/price) url=${url}`);
     }
     console.log(`[Tabelog] ${name}: ok rating=${rating} reviews=${reviewCount}`);
 
