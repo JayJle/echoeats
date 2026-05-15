@@ -102,14 +102,14 @@ function StepRequirements() {
           >
             ← 返回
           </Link>
-          <div className="flex flex-row gap-2 sm:gap-3 items-center w-full sm:w-auto">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-3">
             <Button
               type="button"
               variant="secondary"
               size="lg"
               disabled={loading}
               onClick={() => void runSearch(value, "quick")}
-              className="flex-1 sm:w-auto sm:flex-none"
+              className="w-full sm:w-auto"
             >
               {stage === "searching" ? "搜索中…" : "⚡ 快速搜索"}
             </Button>
@@ -118,7 +118,7 @@ function StepRequirements() {
                 type="submit"
                 disabled={loading}
                 size="lg"
-                className="flex-1 sm:w-auto sm:flex-none"
+                className="w-full sm:w-auto"
               >
                 {stage === "parsing" ? (
                   "AI 正在理解需求…"
