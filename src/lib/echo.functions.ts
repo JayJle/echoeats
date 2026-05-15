@@ -792,29 +792,33 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }
     }
 
-    // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要，作为 Google 之外的独立信号
+    // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
+    // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
     if (!useDianping && pplxKey && guessRegionCode(data.city) === "JP") {
-      const tasks: Array<Promise<{ id: string; info: TabelogInfo | null }>> = [];
+      const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
-        const top = [...r.places]
-          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-          .slice(0, 15);
-        for (const p of top) {
-          tasks.push(
-            fetchTabelogInfo(p.name, p.address, data.city).then((info) => ({
-              id: p.placeId,
-              info,
-            })),
-          );
-        }
+        for (const p of r.places) allTargets.push(p);
       }
-      const settled = await Promise.allSettled(tasks);
-      for (const s of settled) {
-        if (s.status === "fulfilled" && s.value.info) {
-          tabelogById.set(s.value.id, s.value.info);
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const runWorker = async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= allTargets.length) return;
+          const p = allTargets[i];
+          try {
+            const info = await fetchTabelogInfo(p.name, p.address, data.city);
+            if (info) tabelogById.set(p.placeId, info);
+          } catch (e) {
+            console.warn(`[Tabelog] ${p.name} task error:`, e instanceof Error ? e.message : e);
+          }
         }
-      }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+      );
+      console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
 
     const candidatesForPrompt = placeResults
@@ -848,6 +852,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
                   rating: tabelog.rating,
                   reviewCount: tabelog.reviewCount,
                   priceRange: tabelog.priceRange,
+                  priceJPY: tabelog.priceJPY,
                   summary: tabelog.summary,
                 }
               : null,
@@ -900,15 +905,19 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
   note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
 - **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
 - **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用（例：editorialSummary 写明"仅晚市营业"但用户要求午餐；commonComplaints 明确提到"不接受预约"但用户要求可预约）。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。宁可放进 partial 让用户自己核实，也不要错杀。
-- 价格判断（重要）：
-    1. 若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
-    2. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
-    3. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
+- 价格判断（重要，按以下优先级，**前者命中后不再回退**）：
+    1. **Tabelog 价位优先（仅当用户预算币种是 JPY）**：若 candidate.tabelog.priceJPY 存在且用户预算硬条件币种是 JPY → **必须**用 Tabelog 价位判断（覆盖 priceFromReviews 和 Google priceLevel）：
+       - priceJPY.low > 用户预算上限 → fail（note 例："Tabelog ￥6000~7999 > ¥5000"）
+       - priceJPY.high != null 且 priceJPY.high ≤ 用户预算上限 → ok（note 例："Tabelog ￥3000~4500 ≤ ¥5000"）
+       - 区间跨过预算上限（low ≤ 上限 < high，或上限缺一边）→ unknown
+    2. 否则若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
+    3. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
+    4. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
 - **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度，而不是只看 Google 评分；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
 - **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字、提炼具体菜名/服务点，但不得新增事实）。**如果 realWorldReviews 为 null，或 reviewHighlights 与 commonComplaints 都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据（rating、primaryType、editorialSummary、address），不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
 - **pros/cons 必须取真实素材**：当 reviewHighlights 非空时，pros 至少 2 条（不超过可用条数）来自 reviewHighlights 的真实文本浓缩；当 commonComplaints 非空时，cons 至少 1 条来自 commonComplaints（为空则 cons 留空，不要瞎编）。禁止"环境不错""值得一试"等空话。Google Reviews 来源的 highlights 是顾客原文整句，必须提炼成短句（如"出品稳定、服务热情"而不是照抄一整段）。
 - aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台。
-- **Tabelog 信号（仅日本店铺可能有）**：candidate.tabelog 是来自 Tabelog（食べログ）的独立信号，与 Google 体系不同——Tabelog 普遍偏低，3.5+ 已是优质店、3.7+ 顶级。**不要把 Tabelog 评分和 Google 评分相加平均**，而是作为两路独立信号交叉验证：两边都高 → 强信心；只有一边高 → 中等信心；两边都低 → 慎选。tabelog.summary 可作为 reviewHighlights/aiSummary 的补充素材（同样不得超出原文事实）。tabelog 为 null 时不影响判断，不要因此扣分。
+- **Tabelog 信号（仅日本店铺可能有）**：candidate.tabelog 是来自 Tabelog（食べログ）的独立信号。**仅 tabelog.priceJPY 参与硬过滤**（见上方"价格判断"）；tabelog.rating / reviewCount / summary **不参与硬过滤、不参与匹配度评分**，只作为附加信息展示给用户，仅可在 aiSummary 里轻量提及（"Tabelog 评分 X.XX"），且必须忠实于原文。Tabelog 普遍偏低，3.5+ 已是优质店；不要把 Tabelog 评分和 Google 评分相加平均。tabelog 为 null 时不影响判断，不要因此扣分。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
 - matchDetails: 3-6 条短描述，每条带 status (ok/warn)。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。**严格限定范围**：只能围绕用户实际提到的需求（hardFilters / softPreferences / negativeFilters / dishPreferences）来写。**绝对禁止**对用户没有提到的维度发出 warn 或提醒——例如用户没提预算/价格，就不准出现"价格偏高""人均较贵""超出预算"之类的条目；用户没提氛围，就不准提"氛围一般"；用户没提服务，就不准提"服务慢"。如果某维度用户没提，哪怕网评有相关吐槽，也只能放进 cons，不能进 matchDetails。
 
