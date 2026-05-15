@@ -716,12 +716,37 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       });
       ranking = result.output;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return {
-        groups: [],
-        error: `AI 排序失败：${msg}`,
-        suggestions: FALLBACK_SUGGESTIONS,
-      };
+      const firstErr = e instanceof Error ? e.message : String(e);
+      console.warn(`[Echo/AI-rank] Output.object failed (${firstErr}), retrying with raw text…`);
+      // 兜底：用原始文本生成 + 正则抽 JSON 再 zod 校验。
+      // Gemini 偶尔会输出多余前后缀文字导致 Output.object 解析失败。
+      try {
+        const fallback = await generateText({
+          model,
+          prompt:
+            prompt +
+            `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
+          maxOutputTokens: 10000,
+        });
+        const text = fallback.text || "";
+        const jsonText = (() => {
+          const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+          if (fenced) return fenced[1].trim();
+          const m = text.match(/\{[\s\S]*\}/);
+          return m ? m[0] : text;
+        })();
+        const parsed = JSON.parse(jsonText);
+        ranking = AiRankingSchema.parse(parsed);
+        console.log(`[Echo/AI-rank] fallback parse succeeded`);
+      } catch (e2) {
+        const msg = e2 instanceof Error ? e2.message : String(e2);
+        console.error(`[Echo/AI-rank] fallback also failed: ${msg}`);
+        return {
+          groups: [],
+          error: `AI 排序失败：${firstErr}`,
+          suggestions: FALLBACK_SUGGESTIONS,
+        };
+      }
     }
 
     // 3. 合并 AI picks 与真实 Place 数据
