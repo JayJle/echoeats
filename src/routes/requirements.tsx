@@ -47,6 +47,8 @@ function StepRequirements() {
   const [searchMode, setSearchMode] = useState<"quick" | "deep">("deep");
   const [error, setError] = useState<string | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const runIdRef = useRef(0);
 
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
@@ -57,6 +59,7 @@ function StepRequirements() {
 
   useEffect(() => () => {
     timersRef.current.forEach(clearTimeout);
+    abortRef.current?.abort();
   }, []);
 
   const clearTimers = () => {
@@ -88,11 +91,18 @@ function StepRequirements() {
     setLoading(true);
     setSearchMode(mode);
     setFreeText(text);
+    runIdRef.current += 1;
+    const myRunId = runIdRef.current;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
       setCurrentStage("parse");
       const parsed = await parseFn({
         data: { city, cuisines, date: "", freeText: text },
-      });
+        signal: ac.signal,
+      } as Parameters<typeof parseFn>[0]);
+      if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode };
       setParsed(parsedWithMode);
 
@@ -108,12 +118,17 @@ function StepRequirements() {
         timersRef.current.push(setTimeout(() => setCurrentStage("rank"), 2500));
       }
 
-      const response = await searchFn({ data: parsedWithMode });
+      const response = await searchFn({
+        data: parsedWithMode,
+        signal: ac.signal,
+      } as Parameters<typeof searchFn>[0]);
+      if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       clearTimers();
       setCurrentStage("rank");
       setResults(response);
       navigate({ to: "/results" });
     } catch (err) {
+      if (ac.signal.aborted || myRunId !== runIdRef.current) return;
       const msg = err instanceof Error ? err.message : "搜索失败,请重试";
       if (msg.includes("429")) setError("请求过于频繁,请稍后再试");
       else if (msg.includes("402")) setError("AI 额度已用完,请在 Settings → Workspace 添加额度");
@@ -121,8 +136,17 @@ function StepRequirements() {
       clearTimers();
       setCurrentStage(null);
     } finally {
-      setLoading(false);
+      if (myRunId === runIdRef.current) setLoading(false);
     }
+  };
+
+  const handleCancel = () => {
+    abortRef.current?.abort();
+    runIdRef.current += 1;
+    clearTimers();
+    setLoading(false);
+    setCurrentStage(null);
+    setError(null);
   };
 
   return (
@@ -185,6 +209,11 @@ function StepRequirements() {
                 );
               })}
             </ul>
+            <div className="flex justify-end pt-1">
+              <Button type="button" variant="ghost" size="sm" onClick={handleCancel}>
+                取消搜索
+              </Button>
+            </div>
           </div>
         )}
 

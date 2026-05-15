@@ -59,26 +59,46 @@ function ResultsPage() {
 
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const runIdRef = useRef(0);
 
   useEffect(() => {
     if (!results || !parsed) navigate({ to: "/" });
   }, [results, parsed, navigate]);
 
+  useEffect(() => () => {
+    abortRef.current?.abort();
+  }, []);
+
   if (!results || !parsed) return null;
 
   const isEmpty = results.groups.length === 0;
 
+  const cancelRefine = () => {
+    abortRef.current?.abort();
+    runIdRef.current += 1;
+    setRefining(false);
+    setRefineError(null);
+  };
+
   const runSearchAgain = async () => {
     setRefineError(null);
     setRefining(true);
+    runIdRef.current += 1;
+    const myRunId = runIdRef.current;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
-      const response = await searchFn({ data: parsed });
+      const response = await searchFn({ data: parsed, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       setResults(response);
     } catch (err) {
+      if (ac.signal.aborted || myRunId !== runIdRef.current) return;
       const msg = err instanceof Error ? err.message : "搜索失败";
       setRefineError(msg.includes("429") ? "请求过于频繁，请稍后再试" : msg);
     } finally {
-      setRefining(false);
+      if (myRunId === runIdRef.current) setRefining(false);
     }
   };
 
@@ -95,23 +115,32 @@ function ResultsPage() {
     const text = draftText.trim();
     setRefineError(null);
     setRefining(true);
+    runIdRef.current += 1;
+    const myRunId = runIdRef.current;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
       const newParsed = await parseFn({
         data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: text },
-      });
+        signal: ac.signal,
+      } as Parameters<typeof parseFn>[0]);
+      if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const merged = { ...newParsed, mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep" };
       setFreeText(text);
       setParsed(merged);
-      const response = await searchFn({ data: merged });
+      const response = await searchFn({ data: merged, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       setResults(response);
       setEditing(false);
     } catch (err) {
+      if (ac.signal.aborted || myRunId !== runIdRef.current) return;
       const msg = err instanceof Error ? err.message : "搜索失败";
       if (msg.includes("429")) setRefineError("请求过于频繁，请稍后再试");
       else if (msg.includes("402")) setRefineError("AI 额度已用完，请在 Settings → Workspace 添加额度");
       else setRefineError(msg);
     } finally {
-      setRefining(false);
+      if (myRunId === runIdRef.current) setRefining(false);
     }
   };
 
@@ -157,8 +186,11 @@ function ResultsPage() {
 
       {refining && (
         <div className="fixed inset-0 z-50 bg-background/70 backdrop-blur-sm flex items-center justify-center">
-          <div className="bg-card border border-border rounded-2xl px-6 py-5 shadow-lg text-sm">
-            AI 正在重新搜索餐厅…
+          <div className="bg-card border border-border rounded-2xl px-6 py-5 shadow-lg text-sm flex flex-col items-center gap-3">
+            <p>AI 正在重新搜索餐厅…</p>
+            <Button type="button" variant="ghost" size="sm" onClick={cancelRefine}>
+              取消搜索
+            </Button>
           </div>
         </div>
       )}
@@ -271,14 +303,20 @@ function ResultsPage() {
                 >
                   取消
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => void applyEdit()}
-                  disabled={refining || draftText.trim() === freeText.trim()}
-                >
-                  {refining ? "搜索中…" : "应用并重新搜索"}
-                </Button>
+                {refining ? (
+                  <Button type="button" variant="outline" size="sm" onClick={cancelRefine}>
+                    取消搜索
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void applyEdit()}
+                    disabled={draftText.trim() === freeText.trim()}
+                  >
+                    应用并重新搜索
+                  </Button>
+                )}
               </div>
             </div>
           )}
