@@ -1,66 +1,43 @@
 
-# 加分阶段进度反馈(假进度版)
+# 把"编辑需求"挪进条件框,支持原地改写
 
-只动前端,不改后端逻辑,总耗时不变,但用户能看到清晰的阶段推进,不再"白屏 15 秒"。
+## 改动文件
+仅 `src/routes/results.tsx`(以及可能用到 `Textarea`,已存在)。后端 `parseRequirements` / `searchRestaurants` 复用,不动。
 
-## 改动范围
+## 具体改动
 
-仅 `src/routes/requirements.tsx`(深度搜索按下后到跳转 `/results` 之间的等待界面)。`StepShell` 不动,后端 server function 不动。
+### 1. 顶部 header
+- 移除右上角的 `编辑需求` 按钮(那个 `<Link to="/requirements">`)
+- 保留 `↻ 再次搜索` 和 `重新开始`
 
-## 阶段设计
+### 2. 条件展示框(`<div className="mb-6 bg-card ...">`)右上角加一个小按钮 `✎ 编辑`
+- 默认收起。点击后在该框最底部展开一块编辑区:
+  - 一个 `Textarea`(`min-h-[120px]`),`defaultValue` = 当前 store 里的 `freeText`(也就是上次输入的原话)
+  - 下方两个按钮:`取消`(收起,丢弃改动) / `应用并重新搜索`(主按钮)
+  - 一行小字提示:"改完点应用,会用新条件重新排一次,店铺会刷新"
+- 编辑区出现时,原来 `freeText` 的 `<details>原始描述</details>` 隐藏(避免重复)
 
-把现有 `stage: "idle" | "parsing" | "searching"` 扩展为带时间轴的多步状态:
+### 3. 应用逻辑
+- 点"应用并重新搜索":
+  1. `setRefining(true)`(复用现有全屏 loading 蒙层"AI 正在重新搜索餐厅…")
+  2. 调 `parseFn({ data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: 新文本 } })`
+  3. `setFreeText(新文本)` + `setParsed({ ...newParsed, mode: parsed.mode })` (沿用之前的 quick/deep 模式)
+  4. 调 `searchFn({ data: 新 parsed })`
+  5. `setResults(...)`,收起编辑区
+- 错误处理走现有 `refineError` 通道
+- 编辑期间不离开本页,用户能边看现有店铺边改
 
-```text
-① 理解你的需求          ~2s   (parseRequirements 真实耗时)
-② 在 {city} 搜寻候选餐厅  ~3s   (Google Places / 大众点评)
-③ 抓取本地点评与口碑     ~10s  (Perplexity + Tabelog)
-④ AI 综合排序            ~3s   (最终 rank)
-```
-
-实现方式:
-- 真·阶段 1:`parseFn` await 期间显示 ①
-- 进入 `searchFn` 后,用一个 `setTimeout` 序列按预估耗时推进 ②③④,直到 `searchFn` resolve 才停下并跳转
-- 如果实际比预估快,直接停在当前阶段并跳转
-- 如果比预估慢,最后一个阶段(④)显示一个温和的"马上好了…"文案不再前进
-- 快速搜索模式只显示 ①② 两步,跳过 ③(因为后端确实跳过深度抓取)
-
-## UI
-
-在原按钮区域上方插入一个进度卡片,搜索期间显示;不搜索时隐藏,保留原表单。卡片内容:
-- 4 个步骤竖排,每步左侧是状态图标:
-  - 已完成:✓(primary 色)
-  - 进行中:旋转 spinner
-  - 未开始:灰色空心圆
-- 步骤右侧文字 + 当前步骤下方一行轻量提示文案("正在询问大众点评和小红书…"等)
-- 顶部一条细 progress bar(用现有 `@/components/ui/progress`),按 `已完成步骤数 / 总步骤数` 平滑过渡
-- 颜色全部用 design tokens(primary / muted-foreground / border),不写硬编码色
-- 保留现有 error 错误提示位置不变
-
-## 文案(中文,贴合现有口吻)
-
-- ① 理解你的需求 — "AI 在拆解预算、氛围、避雷点…"
-- ② 在 {city} 搜寻候选餐厅 — "扫一遍主流地图和本地榜单"
-- ③ 抓取本地点评与口碑 — 日本城市:"翻 Tabelog、食べログ、小红书…";中国城市:"翻大众点评、小红书…";其他:"翻 Google、Yelp、小红书…"
-- ④ AI 综合排序 — "把口碑、价位、距离揉在一起打分"
-
-城市判断复用现有 `parsed` 里已有的城市信息(parseFn 返回后即可拿到)。
-
-## 取消/错误
-
-- 用户在等待中点"返回"或浏览器后退:不需要特殊处理,组件卸载即停。
-- 出错(catch 分支):清空进度,显示原 error UI,按钮恢复可点。
+### 4. 行为细节
+- `Textarea` `maxLength={1000}`,与 requirements 页一致
+- 应用按钮在文本与原 `freeText` 完全相同时禁用(避免无意义重搜)
+- `refining` 期间编辑区按钮全部 disabled
+- 编辑区展开时滚动到条件框,确保用户看见(`scrollIntoView({ behavior: "smooth", block: "nearest" })`)
 
 ## 不做的事
+- 不改变条件 chips(硬条件/偏好/排除/菜品)的展示位置或样式
+- 不加在线 AI 流式预览
+- 不动 RestaurantCard、FeedbackPanel、底部"重新搜索"按钮
+- 不新增路由、不动 store schema
 
-- 不接 SSE / streaming,不改 server function 签名
-- 不动 `/results` 页
-- 不引入新依赖
-
-## 预期效果
-
-- 总耗时:0 变化
-- 体感:从"按下后白屏直到跳转"→ "看到 4 步在动,知道在干嘛,大概还要多久",通常用户感觉快 30–50%
-- 出问题时定位更直观(虽然这个版本是假进度,但阶段切换时机仍贴近真实节奏)
-
-要我开工吗?
+## 视觉
+全部用现有 design tokens(`bg-muted/30`、`border-border`、`text-muted-foreground` 等),不引入新色。编辑区与条件框同卡片内,用 `border-t border-border pt-4 mt-4` 分隔。
