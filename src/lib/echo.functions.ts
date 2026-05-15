@@ -777,6 +777,31 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }
     }
 
+    // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要，作为 Google 之外的独立信号
+    const tabelogById = new Map<string, TabelogInfo>();
+    if (!useDianping && pplxKey && guessRegionCode(data.city) === "JP") {
+      const tasks: Array<Promise<{ id: string; info: TabelogInfo | null }>> = [];
+      for (const r of placeResults) {
+        const top = [...r.places]
+          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+          .slice(0, 8);
+        for (const p of top) {
+          tasks.push(
+            fetchTabelogInfo(p.name, p.address, data.city).then((info) => ({
+              id: p.placeId,
+              info,
+            })),
+          );
+        }
+      }
+      const settled = await Promise.allSettled(tasks);
+      for (const s of settled) {
+        if (s.status === "fulfilled" && s.value.info) {
+          tabelogById.set(s.value.id, s.value.info);
+        }
+      }
+    }
+
     const candidatesForPrompt = placeResults
       .filter((r) => r.places.length)
       .map((r) => ({
