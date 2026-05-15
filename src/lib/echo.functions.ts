@@ -898,8 +898,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const gateway = createLovableAiGatewayProvider(aiKey);
     const model = gateway("google/gemini-3-flash-preview");
 
-    const hardFiltersList = data.hardFilters;
-    const hardFiltersJson = JSON.stringify(hardFiltersList);
+    const hardFiltersList = data.hardFilters.map((h) => h.text);
+    const hardFiltersJson = JSON.stringify(
+      data.hardFilters.map((h) => ({ text: h.text, weight: h.weight })),
+    );
+    const softJson = JSON.stringify(
+      data.softPreferences.map((s) => ({ text: s.text, weight: s.weight })),
+    );
+    const negJson = JSON.stringify(
+      data.negativeFilters.map((n) => ({ text: n.text, weight: n.weight })),
+    );
 
     const cuisineFidelityBlock = Array.from(cuisineExpansions.entries())
       .map(([c, exp]) => {
@@ -909,15 +917,17 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       })
       .join("\n");
 
-    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何硬条件被证伪，都应纳入）**，并给出打分和理由。
+    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。
 
 用户需求：
 - 城市：${data.city}
 - 日期/时间：${data.dateTime}
-- 硬条件（数组形式，下面 hardFilterChecks 必须**逐条且按相同顺序**对照）：${hardFiltersJson}
-- 偏好：${data.softPreferences.join("；") || "无"}
-- 避雷：${data.negativeFilters.join("；") || "无"}
+- 硬条件（带 weight 0-1，下面 hardFilterChecks 必须**逐条且按相同顺序**对照）：${hardFiltersJson}
+- 偏好（带 weight）：${softJson === "[]" ? "无" : softJson}
+- 避雷（带 weight）：${negJson === "[]" ? "无" : negJson}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
+
+权重含义：1.0=务必、0.9=必须、0.8=明确硬属性、0.6=希望、0.4=可选。**只有 weight ≥ 0.85 的硬条件 fail 才会真的剔除餐厅**；低权重 fail 会扣分但保留。
 
 ## 料理保真（最高优先级，先于其它硬条件）
 本次每个分组的「料理类型」就是该组的 cuisine 字段。每个分组的本地化主词、同义词、反例如下：
