@@ -794,6 +794,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const hardFiltersList = data.hardFilters;
     const hardFiltersJson = JSON.stringify(hardFiltersList);
 
+    const cuisineFidelityBlock = Array.from(cuisineExpansions.entries())
+      .map(([c, exp]) => {
+        const syn = exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
+        const neg = exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
+        return `- 「${c}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`;
+      })
+      .join("\n");
+
     const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何硬条件被证伪，都应纳入）**，并给出打分和理由。
 
 用户需求：
