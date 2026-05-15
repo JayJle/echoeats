@@ -96,9 +96,23 @@ function ResultsPage() {
           <Button asChild variant="outline" size="sm">
             <Link to="/requirements">编辑需求</Link>
           </Button>
-          <Button variant="outline" size="sm" onClick={restartFlow}>
-            重新开始
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm">重新开始</Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>确定要重新开始吗？</AlertDialogTitle>
+                <AlertDialogDescription>
+                  当前的搜索条件和结果将被清空，回到第一步重新输入。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>取消</AlertDialogCancel>
+                <AlertDialogAction onClick={restartFlow}>确认重新开始</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </header>
 
