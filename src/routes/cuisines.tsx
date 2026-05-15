@@ -30,6 +30,14 @@ function StepCuisines() {
     if (hasHydrated && !city) navigate({ to: "/" });
   }, [hasHydrated, city, navigate]);
 
+  // Sync local input with persisted cuisines once store rehydrates
+  useEffect(() => {
+    if (hasHydrated && !value && cuisines.length) {
+      setValue(cuisines.join("，"));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasHydrated]);
+
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     const list = value
