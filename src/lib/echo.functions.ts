@@ -831,7 +831,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
-    if (!useDianping && pplxKey && country === "JP") {
+    if (!useDianping && pplxKey && country === "JP" && data.mode !== "quick") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
