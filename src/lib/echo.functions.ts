@@ -300,19 +300,32 @@ async function fetchReviewSummary(
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return null;
 
-    // 反幻觉：Perplexity 必须返回 citations，否则视为模型在凭空编造，整条丢弃
+    // 反幻觉：收集 Perplexity citation；0 citation 时不直接丢弃，而是标记 sourceCount=0、
+    // sources=[]，让下游与 Google 一手 reviews 合并。仅当模型既无 citation 又没给出任何
+    // highlights/complaints 时才视为彻底无证据丢弃。
     const rawCitations: unknown = json?.citations ?? json?.search_results ?? [];
     const citationUrls: string[] = Array.isArray(rawCitations)
       ? (rawCitations as unknown[])
           .map((c) => (typeof c === "string" ? c : (c as { url?: string })?.url))
           .filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
       : [];
-    if (citationUrls.length === 0) {
-      console.warn(`[Perplexity] ${name}: no citations → discard (likely hallucinated)`);
-      return null;
-    }
 
     const parsed = JSON.parse(content);
+    const highlights = Array.isArray(parsed.reviewHighlights)
+      ? parsed.reviewHighlights.slice(0, 5)
+      : [];
+    const complaints = Array.isArray(parsed.commonComplaints)
+      ? parsed.commonComplaints.slice(0, 3)
+      : [];
+
+    if (citationUrls.length === 0 && highlights.length === 0 && complaints.length === 0) {
+      console.warn(`[Perplexity] ${name}: no citations & no content → discard`);
+      return null;
+    }
+    if (citationUrls.length === 0) {
+      console.warn(`[Perplexity] ${name}: no citations but model returned content → keep with sourceCount=0`);
+    }
+
     const rawRating = parsed.dianpingRating;
     const rating =
       typeof rawRating === "number" && rawRating >= 0 && rawRating <= 5
@@ -337,13 +350,9 @@ async function fetchReviewSummary(
       priceLevel != null && typeof parsed.priceContext === "string"
         ? parsed.priceContext.slice(0, 30)
         : null;
-    return {
-      reviewHighlights: Array.isArray(parsed.reviewHighlights) ? parsed.reviewHighlights.slice(0, 5) : [],
-      commonComplaints: Array.isArray(parsed.commonComplaints) ? parsed.commonComplaints.slice(0, 3) : [],
-      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
-      // 用真实 citation 数覆盖模型自报的 sourceCount，杜绝虚高
-      sourceCount: citationUrls.length,
-      sources: Array.isArray(parsed.sources)
+    // 仅在有 citation 时认可 sources（按真实 citation 数为 sourceCount）
+    const sources =
+      citationUrls.length > 0 && Array.isArray(parsed.sources)
         ? Array.from(
             new Set(
               parsed.sources.filter((s: unknown): s is string =>
@@ -351,7 +360,13 @@ async function fetchReviewSummary(
               ),
             ),
           )
-        : [],
+        : [];
+    return {
+      reviewHighlights: highlights,
+      commonComplaints: complaints,
+      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
+      sourceCount: citationUrls.length,
+      sources,
       dianpingRating: rating,
       dianpingRatingSource: rating == null ? "unknown" : ratingSource,
       priceLevel,
