@@ -995,7 +995,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             .slice(0, 10);
           for (const p of top) {
             tasks.push(
-              fetchReviewSummary(p.name, data.city, pplxKey).then((s) => ({
+              fetchReviewSummary(p.name, data.city, pplxKey, {
+                country,
+                googleMapsUri: p.googleMapsUri,
+                address: p.address,
+              }).then((s) => ({
                 id: p.placeId,
                 summary: s,
               })),
