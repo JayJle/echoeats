@@ -217,18 +217,20 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 输入「7pm sushi」→ \`{"mentioned":true,"evidence":"7pm","weekday":${new Date().getDay()},"hhmm":"19:00","raw":"7pm"}\`
 - 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\``;
 
-    const runOnce = async () => {
+    const runOnce = async (modelId: string) => {
+      const model = gateway(modelId);
       const { output } = await generateText({
         model,
         prompt,
-        maxOutputTokens: 4000,
+        maxOutputTokens: 8000,
         output: Output.object({
-          schema: ParsedSchema,
+          schema: LooseParsedSchema,
           name: "parsed_restaurant_requirements",
           description: "Echo Eats structured restaurant search requirements",
         }),
       });
-      return output;
+      const parsed = ParsedSchema.parse(output);
+      return parsed;
     };
 
     const sanitizeVisitTime = (
