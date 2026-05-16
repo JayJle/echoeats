@@ -218,6 +218,19 @@ function ResultsPage() {
               <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
             </div>
           </div>
+          {parsed.visitTime?.weekday != null && parsed.visitTime?.hhmm && (
+            <div className="mt-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">营业时间</p>
+              <div className="flex flex-wrap gap-1.5">
+                <span className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
+                  🕐 {parsed.visitTime.raw || "所选时段"}{" "}
+                  <span className="opacity-60">
+                    · {["周日", "周一", "周二", "周三", "周四", "周五", "周六"][parsed.visitTime.weekday]} {parsed.visitTime.hhmm} 营业
+                  </span>
+                </span>
+              </div>
+            </div>
+          )}
           {parsed.hardFilters.length > 0 && (
             <div className="mt-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">硬条件</p>
