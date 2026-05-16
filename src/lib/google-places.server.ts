@@ -34,6 +34,7 @@ const FIELD_MASK = [
   "places.location",
   "places.reviews",
   "places.photos",
+  "places.regularOpeningHours.weekdayDescriptions",
 ].join(",");
 
 export function guessLanguageCode(city: string): string {
