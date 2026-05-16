@@ -41,6 +41,18 @@ const TIER_CLASS: Record<Restaurant["matchTier"], string> = {
   partial: "bg-secondary text-secondary-foreground",
 };
 
+function todayHoursLabel(
+  weekdayDescriptions: string[] | null | undefined,
+  openNow: boolean,
+): string {
+  if (!weekdayDescriptions?.length) {
+    return openNow ? "营业中（时间未公开）" : "营业时间未公开";
+  }
+  const idx = (new Date().getDay() + 6) % 7;
+  const line = weekdayDescriptions[idx] ?? weekdayDescriptions[0];
+  return line.replace(/^[^:：]+[:：]\s*/, "");
+}
+
 function ResultsPage() {
   const navigate = useNavigate();
   const parsed = useQueryStore((s) => s.parsed);
