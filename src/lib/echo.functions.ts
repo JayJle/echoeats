@@ -702,6 +702,35 @@ const FALLBACK_SUGGESTIONS = [
   "减少同时搜索的料理类型数量",
 ];
 
+// 判断某个店在指定周几+时间是否营业。
+// periods 缺失 → unknown（保留）；命中区间 → open；都不命中 → closed。
+// 处理跨日营业（close.day != open.day 或 close 时间小于 open 时间）。
+function isOpenAt(
+  periods: PlaceCandidate["openingPeriods"],
+  weekday: number,
+  hhmm: string,
+): "open" | "closed" | "unknown" {
+  if (!periods || periods.length === 0) return "unknown";
+  const [hStr, mStr] = hhmm.split(":");
+  const h = Number(hStr);
+  const m = Number(mStr);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return "unknown";
+  const target = weekday * 1440 + h * 60 + m;
+  const WEEK = 7 * 1440;
+  for (const pd of periods) {
+    const openMin = pd.open.day * 1440 + pd.open.hour * 60 + pd.open.minute;
+    // close 缺失视作 24/7 营业
+    if (!pd.close) return "open";
+    let closeMin = pd.close.day * 1440 + pd.close.hour * 60 + pd.close.minute;
+    // 跨周/跨日营业（如 周五 22:00 -> 周六 02:00）
+    if (closeMin <= openMin) closeMin += WEEK;
+    // 两种偏移分别比较（处理 target 落在跨日尾部的情况）
+    const candidates = [target, target + WEEK];
+    if (candidates.some((t) => t >= openMin && t < closeMin)) return "open";
+  }
+  return "closed";
+}
+
 export const searchRestaurants = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParsedSchema.parse(input))
   .handler(async ({ data }): Promise<SearchResponse> => {
