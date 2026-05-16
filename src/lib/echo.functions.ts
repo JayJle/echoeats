@@ -83,7 +83,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
     const prompt = `你是 Echo Eats 的需求结构化引擎。用户填写了餐厅搜索表单：
 
 - 城市：${data.city}
-- 料理类型：${data.cuisines.join("、")}
+- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : "（用户跳过了料理选择，请从「其它需求」推断 1-3 个料理候选；推断不出来就填 [\"餐厅\"]）"}
 - 日期：${data.date || "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）"}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
