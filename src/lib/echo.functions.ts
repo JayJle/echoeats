@@ -1230,7 +1230,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               matchTier: tier,
               openNow: p.openNow ?? true,
               reservable: false,
-              needsReview: p.rating == null,
+              needsReview: p.rating == null || visitMatchById.get(p.placeId) === "unknown",
               ratings: candidateRatings(p, review, tabelogInfo),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
@@ -1241,6 +1241,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
               weekdayDescriptions: p.weekdayDescriptions ?? null,
+              visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
             };
             placeByRestaurantId.set(restaurant.id, p);
             return { bucket, restaurant };
