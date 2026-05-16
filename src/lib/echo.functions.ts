@@ -809,6 +809,21 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       guessRegionCode(data.city) ||
       (isMainlandChinaCity(data.city) ? "CN" : "");
     const useDianping = country === "CN";
+
+    // cuisines 兜底：用户跳过且 AI 也没推断出来时，按通用「餐厅」搜索
+    const cuisinesAutoFilled = data.cuisines.length === 0;
+    if (cuisinesAutoFilled) {
+      const lang = (data.language || guessLanguageCode(data.city)).toLowerCase();
+      const fallback =
+        lang === "ja"
+          ? "レストラン"
+          : lang === "ko"
+            ? "음식점"
+            : lang.startsWith("zh")
+              ? "餐厅"
+              : "restaurants";
+      data = { ...data, cuisines: [fallback] };
+    }
     const pplxKey = process.env.PERPLEXITY_API_KEY;
 
     if (!useDianping && !process.env.GOOGLE_PLACES_API_KEY) {
