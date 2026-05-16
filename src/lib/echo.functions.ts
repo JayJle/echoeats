@@ -180,12 +180,33 @@ export const parseRequirements = createServerFn({ method: "POST" })
       return output;
     };
 
+    const sanitizeVisitTime = (
+      parsed: z.infer<typeof ParsedSchema>,
+    ): z.infer<typeof ParsedSchema> => {
+      const vt = parsed.visitTime;
+      if (!vt || !vt.mentioned) {
+        return { ...parsed, visitTime: null };
+      }
+      // evidence 必须真实出现在原文里（大小写/空格归一化），防 AI 幻觉
+      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
+      const ev = norm(vt.evidence ?? "");
+      const src = norm(data.freeText ?? "");
+      if (!ev || !src.includes(ev)) {
+        return { ...parsed, visitTime: null };
+      }
+      // 必须 weekday + hhmm 都齐才用于过滤
+      if (vt.weekday == null || !vt.hhmm) {
+        return { ...parsed, visitTime: null };
+      }
+      return parsed;
+    };
+
     try {
       try {
-        return await runOnce();
+        return sanitizeVisitTime(await runOnce());
       } catch {
         // 一次重试，模型偶发返回不匹配 schema 的 JSON
-        return await runOnce();
+        return sanitizeVisitTime(await runOnce());
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -197,6 +218,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         dateTime: data.date || "未指定",
         country: "",
         language: "",
+        visitTime: null,
       });
     }
   });
