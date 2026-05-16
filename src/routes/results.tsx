@@ -284,32 +284,25 @@ function ResultsPage() {
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-xs uppercase tracking-wider text-muted-foreground">搜索结果</p>
-              <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-                {parsed.city} · {parsed.cuisines.join(" / ")}
-                {parsed.cuisinesInferred && (
-                  <span className="ml-2 inline-flex items-center align-middle px-2 py-0.5 text-[11px] font-normal rounded-full bg-primary/10 text-primary border border-primary/20">
-                    ✨ AI 识别的品类
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight flex flex-wrap items-center gap-x-2 gap-y-2">
+                <span>{parsed.city} ·</span>
+                {parsed.cuisines.map((c, i) => (
+                  <span
+                    key={i}
+                    className={
+                      parsed.cuisinesInferred
+                        ? "inline-flex items-center px-2.5 py-0.5 text-base font-medium rounded-full bg-primary/10 text-primary border border-primary/20"
+                        : "inline-flex items-center px-2.5 py-0.5 text-base font-medium rounded-full bg-muted text-foreground border border-border"
+                    }
+                  >
+                    {parsed.cuisinesInferred && <span className="mr-1">✨</span>}
+                    {c}
                   </span>
-                )}
+                ))}
               </h1>
-              {parsed.cuisinesInferred && (
-                <p className="mt-1 text-xs text-muted-foreground">根据你的需求自动匹配</p>
-              )}
               <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
             </div>
           </div>
-          {parsed.cuisinesInferred && parsed.cuisineLevelConstraints && parsed.cuisineLevelConstraints.length > 0 && (
-            <div className="mt-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">推断依据</p>
-              <div className="flex flex-wrap gap-1.5">
-                {parsed.cuisineLevelConstraints.map((f, i) => (
-                  <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-primary/10 text-primary border border-primary/20">
-                    ✨ {f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
           {parsed.visitTime?.weekday != null && parsed.visitTime?.hhmm && (
             <div className="mt-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">营业时间</p>
