@@ -473,6 +473,7 @@ function shopToCandidate(shop: RawShop, city: string, idx: number): PlaceCandida
     reviews: [],
     photoNames: [],
     weekdayDescriptions: shop.hours ? [shop.hours] : null,
+    openingPeriods: null,
   };
 }
 
