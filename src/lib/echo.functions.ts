@@ -702,10 +702,14 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
   }
 
   if (!isCN) {
-    // 非中文城市也加小红书（很多海外城市国人口碑在小红书）
+    // 海外（含日本）：加 Yelp + TripAdvisor 搜索链接，方便用户核验口碑来源
     links.push({
-      label: "小红书",
-      url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
+      label: "Yelp",
+      url: `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
+    });
+    links.push({
+      label: "TripAdvisor",
+      url: `https://www.tripadvisor.com/Search?q=${q}`,
     });
   }
 
