@@ -151,7 +151,8 @@ export const parseRequirements = createServerFn({ method: "POST" })
   - "明天/tomorrow/明晚" → ${(new Date().getDay() + 1) % 7}
   - "后天" → ${(new Date().getDay() + 2) % 7}
   - "周六/周日/周一" / "Saturday/Sunday/Monday..." → 直接对应
-  - 没有日期信号（只有时段/钟点）→ null
+  - **有具体钟点（原文出现明确的钟表数字，如 "12:00"、"7 点"、"7pm"、"14:30"）但没有任何星期/日期词 → 默认填今天的 weekday = ${new Date().getDay()}**
+  - 只有模糊时段词（"晚上"/"中午"/"tonight"/"evening" 等，没有具体钟点）且没有日期词 → null
 - \`hhmm\`：24 小时制 "HH:MM"。
   - 具体钟点："7 点"→"19:00"（晚上语境）/"07:00"（早上语境）；"7pm"→"19:00"；"12:30"→"12:30"；"下午 2 点半"→"14:30"
   - 模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"

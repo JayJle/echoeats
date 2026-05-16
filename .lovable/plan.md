@@ -1,33 +1,26 @@
-## 目标
-当 `parsed.visitTime` 实际作为硬筛选生效时（即同时含 weekday + hhmm 通过校验），在结果页顶部「搜索条件卡片」中像「硬条件 / 偏好 / 排除」一样显示一枚徽标，让用户清晰看到时间也参与了过滤；未提到时间则完全不显示。
+## 问题
+用户输入「12:00去吃」只有具体钟点、没有星期信号，AI 按当前 prompt 规则把 `weekday` 设为 `null`，`sanitizeVisitTime` 因 weekday 缺失把整条 `visitTime` 清空，因此结果页既没有时间徽标、也没有触发营业时间筛选。
 
-## 改动范围（仅前端展示）
+## 方案（只改 AI prompt 一处，不改业务逻辑）
 
-### `src/routes/results.tsx`
-在 `parsed.hardFilters` 区块之前（或紧邻其后），新增一个仅在 `parsed.visitTime?.weekday != null && parsed.visitTime?.hhmm` 时渲染的区块：
+在 `src/lib/echo.functions.ts` 的 visitTime 抽取规则里，把 weekday 兜底改成：
 
-```
-营业时间
-[ 🕐 {visitTime.raw}  ·  周X HH:MM 营业 ]
-```
+- **有具体钟点（用户原文里出现明确的「H 点 / HH:MM / Npm / Nam」等钟表数字）但没有星期/日期信号 → weekday 默认 = 今天的 weekday（${new Date().getDay()}）**，evidence 仍为该钟点原文片段。
+- **只有模糊时段（如「晚上」「中午」「tonight」单独出现，没有具体钟点）→ weekday 仍为 null**（保持现状，不触发过滤，避免误判）。
+- 已有日期信号的（今天/明天/周六/Saturday…）→ 保持原规则不变。
 
-样式与硬条件徽标一致（`bg-primary/15 text-primary border border-primary/30`），但加一个钟表 emoji 前缀以便区分。
+同时更新示例：
+- 新增：「12:00 去吃」→ `{mentioned:true, evidence:"12:00", weekday:<today>, hhmm:"12:00", raw:"12:00"}`
+- 新增：「7pm sushi」→ `{mentioned:true, evidence:"7pm", weekday:<today>, hhmm:"19:00", raw:"7pm"}`
+- 保留：「晚上去」→ weekday:null（不过滤）。
 
-- 主文案：优先用 `visitTime.raw`（用户原话，如「周六晚上 7 点」/「Saturday 7 pm」）。
-- 副文案（opacity-60）：用 `weekday` + `hhmm` 渲染成本地化的「周X HH:MM」，作为机器解析结果的可验证回显。
-- weekday 映射：0=周日,1=周一,…,6=周六（与 Google periods 一致）。
-
-### 顶部副标题 `parsed.dateTime`
-保持现状不动（那是 freeText 里的「今天/本周末」之类自由文字，与新加的时间筛选语义不同）。
-
-## 不做的事
-- 不动 `echo.functions.ts`、`google-places.server.ts`、`store.ts` 中的过滤/数据逻辑。
-- 不动现有硬条件/偏好/排除/菜品偏好的渲染。
-- 不加日期选择器、不做时区转换、不改打分。
-- 餐厅卡片上的「✓ 营业 / ? 营业未知」徽标维持不变。
+## 不动的部分
+- `sanitizeVisitTime` 的子串校验与「weekday+hhmm 都必须有才过滤」逻辑维持不变 —— AI 现在会自己把 weekday 填成今天，自然通过校验。
+- 结果页徽标、餐厅卡片营业徽标、Google periods 过滤逻辑均不动。
 
 ## 验收
-- 「周六晚上 7 点想吃日料」→ 顶部条件卡片出现「营业时间 · 周六 19:00 营业」徽标，且过滤生效。
-- 「两个人预算 15000 找日料」→ 无任何时间徽标。
-- 「晚上去」（缺 weekday）→ 无时间徽标（因为本就不触发过滤）。
-- 英文「Saturday 7 pm sushi」→ 出现徽标，raw 显示英文原话。
+- 「12:00 去吃」→ 顶部出现「营业时间 · 周X 12:00 营业」徽标，结果按今天 12:00 过滤。
+- 「7pm sushi」→ 同上，按今天 19:00 过滤。
+- 「晚上去」→ 不出徽标、不过滤（避免「晚上」太模糊误杀）。
+- 「周六晚上 7 点」→ 行为不变。
+- 「两个人预算 15000」→ 不出徽标、不过滤。
