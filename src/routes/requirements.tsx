@@ -56,10 +56,7 @@ function StepRequirements() {
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (!city || cuisines.length === 0) navigate({ to: "/" });
-  }, [hydrated, city, cuisines, navigate]);
+  // 不再强制跳首页：缺城市/料理时显示补全入口
 
   useEffect(() => () => {
     timersRef.current.forEach(clearTimeout);

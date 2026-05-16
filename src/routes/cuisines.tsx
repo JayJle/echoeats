@@ -26,10 +26,7 @@ function StepCuisines() {
 
   const [value, setValue] = useState(cuisines.join("，"));
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (!city) navigate({ to: "/" });
-  }, [hydrated, city, navigate]);
+  // 不再强制跳首页：缺城市时下一步会提示补全
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
