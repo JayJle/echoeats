@@ -161,6 +161,7 @@ function StepRequirements() {
     setLoading(false);
     setCurrentStage(null);
     setError(null);
+    setInferredCuisines(null);
   };
 
   const [recording, setRecording] = useState(false);
