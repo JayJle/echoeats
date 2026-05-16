@@ -15,6 +15,13 @@ export type ParsedRequirements = {
   negativeFilters: WeightedCondition[];
   dishPreferences: string[];
   searchStrategy: string[];
+  visitTime?: {
+    mentioned: boolean;
+    evidence: string;
+    weekday: number | null;
+    hhmm: string | null;
+    raw: string;
+  } | null;
 };
 
 export type Restaurant = {
