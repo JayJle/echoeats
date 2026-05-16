@@ -472,6 +472,7 @@ const RestaurantSchema = z.object({
       summary: z.string().nullable(),
     })
     .nullable(),
+  weekdayDescriptions: z.array(z.string()).nullable().optional().default(null),
 });
 
 const ResultsSchema = z.object({
