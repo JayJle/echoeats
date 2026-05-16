@@ -46,6 +46,7 @@ export type Restaurant = {
     summary: string | null;
   } | null;
   weekdayDescriptions?: string[] | null;
+  visitTimeMatch?: "open" | "unknown" | null;
 };
 
 export type ResultsGroup = { cuisine: string; restaurants: Restaurant[]; partialRestaurants?: Restaurant[] };
