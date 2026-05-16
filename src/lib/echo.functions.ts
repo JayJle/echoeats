@@ -164,7 +164,9 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 输入「find a good ramen place」→ \`{"mentioned":false,...}\`
 - 输入「周六晚上 7 点去」→ \`{"mentioned":true,"evidence":"周六晚上 7 点","weekday":6,"hhmm":"19:00","raw":"周六晚上 7 点"}\`
 - 输入「this Saturday 7pm」→ \`{"mentioned":true,"evidence":"this Saturday 7pm","weekday":6,"hhmm":"19:00","raw":"this Saturday 7pm"}\`
-- 输入「晚上去」→ \`{"mentioned":true,"evidence":"晚上","weekday":null,"hhmm":"19:00","raw":"晚上"}\`
+- 输入「晚上去」→ \`{"mentioned":true,"evidence":"晚上","weekday":null,"hhmm":"19:00","raw":"晚上"}\`（只有模糊时段，不过滤）
+- 输入「12:00 去吃」→ \`{"mentioned":true,"evidence":"12:00","weekday":${new Date().getDay()},"hhmm":"12:00","raw":"12:00"}\`（具体钟点无日期 → 默认今天）
+- 输入「7pm sushi」→ \`{"mentioned":true,"evidence":"7pm","weekday":${new Date().getDay()},"hhmm":"19:00","raw":"7pm"}\`
 - 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\``;
 
     const runOnce = async () => {
