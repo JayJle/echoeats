@@ -65,6 +65,7 @@ const ParsedSchema = z.object({
   softPreferences: z.array(WeightedConditionSchema).catch([]).default([]),
   negativeFilters: z.array(WeightedConditionSchema).catch([]).default([]),
   dishPreferences: z.array(z.string()).catch([]).default([]),
+  cuisineLevelConstraints: z.array(WeightedConditionSchema).catch([]).default([]),
   searchStrategy: z.array(z.string()).catch([]).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
