@@ -1117,6 +1117,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               links: buildLinks(p, data.city, country),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
+              weekdayDescriptions: p.weekdayDescriptions ?? null,
             };
             placeByRestaurantId.set(restaurant.id, p);
             return { bucket, restaurant };
