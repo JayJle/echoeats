@@ -205,19 +205,6 @@ function ResultsPage() {
               </h1>
               <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
             </div>
-            {!editing && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={openEditor}
-                disabled={refining}
-                className="shrink-0 -mr-2 text-muted-foreground hover:text-foreground"
-              >
-                <Pencil className="w-3.5 h-3.5 mr-1" />
-                编辑
-              </Button>
-            )}
           </div>
           {parsed.hardFilters.length > 0 && (
             <div className="mt-3">
