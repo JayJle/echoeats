@@ -886,6 +886,37 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       };
     }
 
+    // 日期/时间硬筛：仅当用户明示了 visitTime 才执行。
+    // 剔除明确 closed，保留 open/unknown；某 cuisine 全被剔光则回退保留前 3 个标 unknown。
+    const visitMatchById = new Map<string, "open" | "unknown">();
+    if (data.visitTime && data.visitTime.weekday != null && data.visitTime.hhmm) {
+      const w = data.visitTime.weekday;
+      const t = data.visitTime.hhmm;
+      let totalRemoved = 0;
+      placeResults = placeResults.map((r) => {
+        if (!r.places.length) return r;
+        const kept: PlaceCandidate[] = [];
+        const dropped: PlaceCandidate[] = [];
+        for (const p of r.places) {
+          const m = isOpenAt(p.openingPeriods, w, t);
+          if (m === "closed") {
+            dropped.push(p);
+          } else {
+            kept.push(p);
+            visitMatchById.set(p.placeId, m);
+          }
+        }
+        totalRemoved += dropped.length;
+        if (kept.length === 0 && dropped.length > 0) {
+          const fallback = dropped.slice(0, 3);
+          for (const p of fallback) visitMatchById.set(p.placeId, "unknown");
+          return { ...r, places: fallback };
+        }
+        return { ...r, places: kept };
+      });
+      console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
+    }
+
     // 海外城市：先把 Google Places 一手 reviews 作为基线证据塞入（零幻觉），
     // 再用 Perplexity 网评做补充合并；Perplexity 失败也不影响 pros/cons 显示。
     if (!useDianping) {
