@@ -109,6 +109,7 @@ export async function searchPlaces(opts: {
         authorAttribution?: { displayName?: string };
       }>;
       photos?: Array<{ name?: string }>;
+      regularOpeningHours?: { weekdayDescriptions?: string[] };
     }>;
   };
 
