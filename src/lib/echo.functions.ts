@@ -92,6 +92,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
       softPreferences: z.array(z.unknown()).optional(),
       negativeFilters: z.array(z.unknown()).optional(),
       dishPreferences: z.array(z.string()).optional(),
+      cuisineLevelConstraints: z.array(z.unknown()).optional(),
       searchStrategy: z.array(z.string()).optional(),
       country: z.string().optional(),
       language: z.string().optional(),
