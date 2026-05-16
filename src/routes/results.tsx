@@ -260,6 +260,18 @@ function ResultsPage() {
               <p className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">{freeText}</p>
             </details>
           )}
+          {!editing && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={openEditor}
+              disabled={refining}
+              className="mt-5 w-full"
+            >
+              <Pencil className="w-4 h-4 mr-2" />
+              编辑需求并重新搜索
+            </Button>
+          )}
           {editing && (
             <div className="mt-4 pt-4 border-t border-border space-y-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
