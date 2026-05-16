@@ -7,7 +7,7 @@ const PLATFORMS = ["Google Maps", "Tabelog", "Yelp", "大众点评", "美团"];
 
 const ParseInput = z.object({
   city: z.string().min(1),
-  cuisines: z.array(z.string()).min(1),
+  cuisines: z.array(z.string()).default([]),
   date: z.string().default(""),
   freeText: z.string().default(""),
 });
