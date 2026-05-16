@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useQueryStore } from "@/lib/store";
 import { useServerFn } from "@tanstack/react-start";
-import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
+import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/requirements")({
   head: () => ({
