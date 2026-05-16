@@ -205,19 +205,6 @@ function ResultsPage() {
               </h1>
               <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
             </div>
-            {!editing && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={openEditor}
-                disabled={refining}
-                className="shrink-0 -mr-2 text-muted-foreground hover:text-foreground"
-              >
-                <Pencil className="w-3.5 h-3.5 mr-1" />
-                编辑
-              </Button>
-            )}
           </div>
           {parsed.hardFilters.length > 0 && (
             <div className="mt-3">
@@ -272,6 +259,18 @@ function ResultsPage() {
               <summary className="text-[11px] uppercase tracking-wider text-muted-foreground cursor-pointer hover:text-foreground">原始描述 ▾</summary>
               <p className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">{freeText}</p>
             </details>
+          )}
+          {!editing && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={openEditor}
+              disabled={refining}
+              className="mt-5 w-full"
+            >
+              <Pencil className="w-4 h-4 mr-2" />
+              编辑需求并重新搜索
+            </Button>
           )}
           {editing && (
             <div className="mt-4 pt-4 border-t border-border space-y-3">
