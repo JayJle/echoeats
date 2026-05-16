@@ -8,7 +8,7 @@ import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { useQueryStore, useStoreHydrated } from "@/lib/store";
+import { useQueryStore } from "@/lib/store";
 import { useServerFn } from "@tanstack/react-start";
 import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
 

@@ -3,7 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { useQueryStore, useStoreHydrated } from "@/lib/store";
+import { useQueryStore } from "@/lib/store";
 
 export const Route = createFileRoute("/cuisines")({
   head: () => ({
