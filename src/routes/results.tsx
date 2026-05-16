@@ -441,6 +441,8 @@ function ResultsPage() {
 }
 
 function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
+  const visitTime = useQueryStore((s) => s.parsed?.visitTime ?? null);
+  const showVisitBadge = Boolean(visitTime && r.visitTimeMatch);
   const displayName = r.localName?.trim() || r.name;
   const alternateName = r.name && r.name !== displayName ? r.name : null;
 
@@ -472,7 +474,17 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
             🕐 今日 {todayHoursLabel(r.weekdayDescriptions, r.openNow)}
           </p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
-            {r.openNow && (
+            {showVisitBadge && r.visitTimeMatch === "open" && (
+              <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
+                ✓ {visitTime?.raw || "所选时段"} 营业
+              </span>
+            )}
+            {showVisitBadge && r.visitTimeMatch === "unknown" && (
+              <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                ? {visitTime?.raw || "所选时段"} 营业未知
+              </span>
+            )}
+            {r.openNow && !showVisitBadge && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
                 ✓ 当前营业
               </span>

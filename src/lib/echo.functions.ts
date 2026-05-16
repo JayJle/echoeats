@@ -29,6 +29,17 @@ const ParsedSchema = z.object({
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
   mode: z.enum(["quick", "deep"]).default("deep"),
+  visitTime: z
+    .object({
+      mentioned: z.boolean(),
+      evidence: z.string(),
+      weekday: z.number().int().min(0).max(6).nullable(),
+      hhmm: z.string().regex(/^\d{2}:\d{2}$/).nullable(),
+      raw: z.string(),
+    })
+    .nullable()
+    .optional()
+    .default(null),
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
@@ -124,7 +135,36 @@ export const parseRequirements = createServerFn({ method: "POST" })
   - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
   - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
   - US/UK/AU/CA/SG → "en"
-  - 其它按国家主语言映射，判断不出留 ""。`;
+  - 其它按国家主语言映射，判断不出留 ""。
+
+## visitTime（就餐日期/时间，严格抽取，禁止脑补）
+
+服务端今天的本地 weekday 是 **${new Date().getDay()}**（0=周日..6=周六），今天日期 ${new Date().toISOString().slice(0, 10)}。
+
+**只有当用户原文「其它需求」里明确提到了具体的星期/日期/时段/钟点，才填 visitTime。模糊词如「随便」「找一家」「想去吃饭」一律视为未提到。**
+
+字段规则：
+- \`mentioned\`：用户是否真的提到了。没提到 → false，且其它字段全部填 null / 空串。
+- \`evidence\`：必须是原文「其它需求」里**逐字出现**的连续片段（不得改写、不得翻译、不得拼接）。后端会做子串校验，对不上就整条作废。
+- \`weekday\`：0=周日, 1=周一, ..., 6=周六。
+  - "今天/today/今晚/tonight" → ${new Date().getDay()}
+  - "明天/tomorrow/明晚" → ${(new Date().getDay() + 1) % 7}
+  - "后天" → ${(new Date().getDay() + 2) % 7}
+  - "周六/周日/周一" / "Saturday/Sunday/Monday..." → 直接对应
+  - 没有日期信号（只有时段/钟点）→ null
+- \`hhmm\`：24 小时制 "HH:MM"。
+  - 具体钟点："7 点"→"19:00"（晚上语境）/"07:00"（早上语境）；"7pm"→"19:00"；"12:30"→"12:30"；"下午 2 点半"→"14:30"
+  - 模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
+  - 没有时间信号 → null
+- \`raw\`：原话直接抄过来，用于 UI 展示，例如 "周六晚上 7 点"。
+
+### 示例
+- 输入「两个人预算 15000，不要游客店」→ \`{"mentioned":false,"evidence":"","weekday":null,"hhmm":null,"raw":""}\`
+- 输入「find a good ramen place」→ \`{"mentioned":false,...}\`
+- 输入「周六晚上 7 点去」→ \`{"mentioned":true,"evidence":"周六晚上 7 点","weekday":6,"hhmm":"19:00","raw":"周六晚上 7 点"}\`
+- 输入「this Saturday 7pm」→ \`{"mentioned":true,"evidence":"this Saturday 7pm","weekday":6,"hhmm":"19:00","raw":"this Saturday 7pm"}\`
+- 输入「晚上去」→ \`{"mentioned":true,"evidence":"晚上","weekday":null,"hhmm":"19:00","raw":"晚上"}\`
+- 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\``;
 
     const runOnce = async () => {
       const { output } = await generateText({
@@ -140,12 +180,33 @@ export const parseRequirements = createServerFn({ method: "POST" })
       return output;
     };
 
+    const sanitizeVisitTime = (
+      parsed: z.infer<typeof ParsedSchema>,
+    ): z.infer<typeof ParsedSchema> => {
+      const vt = parsed.visitTime;
+      if (!vt || !vt.mentioned) {
+        return { ...parsed, visitTime: null };
+      }
+      // evidence 必须真实出现在原文里（大小写/空格归一化），防 AI 幻觉
+      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
+      const ev = norm(vt.evidence ?? "");
+      const src = norm(data.freeText ?? "");
+      if (!ev || !src.includes(ev)) {
+        return { ...parsed, visitTime: null };
+      }
+      // 必须 weekday + hhmm 都齐才用于过滤
+      if (vt.weekday == null || !vt.hhmm) {
+        return { ...parsed, visitTime: null };
+      }
+      return parsed;
+    };
+
     try {
       try {
-        return await runOnce();
+        return sanitizeVisitTime(await runOnce());
       } catch {
         // 一次重试，模型偶发返回不匹配 schema 的 JSON
-        return await runOnce();
+        return sanitizeVisitTime(await runOnce());
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -157,6 +218,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         dateTime: data.date || "未指定",
         country: "",
         language: "",
+        visitTime: null,
       });
     }
   });
@@ -473,6 +535,7 @@ const RestaurantSchema = z.object({
     })
     .nullable(),
   weekdayDescriptions: z.array(z.string()).nullable().optional().default(null),
+  visitTimeMatch: z.enum(["open", "unknown"]).nullable().optional().default(null),
 });
 
 const ResultsSchema = z.object({
@@ -639,6 +702,35 @@ const FALLBACK_SUGGESTIONS = [
   "减少同时搜索的料理类型数量",
 ];
 
+// 判断某个店在指定周几+时间是否营业。
+// periods 缺失 → unknown（保留）；命中区间 → open；都不命中 → closed。
+// 处理跨日营业（close.day != open.day 或 close 时间小于 open 时间）。
+function isOpenAt(
+  periods: PlaceCandidate["openingPeriods"],
+  weekday: number,
+  hhmm: string,
+): "open" | "closed" | "unknown" {
+  if (!periods || periods.length === 0) return "unknown";
+  const [hStr, mStr] = hhmm.split(":");
+  const h = Number(hStr);
+  const m = Number(mStr);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return "unknown";
+  const target = weekday * 1440 + h * 60 + m;
+  const WEEK = 7 * 1440;
+  for (const pd of periods) {
+    const openMin = pd.open.day * 1440 + pd.open.hour * 60 + pd.open.minute;
+    // close 缺失视作 24/7 营业
+    if (!pd.close) return "open";
+    let closeMin = pd.close.day * 1440 + pd.close.hour * 60 + pd.close.minute;
+    // 跨周/跨日营业（如 周五 22:00 -> 周六 02:00）
+    if (closeMin <= openMin) closeMin += WEEK;
+    // 两种偏移分别比较（处理 target 落在跨日尾部的情况）
+    const candidates = [target, target + WEEK];
+    if (candidates.some((t) => t >= openMin && t < closeMin)) return "open";
+  }
+  return "closed";
+}
+
 export const searchRestaurants = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParsedSchema.parse(input))
   .handler(async ({ data }): Promise<SearchResponse> => {
@@ -792,6 +884,37 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
         suggestions: FALLBACK_SUGGESTIONS,
       };
+    }
+
+    // 日期/时间硬筛：仅当用户明示了 visitTime 才执行。
+    // 剔除明确 closed，保留 open/unknown；某 cuisine 全被剔光则回退保留前 3 个标 unknown。
+    const visitMatchById = new Map<string, "open" | "unknown">();
+    if (data.visitTime && data.visitTime.weekday != null && data.visitTime.hhmm) {
+      const w = data.visitTime.weekday;
+      const t = data.visitTime.hhmm;
+      let totalRemoved = 0;
+      placeResults = placeResults.map((r) => {
+        if (!r.places.length) return r;
+        const kept: PlaceCandidate[] = [];
+        const dropped: PlaceCandidate[] = [];
+        for (const p of r.places) {
+          const m = isOpenAt(p.openingPeriods, w, t);
+          if (m === "closed") {
+            dropped.push(p);
+          } else {
+            kept.push(p);
+            visitMatchById.set(p.placeId, m);
+          }
+        }
+        totalRemoved += dropped.length;
+        if (kept.length === 0 && dropped.length > 0) {
+          const fallback = dropped.slice(0, 3);
+          for (const p of fallback) visitMatchById.set(p.placeId, "unknown");
+          return { ...r, places: fallback };
+        }
+        return { ...r, places: kept };
+      });
+      console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
     }
 
     // 海外城市：先把 Google Places 一手 reviews 作为基线证据塞入（零幻觉），
@@ -1107,7 +1230,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               matchTier: tier,
               openNow: p.openNow ?? true,
               reservable: false,
-              needsReview: p.rating == null,
+              needsReview: p.rating == null || visitMatchById.get(p.placeId) === "unknown",
               ratings: candidateRatings(p, review, tabelogInfo),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
@@ -1118,6 +1241,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
               weekdayDescriptions: p.weekdayDescriptions ?? null,
+              visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
             };
             placeByRestaurantId.set(restaurant.id, p);
             return { bucket, restaurant };
