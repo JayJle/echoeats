@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
-import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
+import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
@@ -117,7 +117,8 @@ function ResultsPage() {
     const ac = new AbortController();
     abortRef.current = ac;
     try {
-      const response = await searchFn({ data: parsed, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const iter = await searchFn({ data: parsed, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const response = await consumeSearchStream(iter);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       setResults(response);
     } catch (err) {
@@ -211,7 +212,8 @@ function ResultsPage() {
         merged.hardFilters.length + merged.softPreferences.length + merged.negativeFilters.length + merged.dishPreferences.length });
       setFreeText(text);
       setParsed(merged);
-      const response = await searchFn({ data: merged, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const iter = await searchFn({ data: merged, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const response = await consumeSearchStream(iter);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       setResults(response);
       setEditing(false);

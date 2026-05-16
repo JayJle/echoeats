@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useQueryStore } from "@/lib/store";
 import { useServerFn } from "@tanstack/react-start";
-import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
+import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/requirements")({
   head: () => ({
@@ -107,22 +107,30 @@ function StepRequirements() {
       const parsedWithMode = { ...parsed, mode };
       setParsed(parsedWithMode);
 
-      // 进入 search 阶段;按预估耗时推进 reviews → rank
+      // 进入 search 阶段；阶段切换由后端流式事件驱动（不再依赖 setTimeout 伪进度）
       setCurrentStage("search");
       clearTimers();
-      if (mode === "deep") {
-        timersRef.current.push(
-          setTimeout(() => setCurrentStage("reviews"), 3000),
-          setTimeout(() => setCurrentStage("rank"), 13000),
-        );
-      } else {
-        timersRef.current.push(setTimeout(() => setCurrentStage("rank"), 2500));
-      }
 
-      const response = await searchFn({
+      const iter = await searchFn({
         data: parsedWithMode,
         signal: ac.signal,
       } as Parameters<typeof searchFn>[0]);
+      const response = await consumeSearchStream(iter, (chunk) => {
+        if (myRunId !== runIdRef.current || ac.signal.aborted) return;
+        if (chunk.type === "stage") {
+          if (chunk.stage === "places" || chunk.stage === "places-done") {
+            setCurrentStage("search");
+          } else if (
+            chunk.stage === "reviews" ||
+            chunk.stage === "tabelog" ||
+            chunk.stage === "photos"
+          ) {
+            setCurrentStage("reviews");
+          } else if (chunk.stage === "rank" || chunk.stage === "rank-fallback") {
+            setCurrentStage("rank");
+          }
+        }
+      });
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       clearTimers();
       setCurrentStage("rank");

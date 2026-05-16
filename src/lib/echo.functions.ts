@@ -760,6 +760,74 @@ const SearchResponseSchema = z.object({
 
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
+// 流式搜索：handler 是 async generator，分阶段 yield 状态块，
+// 最终结果包在 { type: "result", payload } 里。
+// 客户端用 for-await 消费，持续 yield 让 Cloudflare 边缘不会判超时。
+export type SearchStreamChunk =
+  | { type: "stage"; stage: string; message?: string; count?: number; total?: number }
+  | { type: "review-progress"; done: number; total: number }
+  | { type: "tabelog-progress"; done: number; total: number }
+  | { type: "heartbeat"; stage: string }
+  | { type: "result"; payload: SearchResponse };
+
+// 把 Promise 数组按完成顺序流出。
+async function* asCompleted<T>(promises: Promise<T>[]): AsyncGenerator<T, void, unknown> {
+  const pending = new Map<number, Promise<{ i: number; v: T }>>();
+  promises.forEach((p, i) => pending.set(i, p.then((v) => ({ i, v }))));
+  while (pending.size > 0) {
+    const { i, v } = await Promise.race(pending.values());
+    pending.delete(i);
+    yield v;
+  }
+}
+
+// 在等待 promise 期间，每 intervalMs 毫秒 yield 一个心跳块，
+// 防止长 phase（Tabelog 抓取、AI 排序）静默期超过边缘网关的响应墙。
+async function* withHeartbeat<T>(
+  p: Promise<T>,
+  stage: string,
+  intervalMs = 4000,
+): AsyncGenerator<SearchStreamChunk, T, unknown> {
+  let settled = false;
+  let value: T | undefined;
+  let error: unknown;
+  let isError = false;
+  const tracked = p.then(
+    (v) => {
+      value = v;
+      settled = true;
+    },
+    (e) => {
+      error = e;
+      isError = true;
+      settled = true;
+    },
+  );
+  while (!settled) {
+    await Promise.race([
+      tracked,
+      new Promise<void>((r) => setTimeout(r, intervalMs)),
+    ]);
+    if (!settled) yield { type: "heartbeat", stage };
+  }
+  if (isError) throw error;
+  return value as T;
+}
+
+// 客户端辅助：消费流并返回最终 SearchResponse，沿途回调进度。
+export async function consumeSearchStream(
+  iter: AsyncIterable<SearchStreamChunk>,
+  onProgress?: (chunk: SearchStreamChunk) => void,
+): Promise<SearchResponse> {
+  let final: SearchResponse | null = null;
+  for await (const chunk of iter) {
+    if (chunk.type === "result") final = chunk.payload;
+    onProgress?.(chunk);
+  }
+  if (!final) throw new Error("搜索流未返回结果");
+  return final;
+}
+
 const FALLBACK_SUGGESTIONS = [
   "尝试更具体的料理类型（如把「日料」换成「寿司」或「居酒屋」）",
   "扩大或更换城市（用城市核心区域名）",
@@ -798,10 +866,11 @@ function isOpenAt(
 
 export const searchRestaurants = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParsedSchema.parse(input))
-  .handler(async ({ data }): Promise<SearchResponse> => {
+  .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
     const aiKey = process.env.LOVABLE_API_KEY;
     if (!aiKey) {
-      return { groups: [], error: "服务未配置 AI 凭据", suggestions: [] };
+      yield { type: "result", payload: { groups: [], error: "服务未配置 AI 凭据", suggestions: [] } };
+      return;
     }
     // country/language 优先取 AI parse 结果，正则只做 fallback
     const country =
@@ -827,19 +896,29 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const pplxKey = process.env.PERPLEXITY_API_KEY;
 
     if (!useDianping && !process.env.GOOGLE_PLACES_API_KEY) {
-      return {
-        groups: [],
-        error: "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
-        suggestions: [],
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
+          suggestions: [],
+        },
       };
+      return;
     }
     if (useDianping && !pplxKey) {
-      return {
-        groups: [],
-        error: "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
-        suggestions: [],
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
+          suggestions: [],
+        },
       };
+      return;
     }
+
+    yield { type: "stage", stage: "places", message: `搜索 ${data.city} 候选餐厅…` };
 
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
@@ -944,26 +1023,37 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       );
     }
 
+    const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
+    yield { type: "stage", stage: "places-done", count: totalCandidates };
+
     const placesError = placeResults.find((r) => r.error)?.error;
     if (placesError && placeResults.every((r) => !r.places.length)) {
-      return {
-        groups: [],
-        error: useDianping
-          ? `大众点评检索失败：${placesError}`
-          : `Google Places 调用失败：${placesError}`,
-        suggestions: FALLBACK_SUGGESTIONS,
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: useDianping
+            ? `大众点评检索失败：${placesError}`
+            : `Google Places 调用失败：${placesError}`,
+          suggestions: FALLBACK_SUGGESTIONS,
+        },
       };
+      return;
     }
 
     const allHaveZero = placeResults.every((r) => r.places.length === 0);
     if (allHaveZero) {
-      return {
-        groups: [],
-        error: useDianping
-          ? `大众点评在「${data.city}」没找到符合的餐厅候选`
-          : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
-        suggestions: FALLBACK_SUGGESTIONS,
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: useDianping
+            ? `大众点评在「${data.city}」没找到符合的餐厅候选`
+            : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
+          suggestions: FALLBACK_SUGGESTIONS,
+        },
       };
+      return;
     }
 
     // 日期/时间硬筛：仅当用户明示了 visitTime 才执行。
@@ -1025,8 +1115,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             );
           }
         }
-        const settled = await Promise.allSettled(tasks);
-        for (const s of settled) {
+        yield { type: "stage", stage: "reviews", total: tasks.length };
+        // 按完成顺序消费，每个任务结束都 yield 一次进度，持续 flush 字节流。
+        const settledTasks = tasks.map((t) =>
+          t
+            .then((v) => ({ status: "fulfilled" as const, value: v }))
+            .catch((reason) => ({ status: "rejected" as const, reason })),
+        );
+        let done = 0;
+        for await (const s of asCompleted(settledTasks)) {
+          done++;
           if (s.status === "fulfilled" && s.value.summary) {
             const existing = reviewById.get(s.value.id);
             reviewById.set(
@@ -1034,6 +1132,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               existing ? mergeReviewSummaries(existing, s.value.summary) : s.value.summary,
             );
           }
+          yield { type: "review-progress", done, total: tasks.length };
         }
       }
     }
@@ -1046,6 +1145,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
       }
+      yield { type: "stage", stage: "tabelog", total: allTargets.length };
       const CONCURRENCY = 8;
       let cursor = 0;
       const runWorker = async () => {
@@ -1061,8 +1161,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           }
         }
       };
-      await Promise.all(
-        Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+      // 心跳包裹：抓取期间每 4s yield 一次，避免边缘网关因为长时间静默切断响应。
+      yield* withHeartbeat(
+        Promise.all(
+          Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+        ),
+        "tabelog",
       );
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
@@ -1179,18 +1283,23 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 
 输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
 
+    yield { type: "stage", stage: "rank" };
     let ranking: z.infer<typeof AiRankingSchema>;
     try {
-      const result = await generateText({
-        model,
-        prompt,
-        maxOutputTokens: 10000,
-        output: Output.object({
-          schema: AiRankingSchema,
-          name: "echo_eats_ranking",
-          description: "AI ranking of real Google Places restaurant candidates",
+      // 用心跳包裹 AI 排序：Gemini 大 prompt 偶尔 15-30s，避免边缘网关静默切流。
+      const result = yield* withHeartbeat(
+        generateText({
+          model,
+          prompt,
+          maxOutputTokens: 10000,
+          output: Output.object({
+            schema: AiRankingSchema,
+            name: "echo_eats_ranking",
+            description: "AI ranking of real Google Places restaurant candidates",
+          }),
         }),
-      });
+        "rank",
+      );
       ranking = result.output;
     } catch (e) {
       const firstErr = e instanceof Error ? e.message : String(e);
@@ -1198,13 +1307,16 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       // 兜底：用原始文本生成 + 正则抽 JSON 再 zod 校验。
       // Gemini 偶尔会输出多余前后缀文字导致 Output.object 解析失败。
       try {
-        const fallback = await generateText({
-          model,
-          prompt:
-            prompt +
-            `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-          maxOutputTokens: 10000,
-        });
+        const fallback = yield* withHeartbeat(
+          generateText({
+            model,
+            prompt:
+              prompt +
+              `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
+            maxOutputTokens: 10000,
+          }),
+          "rank-fallback",
+        );
         const text = fallback.text || "";
         const jsonText = (() => {
           const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1218,11 +1330,15 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       } catch (e2) {
         const msg = e2 instanceof Error ? e2.message : String(e2);
         console.error(`[Echo/AI-rank] fallback also failed: ${msg}`);
-        return {
-          groups: [],
-          error: `AI 排序失败：${firstErr}`,
-          suggestions: FALLBACK_SUGGESTIONS,
+        yield {
+          type: "result",
+          payload: {
+            groups: [],
+            error: `AI 排序失败：${firstErr}`,
+            suggestions: FALLBACK_SUGGESTIONS,
+          },
         };
+        return;
       }
     }
 
@@ -1355,35 +1471,46 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       .filter((g): g is NonNullable<typeof g> => Boolean(g));
 
     if (!groups.length) {
-      return {
-        groups: [],
-        error: "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
-        suggestions: FALLBACK_SUGGESTIONS,
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
+          suggestions: FALLBACK_SUGGESTIONS,
+        },
       };
+      return;
     }
 
+    yield { type: "stage", stage: "photos" };
     // Resolve Google photo URLs for displayed restaurants in parallel
     const allRestaurants = groups.flatMap((g) => [
       ...g.restaurants,
       ...(g.partialRestaurants ?? []),
     ]);
-    await Promise.all(
-      allRestaurants.map(async (r) => {
-        const p = placeByRestaurantId.get(r.id);
-        const names = (p?.photoNames ?? []).slice(0, 6);
-        if (!names.length) return;
-        const urls = await Promise.all(names.map((n) => resolvePhotoUrl(n, 800)));
-        r.photoUrls = urls.filter((u): u is string => Boolean(u));
-      }),
+    yield* withHeartbeat(
+      Promise.all(
+        allRestaurants.map(async (r) => {
+          const p = placeByRestaurantId.get(r.id);
+          const names = (p?.photoNames ?? []).slice(0, 6);
+          if (!names.length) return;
+          const urls = await Promise.all(names.map((n) => resolvePhotoUrl(n, 800)));
+          r.photoUrls = urls.filter((u): u is string => Boolean(u));
+        }),
+      ),
+      "photos",
     );
 
     const missing = data.cuisines.filter(
       (c) => !groups.some((g) => g.cuisine.toLowerCase() === c.toLowerCase()),
     );
-    return {
-      groups: ResultsSchema.parse({ groups }).groups,
-      error: missing.length ? `没有找到「${missing.join("、")}」的可靠候选` : null,
-      suggestions: missing.length ? FALLBACK_SUGGESTIONS : [],
+    yield {
+      type: "result",
+      payload: {
+        groups: ResultsSchema.parse({ groups }).groups,
+        error: missing.length ? `没有找到「${missing.join("、")}」的可靠候选` : null,
+        suggestions: missing.length ? FALLBACK_SUGGESTIONS : [],
+      },
     };
   });
 
