@@ -1,6 +1,8 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Check, HelpCircle, Loader2 } from "lucide-react";
+import { Check, HelpCircle, Loader2, Mic, Square } from "lucide-react";
+import { toast } from "sonner";
+import { NeedBubbles } from "@/components/NeedBubbles";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
