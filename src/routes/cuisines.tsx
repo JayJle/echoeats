@@ -45,15 +45,25 @@ function StepCuisines() {
     setValue(current ? `${current}，${s}` : s);
   };
 
+  const onSkip = () => {
+    setCuisines([]);
+    navigate({ to: "/requirements" });
+  };
+
   return (
-    <StepShell step={2} total={3} title="想吃什么料理？" hint="可输入多个，用逗号或空格分隔">
+    <StepShell
+      step={2}
+      total={3}
+      title="想吃什么料理？"
+      hint="可输入多个，用逗号或空格分隔；不确定也可以跳过，由 AI 根据其它需求推荐"
+    >
       <form onSubmit={onSubmit} className="space-y-6">
         <div className="space-y-2">
           <Input
             autoFocus
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder="牛排，居酒屋，蟹料理"
+            placeholder="牛排,居酒屋,蟹料理"
             className="h-12 text-base"
             maxLength={200}
           />
@@ -71,16 +81,21 @@ function StepCuisines() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <Link
             to="/"
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             ← 返回
           </Link>
-          <Button type="submit" disabled={!value.trim()} size="lg">
-            下一步 →
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="ghost" onClick={onSkip} size="lg">
+              跳过 →
+            </Button>
+            <Button type="submit" disabled={!value.trim()} size="lg">
+              下一步 →
+            </Button>
+          </div>
         </div>
       </form>
     </StepShell>
