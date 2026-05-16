@@ -135,7 +135,36 @@ export const parseRequirements = createServerFn({ method: "POST" })
   - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
   - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
   - US/UK/AU/CA/SG → "en"
-  - 其它按国家主语言映射，判断不出留 ""。`;
+  - 其它按国家主语言映射，判断不出留 ""。
+
+## visitTime（就餐日期/时间，严格抽取，禁止脑补）
+
+服务端今天的本地 weekday 是 **${new Date().getDay()}**（0=周日..6=周六），今天日期 ${new Date().toISOString().slice(0, 10)}。
+
+**只有当用户原文「其它需求」里明确提到了具体的星期/日期/时段/钟点，才填 visitTime。模糊词如「随便」「找一家」「想去吃饭」一律视为未提到。**
+
+字段规则：
+- \`mentioned\`：用户是否真的提到了。没提到 → false，且其它字段全部填 null / 空串。
+- \`evidence\`：必须是原文「其它需求」里**逐字出现**的连续片段（不得改写、不得翻译、不得拼接）。后端会做子串校验，对不上就整条作废。
+- \`weekday\`：0=周日, 1=周一, ..., 6=周六。
+  - "今天/today/今晚/tonight" → ${new Date().getDay()}
+  - "明天/tomorrow/明晚" → ${(new Date().getDay() + 1) % 7}
+  - "后天" → ${(new Date().getDay() + 2) % 7}
+  - "周六/周日/周一" / "Saturday/Sunday/Monday..." → 直接对应
+  - 没有日期信号（只有时段/钟点）→ null
+- \`hhmm\`：24 小时制 "HH:MM"。
+  - 具体钟点："7 点"→"19:00"（晚上语境）/"07:00"（早上语境）；"7pm"→"19:00"；"12:30"→"12:30"；"下午 2 点半"→"14:30"
+  - 模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
+  - 没有时间信号 → null
+- \`raw\`：原话直接抄过来，用于 UI 展示，例如 "周六晚上 7 点"。
+
+### 示例
+- 输入「两个人预算 15000，不要游客店」→ \`{"mentioned":false,"evidence":"","weekday":null,"hhmm":null,"raw":""}\`
+- 输入「find a good ramen place」→ \`{"mentioned":false,...}\`
+- 输入「周六晚上 7 点去」→ \`{"mentioned":true,"evidence":"周六晚上 7 点","weekday":6,"hhmm":"19:00","raw":"周六晚上 7 点"}\`
+- 输入「this Saturday 7pm」→ \`{"mentioned":true,"evidence":"this Saturday 7pm","weekday":6,"hhmm":"19:00","raw":"this Saturday 7pm"}\`
+- 输入「晚上去」→ \`{"mentioned":true,"evidence":"晚上","weekday":null,"hhmm":"19:00","raw":"晚上"}\`
+- 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\``;
 
     const runOnce = async () => {
       const { output } = await generateText({
