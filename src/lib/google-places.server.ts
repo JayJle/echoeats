@@ -147,6 +147,7 @@ export async function searchPlaces(opts: {
       .map((ph) => ph.name)
       .filter((n): n is string => typeof n === "string" && n.length > 0)
       .slice(0, 3),
+    weekdayDescriptions: p.regularOpeningHours?.weekdayDescriptions ?? null,
   })).filter((p) => p.placeId && p.name);
 }
 
