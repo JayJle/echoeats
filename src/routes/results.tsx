@@ -465,6 +465,12 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
           {r.address && (
             <p className="mt-1 text-sm text-muted-foreground">📍 {r.address}</p>
           )}
+          <p
+            className="mt-0.5 text-sm text-muted-foreground"
+            title={r.weekdayDescriptions?.join("\n") ?? undefined}
+          >
+            🕐 今日 {todayHoursLabel(r.weekdayDescriptions, r.openNow)}
+          </p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             {r.openNow && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
