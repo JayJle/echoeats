@@ -45,6 +45,7 @@ export type Restaurant = {
     priceRange: string | null;
     summary: string | null;
   } | null;
+  weekdayDescriptions?: string[] | null;
 };
 
 export type ResultsGroup = { cuisine: string; restaurants: Restaurant[]; partialRestaurants?: Restaurant[] };

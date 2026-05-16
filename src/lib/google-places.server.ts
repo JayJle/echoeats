@@ -16,6 +16,7 @@ export type PlaceCandidate = {
   location: { lat: number; lng: number } | null;
   reviews: { text: string; rating: number | null; authorName: string | null }[];
   photoNames: string[];
+  weekdayDescriptions: string[] | null;
 };
 
 const FIELD_MASK = [
@@ -33,6 +34,7 @@ const FIELD_MASK = [
   "places.location",
   "places.reviews",
   "places.photos",
+  "places.regularOpeningHours.weekdayDescriptions",
 ].join(",");
 
 export function guessLanguageCode(city: string): string {
@@ -107,6 +109,7 @@ export async function searchPlaces(opts: {
         authorAttribution?: { displayName?: string };
       }>;
       photos?: Array<{ name?: string }>;
+      regularOpeningHours?: { weekdayDescriptions?: string[] };
     }>;
   };
 
@@ -144,6 +147,7 @@ export async function searchPlaces(opts: {
       .map((ph) => ph.name)
       .filter((n): n is string => typeof n === "string" && n.length > 0)
       .slice(0, 3),
+    weekdayDescriptions: p.regularOpeningHours?.weekdayDescriptions ?? null,
   })).filter((p) => p.placeId && p.name);
 }
 
