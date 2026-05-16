@@ -1115,8 +1115,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             );
           }
         }
-        const settled = await Promise.allSettled(tasks);
-        for (const s of settled) {
+        yield { type: "stage", stage: "reviews", total: tasks.length };
+        // 按完成顺序消费，每个任务结束都 yield 一次进度，持续 flush 字节流。
+        const settledTasks = tasks.map((t) =>
+          t
+            .then((v) => ({ status: "fulfilled" as const, value: v }))
+            .catch((reason) => ({ status: "rejected" as const, reason })),
+        );
+        let done = 0;
+        for await (const s of asCompleted(settledTasks)) {
+          done++;
           if (s.status === "fulfilled" && s.value.summary) {
             const existing = reviewById.get(s.value.id);
             reviewById.set(
@@ -1124,6 +1132,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               existing ? mergeReviewSummaries(existing, s.value.summary) : s.value.summary,
             );
           }
+          yield { type: "review-progress", done, total: tasks.length };
         }
       }
     }
