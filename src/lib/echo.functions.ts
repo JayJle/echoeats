@@ -304,7 +304,49 @@ const CURRENCY_SYMBOL: Record<string, string> = {
   GBP: "£",
 };
 
-const SOURCE_ENUM = ["大众点评", "小红书", "Tabelog", "Google Reviews", "Yelp", "其它"] as const;
+const SOURCE_ENUM = ["大众点评", "Tabelog", "Google Reviews", "Yelp", "TripAdvisor", "其它"] as const;
+
+// 海外评论锁域白名单：只允许 Perplexity 从这些域抓取
+const OVERSEAS_REVIEW_DOMAINS = [
+  "yelp.com",
+  "google.com/maps",
+  "maps.google.com",
+  "goo.gl/maps",
+  "tripadvisor.com",
+  "tripadvisor.co.uk",
+  "tripadvisor.ca",
+  "tripadvisor.com.au",
+  "tripadvisor.com.sg",
+  "tripadvisor.com.hk",
+  "tripadvisor.jp",
+];
+const JP_EXTRA_REVIEW_DOMAINS = ["tabelog.com"];
+
+// citation URL host 白名单匹配（用于校验 Perplexity 真的去了白名单域）
+function citationMatchesAllowed(url: string, allowed: string[]): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const pathHost = `${host}${u.pathname}`.toLowerCase();
+    return allowed.some((d) => host === d || host.endsWith(`.${d}`) || pathHost.startsWith(d));
+  } catch {
+    return false;
+  }
+}
+
+// 从 citation URL 反推命中的 source 名称
+function sourceFromCitation(url: string): string | null {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host.includes("yelp.com")) return "Yelp";
+    if (host.includes("tripadvisor.")) return "TripAdvisor";
+    if (host.includes("google.") || host.includes("goo.gl")) return "Google Reviews";
+    if (host.includes("tabelog.com")) return "Tabelog";
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
 
 // 把 Google Places 一手 reviews 转成 ReviewSummary（零幻觉，第一手数据）
 function googleReviewsToSummary(p: PlaceCandidate): ReviewSummary | null {
