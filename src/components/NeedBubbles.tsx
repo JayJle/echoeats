@@ -28,28 +28,15 @@ const POOL = [
 const SIZES = ["sm", "md", "lg"] as const;
 type Size = (typeof SIZES)[number];
 
-type Bubble = {
-  id: number;
-  text: string;
-  xPct: number; // 0~100
-  yPct: number; // 0~100
-  size: Size;
-  drift: number; // px
-  duration: number; // s
-  delay: number; // s
-  popping?: boolean;
-  entering?: boolean;
-};
-
 const SIZE_CLASS: Record<Size, string> = {
   sm: "text-xs px-3 py-1.5",
   md: "text-sm px-4 py-2",
   lg: "text-sm px-5 py-2.5",
 };
 
-const BUBBLE_COUNT = 6;
-const AREA_HEIGHT = 180;
+type Bubble = { id: number; text: string; size: Size; leaving?: boolean };
 
+const BUBBLE_COUNT = 6;
 let idSeq = 1;
 
 function pickText(used: Set<string>): string {
@@ -58,18 +45,11 @@ function pickText(used: Set<string>): string {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function makeBubble(used: Set<string>, entering = false): Bubble {
-  const text = pickText(used);
+function makeBubble(used: Set<string>): Bubble {
   return {
     id: idSeq++,
-    text,
-    xPct: 4 + Math.random() * 78,
-    yPct: 8 + Math.random() * 70,
+    text: pickText(used),
     size: SIZES[Math.floor(Math.random() * SIZES.length)],
-    drift: (Math.random() * 14 - 7),
-    duration: 3.5 + Math.random() * 2.5,
-    delay: -Math.random() * 3,
-    entering,
   };
 }
 
@@ -93,55 +73,40 @@ export function NeedBubbles({ onPick }: { onPick: (text: string) => void }) {
   }, []);
 
   const handlePop = (b: Bubble) => {
-    if (b.popping) return;
+    if (b.leaving) return;
     onPick(b.text);
-    setBubbles((prev) => prev.map((x) => (x.id === b.id ? { ...x, popping: true } : x)));
-
-    const t1 = setTimeout(() => {
+    setBubbles((prev) => prev.map((x) => (x.id === b.id ? { ...x, leaving: true } : x)));
+    const t = setTimeout(() => {
       setBubbles((prev) => {
         const used = new Set(prev.filter((x) => x.id !== b.id).map((x) => x.text));
-        const fresh = makeBubble(used, true);
+        const fresh = makeBubble(used);
         return prev.map((x) => (x.id === b.id ? fresh : x));
       });
-    }, 280);
-    timersRef.current.push(t1);
-
-    const t2 = setTimeout(() => {
-      setBubbles((prev) => prev.map((x) => (x.entering ? { ...x, entering: false } : x)));
-    }, 900);
-    timersRef.current.push(t2);
+    }, 220);
+    timersRef.current.push(t);
   };
 
   return (
     <div
-      className="relative w-full overflow-hidden rounded-xl"
-      style={{ height: AREA_HEIGHT }}
+      className="flex flex-wrap items-center justify-center gap-2 min-h-[120px] py-2"
       aria-label="需求建议"
     >
-      {bubbles.map((b) => {
-        const animation = b.popping
-          ? "bubble-pop 280ms ease-in forwards"
-          : b.entering
-            ? `bubble-rise-in 600ms ease-out both, bubble-float ${b.duration}s ease-in-out ${b.duration * 0.6}s infinite`
-            : `bubble-float ${b.duration}s ease-in-out ${b.delay}s infinite`;
-        return (
-          <button
-            key={b.id}
-            type="button"
-            onClick={() => handlePop(b)}
-            className={`absolute rounded-full border border-primary/25 bg-primary/10 text-foreground/85 backdrop-blur-sm shadow-sm hover:bg-primary/20 hover:border-primary/40 transition-colors whitespace-nowrap ${SIZE_CLASS[b.size]}`}
-            style={{
-              left: `${b.xPct}%`,
-              top: `${b.yPct}%`,
-              animation,
-              // @ts-expect-error css var
-              "--bx": `${b.drift}px`,
-            }}
-          >
-            {b.text}
-          </button>
-        );
-      })}
+      {bubbles.map((b) => (
+        <button
+          key={b.id}
+          type="button"
+          onClick={() => handlePop(b)}
+          className={`rounded-full border border-primary/40 bg-card text-foreground shadow-sm transition-all duration-200 hover:bg-primary/10 hover:border-primary hover:shadow-md hover:-translate-y-0.5 active:scale-95 ${
+            SIZE_CLASS[b.size]
+          } ${
+            b.leaving
+              ? "animate-out fade-out zoom-out-50 duration-200 fill-mode-forwards pointer-events-none"
+              : "animate-in fade-in zoom-in-75 duration-300"
+          }`}
+        >
+          {b.text}
+        </button>
+      ))}
     </div>
   );
 }
