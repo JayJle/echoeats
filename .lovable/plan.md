@@ -1,65 +1,102 @@
-# 在地址下方展示店铺营业时间
+# 日期时间硬筛（语言无关 · 零误触发）
 
-## 目标
-结果卡片里在 `📍 地址` 下方多一行营业时间：
-- 优先显示**今天**的营业时段，例如 `🕐 今日 11:00–14:30, 17:30–22:00`
-- 拿不到今日数据时退化为「营业中（时间未公开）」/「营业时间未公开」
-- 鼠标悬浮可看全周（用原生 `title`）
+## 核心保证
+1. 没提到日期/时间 → 100% 不触发筛选
+2. 不依赖任何语言的关键词正则，未来加英/日/韩等版本都通用
+3. AI 抽取 + `evidence` 子串校验 + 字段完整性校验三重门控，杜绝幻觉
 
-## 数据来源
-Google Places (New) `places.regularOpeningHours.weekdayDescriptions`：返回 7 条本地化文本（如 `"星期一: 11:00 – 22:00"` / `"Monday: Closed"`），按 Monday→Sunday 排列。
+## 改动
 
-## 改动清单
+### 1. ParsedSchema 增加 visitTime
+`src/lib/echo.functions.ts`
+```ts
+visitTime: z.object({
+  mentioned: z.boolean(),
+  evidence: z.string(),                                  // 原文逐字片段
+  weekday: z.number().int().min(0).max(6).nullable(),    // 0=Sun..6=Sat
+  hhmm: z.string().regex(/^\d{2}:\d{2}$/).nullable(),    // 24h
+  raw: z.string(),
+}).nullable().optional().default(null),
+```
 
-### 1. `src/lib/google-places.server.ts`
-- `FIELD_MASK` 增加 `"places.regularOpeningHours.weekdayDescriptions"`
-- `PlaceCandidate` 增加 `weekdayDescriptions: string[] | null`
-- 响应解析读取 `p.regularOpeningHours?.weekdayDescriptions ?? null`
+### 2. parseRequirements prompt 追加规则（语言无关）
+- `mentioned=true` 仅当原文有可指向具体星期/日期/钟点/时段的词
+- `evidence` 必须是 freeText 中**逐字出现**的片段（不得改写、不得翻译）
+- 找不到 → `mentioned=false`，其它全 null
+- 模糊词锚点：noon/中午→12:30，evening/晚上→19:00，morning/早上→8:30
+- 相对日（today/tomorrow/今天/明天）按服务器今天本地 weekday 推算
+- few-shot 给中英文各 2 例，含 1 个反例（"找家好店" / "find a good place" → mentioned=false）
 
-### 2. `src/lib/echo.functions.ts`
-- `RestaurantSchema`(~445) 增加 `weekdayDescriptions: z.array(z.string()).nullable().optional().default(null)`(用 optional+default,**老缓存里没有这个字段时也能通过校验**)
-- 两处 restaurant 构造(深度 ~1100、快速 ~1107)填 `weekdayDescriptions: p.weekdayDescriptions ?? null`
-- prompt 不传该字段(避免 AI 据此打 fail)
+### 3. 确定性二次校验（在 createServerFn handler 内）
+```ts
+const vt = parsed.visitTime;
+if (vt?.mentioned) {
+  const ev = vt.evidence?.trim() ?? "";
+  if (!ev || !data.freeText.includes(ev)) parsed.visitTime = null; // 防幻觉
+  else if (vt.weekday == null || !vt.hhmm) parsed.visitTime = null; // 信息不全不过滤
+} else {
+  parsed.visitTime = null;
+}
+```
+`evidence` 必须真实出现在原文里 —— 这是**与语言无关**的防幻觉锚。
 
-### 3. `src/routes/results.tsx`
-- 文件内新增小工具:
+### 4. Google Places 抓取结构化营业时间
+`src/lib/google-places.server.ts`
+- `FIELD_MASK` += `places.regularOpeningHours.periods`
+- `PlaceCandidate` += `openingPeriods`：
   ```ts
-  function todayHoursLabel(weekdayDescriptions: string[] | null | undefined, openNow: boolean): string {
-    if (!weekdayDescriptions?.length) {
-      return openNow ? "营业中(时间未公开)" : "营业时间未公开";
-    }
-    // Google 顺序 Mon..Sun;JS getDay() 0=Sun → index = (day + 6) % 7
-    const idx = (new Date().getDay() + 6) % 7;
-    const line = weekdayDescriptions[idx] ?? weekdayDescriptions[0];
-    return line.replace(/^[^:：]+[:：]\s*/, ""); // 去掉"星期X:"/"Monday:"前缀
-  }
+  Array<{
+    open:  { day: number; hour: number; minute: number };
+    close: { day: number; hour: number; minute: number } | null; // 24/7 时缺失
+  }> | null
   ```
-- 在 `📍 地址` 的 `<p>` 下方插入:
-  ```tsx
-  <p
-    className="mt-0.5 text-sm text-muted-foreground"
-    title={r.weekdayDescriptions?.join("\n") ?? undefined}
-  >
-    🕐 今日 {todayHoursLabel(r.weekdayDescriptions, r.openNow)}
-  </p>
-  ```
-- 保留原有"✓ 当前营业"徽章(语义互补:一个是状态色块,一个是具体时间)
+- day 按 Google 约定 0=Sun..6=Sat
 
-## 解决旧缓存兼容风险
-`src/lib/store.ts` 用 sessionStorage persist 了 `results`,老数据里 restaurant 对象没有 `weekdayDescriptions` 字段。
-处理:
-- schema 用 `.nullable().optional().default(null)`,新结果通过校验没问题
-- store 读出来的旧数据**不会再走 zod 校验**(读 sessionStorage 直接 setState),所以也不会报错;`r.weekdayDescriptions` 在老数据上是 `undefined`,`todayHoursLabel` 已通过 `weekdayDescriptions?.length` 优雅退化为"时间未公开"
-- 不需要 bump `version` / 写 migrate
+`src/lib/dianping.server.ts`：补 `openingPeriods: null`
 
-实际效果:用户老结果会显示"营业中(时间未公开)"或"营业时间未公开",一旦重新搜索就有完整数据。
+### 5. 服务端硬过滤（visitTime=null 时整段跳过）
+`src/lib/echo.functions.ts` searchRestaurants 召回后、排序前：
+```ts
+if (parsed.visitTime) {
+  const { weekday, hhmm } = parsed.visitTime;
+  candidates = candidates.filter(c =>
+    isOpenAt(c.openingPeriods, weekday!, hhmm!) !== "closed"
+  );
+}
+```
+`isOpenAt`：
+- `openingPeriods=null` → `unknown`（保留）
+- 命中区间 → `open`
+- 否则 → `closed`
+- 处理跨日营业（close<open 或 close.day≠open.day）
+
+**兜底**：若某 cuisine 过滤后为空 → 回退保留前 3 个并标 `needsReview`，避免空结果。
+
+### 6. 结果卡片徽章（仅触发时显示）
+`src/lib/store.ts`：`Restaurant` 增加 `visitTimeMatch?: "open"|"unknown"|null`
+`src/routes/results.tsx`：「🕐 今日…」一行旁加徽章
+- `open` → 绿色"✓ {raw} 营业"
+- `unknown` → 灰色"? 该时段营业未知"
+- `null` → **不渲染**，行为完全不变
 
 ## 不做的事
-- 不做 7 天展开 UI(`title` 悬浮已足够,移动端可后续做)
-- 不改打分/筛选/prompt
-- 不做时区换算(Google 返回的是店铺当地时间字符串,直接展示)
-- 不引入新依赖
+- 不引入日期选择器
+- 不做时区换算（Google periods 是店铺当地时间）
+- 不改打分公式
+- 不写任何语言关键词正则
+- 未触发时 UI/数据流跟当前完全一致
 
-## 其它风险
-- 极少数店铺 Google 不返回 `regularOpeningHours`(连锁、新店、永久关闭) → 已用退化文案覆盖
-- 文本语言跟随 `languageCode`(基于城市猜),前缀正则用 `[^:：]+` 兼容中英文冒号;日韩文同样匹配
+## 防误触发验收清单
+1. "两个人预算 15000" → mentioned=false → 不过滤
+2. "find a good ramen place" → mentioned=false → 不过滤
+3. "周六晚上 7 点" → evidence="周六晚上 7 点"，{weekday:6, hhmm:"19:00"} → 过滤
+4. "this Saturday 7pm" → evidence="this Saturday 7pm"，{weekday:6, hhmm:"19:00"} → 过滤
+5. "晚上去" → evidence="晚上"，weekday=null → 信息不全 → **不过滤**
+6. AI 把"想吃饭"脑补成 evidence="晚上" → 原文不含"晚上" → 子串校验失败 → 清零
+
+## 文件清单
+- src/lib/echo.functions.ts
+- src/lib/google-places.server.ts
+- src/lib/dianping.server.ts
+- src/lib/store.ts
+- src/routes/results.tsx
