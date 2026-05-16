@@ -66,6 +66,7 @@ const ParsedSchema = z.object({
   negativeFilters: z.array(WeightedConditionSchema).catch([]).default([]),
   dishPreferences: z.array(z.string()).catch([]).default([]),
   cuisineLevelConstraints: z.array(WeightedConditionSchema).catch([]).default([]),
+  cuisinesInferred: z.boolean().catch(false).default(false),
   searchStrategy: z.array(z.string()).catch([]).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
@@ -256,6 +257,12 @@ export const parseRequirements = createServerFn({ method: "POST" })
         }),
       });
       const parsed = ParsedSchema.parse(output);
+      // 用户未选 cuisines 且 AI 推断出了非兜底品类 → 标注为 AI 识别
+      const userProvidedCuisines = data.cuisines.length > 0;
+      parsed.cuisinesInferred =
+        !userProvidedCuisines &&
+        parsed.cuisines.length > 0 &&
+        !(parsed.cuisines.length === 1 && parsed.cuisines[0] === "餐厅");
       return parsed;
     };
 
