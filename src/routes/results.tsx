@@ -153,7 +153,62 @@ function ResultsPage() {
         signal: ac.signal,
       } as Parameters<typeof parseFn>[0]);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
-      const merged = { ...newParsed, mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep" };
+
+      // 保护式合并：避免新解析返回空条件时把旧条件清空
+      const mergeWeighted = (
+        oldArr: { text: string; weight: number }[],
+        newArr: { text: string; weight: number }[],
+      ) => {
+        const map = new Map<string, { text: string; weight: number }>();
+        for (const it of oldArr ?? []) map.set(it.text.trim(), it);
+        for (const it of newArr ?? []) {
+          const k = it.text.trim();
+          if (!map.has(k)) map.set(k, it);
+        }
+        return Array.from(map.values());
+      };
+      const mergeStrings = (oldArr: string[], newArr: string[]) => {
+        const set = new Set<string>();
+        const out: string[] = [];
+        for (const s of [...(oldArr ?? []), ...(newArr ?? [])]) {
+          const k = s.trim();
+          if (k && !set.has(k)) { set.add(k); out.push(s); }
+        }
+        return out;
+      };
+
+      const newTotal =
+        (newParsed.hardFilters?.length ?? 0) +
+        (newParsed.softPreferences?.length ?? 0) +
+        (newParsed.negativeFilters?.length ?? 0) +
+        (newParsed.dishPreferences?.length ?? 0);
+      const oldTotal =
+        parsed.hardFilters.length + parsed.softPreferences.length +
+        parsed.negativeFilters.length + parsed.dishPreferences.length;
+      const parseLikelyEmpty = newTotal === 0 && oldTotal > 0;
+
+      const merged = {
+        ...newParsed,
+        city: newParsed.city || parsed.city,
+        cuisines: newParsed.cuisines?.length ? newParsed.cuisines : parsed.cuisines,
+        dateTime: newParsed.dateTime || parsed.dateTime,
+        visitTime: newParsed.visitTime ?? parsed.visitTime ?? null,
+        hardFilters: parseLikelyEmpty
+          ? parsed.hardFilters
+          : mergeWeighted(parsed.hardFilters, newParsed.hardFilters),
+        softPreferences: parseLikelyEmpty
+          ? parsed.softPreferences
+          : mergeWeighted(parsed.softPreferences, newParsed.softPreferences),
+        negativeFilters: parseLikelyEmpty
+          ? parsed.negativeFilters
+          : mergeWeighted(parsed.negativeFilters, newParsed.negativeFilters),
+        dishPreferences: parseLikelyEmpty
+          ? parsed.dishPreferences
+          : mergeStrings(parsed.dishPreferences, newParsed.dishPreferences),
+        mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep",
+      };
+      console.log("[applyEdit] merge", { oldTotal, newTotal, parseLikelyEmpty, mergedTotal:
+        merged.hardFilters.length + merged.softPreferences.length + merged.negativeFilters.length + merged.dishPreferences.length });
       setFreeText(text);
       setParsed(merged);
       const response = await searchFn({ data: merged, signal: ac.signal } as Parameters<typeof searchFn>[0]);
