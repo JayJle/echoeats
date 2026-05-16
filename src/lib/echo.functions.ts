@@ -760,6 +760,74 @@ const SearchResponseSchema = z.object({
 
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
+// 流式搜索：handler 是 async generator，分阶段 yield 状态块，
+// 最终结果包在 { type: "result", payload } 里。
+// 客户端用 for-await 消费，持续 yield 让 Cloudflare 边缘不会判超时。
+export type SearchStreamChunk =
+  | { type: "stage"; stage: string; message?: string; count?: number; total?: number }
+  | { type: "review-progress"; done: number; total: number }
+  | { type: "tabelog-progress"; done: number; total: number }
+  | { type: "heartbeat"; stage: string }
+  | { type: "result"; payload: SearchResponse };
+
+// 把 Promise 数组按完成顺序流出。
+async function* asCompleted<T>(promises: Promise<T>[]): AsyncGenerator<T, void, unknown> {
+  const pending = new Map<number, Promise<{ i: number; v: T }>>();
+  promises.forEach((p, i) => pending.set(i, p.then((v) => ({ i, v }))));
+  while (pending.size > 0) {
+    const { i, v } = await Promise.race(pending.values());
+    pending.delete(i);
+    yield v;
+  }
+}
+
+// 在等待 promise 期间，每 intervalMs 毫秒 yield 一个心跳块，
+// 防止长 phase（Tabelog 抓取、AI 排序）静默期超过边缘网关的响应墙。
+async function* withHeartbeat<T>(
+  p: Promise<T>,
+  stage: string,
+  intervalMs = 4000,
+): AsyncGenerator<SearchStreamChunk, T, unknown> {
+  let settled = false;
+  let value: T | undefined;
+  let error: unknown;
+  let isError = false;
+  const tracked = p.then(
+    (v) => {
+      value = v;
+      settled = true;
+    },
+    (e) => {
+      error = e;
+      isError = true;
+      settled = true;
+    },
+  );
+  while (!settled) {
+    await Promise.race([
+      tracked,
+      new Promise<void>((r) => setTimeout(r, intervalMs)),
+    ]);
+    if (!settled) yield { type: "heartbeat", stage };
+  }
+  if (isError) throw error;
+  return value as T;
+}
+
+// 客户端辅助：消费流并返回最终 SearchResponse，沿途回调进度。
+export async function consumeSearchStream(
+  iter: AsyncIterable<SearchStreamChunk>,
+  onProgress?: (chunk: SearchStreamChunk) => void,
+): Promise<SearchResponse> {
+  let final: SearchResponse | null = null;
+  for await (const chunk of iter) {
+    if (chunk.type === "result") final = chunk.payload;
+    onProgress?.(chunk);
+  }
+  if (!final) throw new Error("搜索流未返回结果");
+  return final;
+}
+
 const FALLBACK_SUGGESTIONS = [
   "尝试更具体的料理类型（如把「日料」换成「寿司」或「居酒屋」）",
   "扩大或更换城市（用城市核心区域名）",
