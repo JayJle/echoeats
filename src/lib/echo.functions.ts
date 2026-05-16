@@ -408,7 +408,17 @@ async function fetchReviewSummary(
   name: string,
   city: string,
   apiKey: string,
+  opts: { country: string; googleMapsUri: string; address: string },
 ): Promise<ReviewSummary | null> {
+  const allowedDomains =
+    opts.country === "JP"
+      ? [...OVERSEAS_REVIEW_DOMAINS, ...JP_EXTRA_REVIEW_DOMAINS]
+      : OVERSEAS_REVIEW_DOMAINS;
+  const sourceList =
+    opts.country === "JP"
+      ? "Yelp、Google Maps、TripAdvisor、Tabelog"
+      : "Yelp、Google Maps、TripAdvisor";
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
   try {
@@ -425,28 +435,34 @@ async function fetchReviewSummary(
           {
             role: "system",
             content:
-              "你是餐厅口碑分析助手。基于真实网友评价（大众点评/小红书/Tabelog/Google/Yelp 等）总结。只输出 JSON。",
+              `你是餐厅口碑分析助手。**只允许参考 ${sourceList} 这些平台上的真实顾客评价**，禁止使用其它来源（如小红书、Reddit、个人博客）。只输出 JSON。`,
           },
           {
             role: "user",
-            content: `查询「${name}」（位于 ${city}）的真实顾客评价。从大众点评、小红书、Tabelog、Google Reviews、Yelp 等平台找资料，总结：
-- reviewHighlights: 3-5 条真实网友提到的优点（具体菜品/服务/氛围/性价比，简体中文，每条 ≤ 25 字）
-- commonComplaints: 0-3 条网友普遍提到的缺点/吐槽（如有）
-- sentiment: 整体口碑 positive/mixed/negative
-- sourceCount: 找到的有效来源数量（整数）
-- sources: **真正被你引用查到信息的平台**数组，从 ["大众点评","小红书","Tabelog","Google Reviews","Yelp","其它"] 里选。**没有真的去过该平台或没找到该店信息的，绝不要列**；找不到任何来源返回空数组 []。
-- dianpingRating: 仅当你在大众点评店铺页或小红书帖子中**直接看到**该店的点评评分（0-5 分，例如 4.5）时返回该数字，最多保留一位小数。**找不到必须返回 null**，禁止根据"好评多/口碑好"等模糊信号自己估算或编造。
-- dianpingRatingSource: 评分来源——"dianping"（来自大众点评）/"xiaohongshu_mention"（小红书帖子提到的点评分）/"other"（其它来源）/"unknown"（找不到，此时 dianpingRating 必须为 null）。
-- priceLevel: 仅当你在大众点评"人均"、Tabelog"夜の予算/昼の予算/ランチ予算"、小红书帖子等里**直接看到**该店人均消费金额（数字）时返回该数字。例如大众点评"人均 ¥328"→ 返回 328。**找不到必须返回 null**，禁止根据"贵/便宜/性价比高"等模糊信号自己估算或编造。
-- priceCurrency: 人均价对应的币种代码，从 ["CNY","JPY","USD","EUR","HKD","TWD","KRW","SGD","GBP","其它"] 里选；priceLevel=null 时返回 null。
-- priceContext: 价格的上下文短语（≤20 字），如"晚餐人均""午市套餐""含酒水""夜の予算"。priceLevel=null 时返回 null。
+            content: `查询这家餐厅的真实顾客评价：
+- 店名：${name}
+- 城市：${city}
+- 地址：${opts.address}
+- Google Maps 链接（含 place_id，请优先从这里读取 Google 评论）：${opts.googleMapsUri}
 
-如果找不到该店，sourceCount 设为 0、其它数组为空、sources=[]、dianpingRating=null、dianpingRatingSource="unknown"、priceLevel=null、priceCurrency=null、priceContext=null。只输出 JSON 对象。`,
+**严格规则**：
+- 只从 ${sourceList} 上的页面读取评论；其它任何来源一律忽略。
+- 在 Yelp / TripAdvisor${opts.country === "JP" ? " / Tabelog" : ""} 上用「店名 + 城市/地址」匹配同一家店；同名不同店一律算找不到，宁可返回空。
+
+返回字段：
+- reviewHighlights: 3-5 条网友提到的真实优点（具体菜品/服务/氛围/性价比，简体中文，每条 ≤ 25 字）
+- commonComplaints: 0-3 条网友普遍提到的缺点/吐槽（如有）
+- sentiment: 整体口碑 positive / mixed / negative；信息不足返回 unknown
+- sourceCount: 实际引用的平台页面数（整数）
+- sources: 真正查到信息的平台数组，**只能**从 ["Google Reviews","Yelp","TripAdvisor"${opts.country === "JP" ? ',"Tabelog"' : ""}] 选；没真去过/没找到该店的平台绝不要列。
+
+找不到该店：所有数组为空、sourceCount=0、sources=[]、sentiment="unknown"。`,
           },
         ],
-        max_tokens: 700,
+        max_tokens: 600,
         temperature: 0.2,
         search_recency_filter: "year",
+        search_domain_filter: allowedDomains,
         response_format: {
           type: "json_schema",
           json_schema: {
@@ -462,17 +478,6 @@ async function fetchReviewSummary(
                   type: "array",
                   items: { type: "string", enum: [...SOURCE_ENUM] },
                 },
-                dianpingRating: { type: ["number", "null"] },
-                dianpingRatingSource: {
-                  type: "string",
-                  enum: ["dianping", "xiaohongshu_mention", "other", "unknown"],
-                },
-                priceLevel: { type: ["number", "null"] },
-                priceCurrency: {
-                  type: ["string", "null"],
-                  enum: [...CURRENCY_ENUM, null],
-                },
-                priceContext: { type: ["string", "null"] },
               },
               required: [
                 "reviewHighlights",
@@ -480,11 +485,6 @@ async function fetchReviewSummary(
                 "sentiment",
                 "sourceCount",
                 "sources",
-                "dianpingRating",
-                "dianpingRatingSource",
-                "priceLevel",
-                "priceCurrency",
-                "priceContext",
               ],
             },
           },
@@ -499,78 +499,63 @@ async function fetchReviewSummary(
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return null;
 
-    // 反幻觉：收集 Perplexity citation；0 citation 时不直接丢弃，而是标记 sourceCount=0、
-    // sources=[]，让下游与 Google 一手 reviews 合并。仅当模型既无 citation 又没给出任何
-    // highlights/complaints 时才视为彻底无证据丢弃。
+    // 反幻觉：citation 必须命中白名单域，并且至少有 1 条；否则整体丢弃。
     const rawCitations: unknown = json?.citations ?? json?.search_results ?? [];
-    const citationUrls: string[] = Array.isArray(rawCitations)
+    const allCitationUrls: string[] = Array.isArray(rawCitations)
       ? (rawCitations as unknown[])
           .map((c) => (typeof c === "string" ? c : (c as { url?: string })?.url))
           .filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
       : [];
+    const validCitations = allCitationUrls.filter((u) =>
+      citationMatchesAllowed(u, allowedDomains),
+    );
+
+    if (validCitations.length === 0) {
+      console.warn(
+        `[Perplexity] ${name}: no whitelisted citations (got ${allCitationUrls.length} raw) → discard`,
+      );
+      return null;
+    }
 
     const parsed = JSON.parse(content);
     const highlights = Array.isArray(parsed.reviewHighlights)
-      ? parsed.reviewHighlights.slice(0, 5)
+      ? (parsed.reviewHighlights as unknown[])
+          .filter((s): s is string => typeof s === "string")
+          .slice(0, 5)
       : [];
     const complaints = Array.isArray(parsed.commonComplaints)
-      ? parsed.commonComplaints.slice(0, 3)
+      ? (parsed.commonComplaints as unknown[])
+          .filter((s): s is string => typeof s === "string")
+          .slice(0, 3)
       : [];
 
-    if (citationUrls.length === 0 && highlights.length === 0 && complaints.length === 0) {
-      console.warn(`[Perplexity] ${name}: no citations & no content → discard`);
+    if (highlights.length === 0 && complaints.length === 0) {
+      console.warn(`[Perplexity] ${name}: empty highlights & complaints → discard`);
       return null;
     }
-    if (citationUrls.length === 0) {
-      console.warn(`[Perplexity] ${name}: no citations but model returned content → keep with sourceCount=0`);
-    }
 
-    const rawRating = parsed.dianpingRating;
-    const rating =
-      typeof rawRating === "number" && rawRating >= 0 && rawRating <= 5
-        ? Math.round(rawRating * 10) / 10
-        : null;
-    const ratingSource = ["dianping", "xiaohongshu_mention", "other", "unknown"].includes(
-      parsed.dianpingRatingSource,
-    )
-      ? parsed.dianpingRatingSource
-      : "unknown";
-    const rawPrice = parsed.priceLevel;
-    const priceLevel =
-      typeof rawPrice === "number" && rawPrice > 0 && rawPrice < 1_000_000
-        ? Math.round(rawPrice)
-        : null;
-    const priceCurrency =
-      priceLevel != null && typeof parsed.priceCurrency === "string" &&
-      (CURRENCY_ENUM as readonly string[]).includes(parsed.priceCurrency)
-        ? parsed.priceCurrency
-        : null;
-    const priceContext =
-      priceLevel != null && typeof parsed.priceContext === "string"
-        ? parsed.priceContext.slice(0, 30)
-        : null;
-    // 仅在有 citation 时认可 sources（按真实 citation 数为 sourceCount）
-    const sources: string[] =
-      citationUrls.length > 0 && Array.isArray(parsed.sources)
-        ? Array.from(
-            new Set(
-              (parsed.sources as unknown[]).filter((s): s is string =>
-                typeof s === "string" && (SOURCE_ENUM as readonly string[]).includes(s),
-              ),
-            ),
-          )
-        : [];
+    // sources 由 citation 实际命中域名反推，不让模型自由声明
+    const sources = Array.from(
+      new Set(
+        validCitations
+          .map((u) => sourceFromCitation(u))
+          .filter((s): s is string => Boolean(s)),
+      ),
+    );
+
     return {
       reviewHighlights: highlights as string[],
       commonComplaints: complaints as string[],
-      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment) ? parsed.sentiment : "unknown",
-      sourceCount: citationUrls.length,
+      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment)
+        ? parsed.sentiment
+        : "unknown",
+      sourceCount: validCitations.length,
       sources,
-      dianpingRating: rating,
-      dianpingRatingSource: rating == null ? "unknown" : ratingSource,
-      priceLevel,
-      priceCurrency,
-      priceContext,
+      dianpingRating: null,
+      dianpingRatingSource: "unknown",
+      priceLevel: null,
+      priceCurrency: null,
+      priceContext: null,
     };
   } catch (e) {
     console.warn(`[Perplexity] ${name}:`, e instanceof Error ? e.message : e);
