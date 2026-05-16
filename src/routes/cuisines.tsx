@@ -3,7 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { useQueryStore, useStoreHydrated } from "@/lib/store";
+import { useQueryStore } from "@/lib/store";
 
 export const Route = createFileRoute("/cuisines")({
   head: () => ({
@@ -22,14 +22,11 @@ function StepCuisines() {
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
   const setCuisines = useQueryStore((s) => s.setCuisines);
-  const hydrated = useStoreHydrated();
+  
 
   const [value, setValue] = useState(cuisines.join("，"));
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (!city) navigate({ to: "/" });
-  }, [hydrated, city, navigate]);
+  // 不再强制跳首页：缺城市时下一步会提示补全
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();

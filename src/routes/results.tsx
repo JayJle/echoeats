@@ -74,15 +74,30 @@ function ResultsPage() {
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef(0);
 
-  useEffect(() => {
-    if (!results || !parsed) navigate({ to: "/" });
-  }, [results, parsed, navigate]);
-
   useEffect(() => () => {
     abortRef.current?.abort();
   }, []);
 
-  if (!results || !parsed) return null;
+  if (!results || !parsed) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center px-6">
+        <div className="max-w-md text-center space-y-4">
+          <h1 className="text-xl font-semibold tracking-tight">还没有搜索结果</h1>
+          <p className="text-sm text-muted-foreground">
+            会话状态已失效或还未开始搜索，请回到首页重新发起。
+          </p>
+          <div className="flex justify-center gap-2">
+            <Link to="/" className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+              回到首页
+            </Link>
+            <Link to="/requirements" className="inline-flex items-center justify-center rounded-md border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
+              去填写需求
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const isEmpty = results.groups.length === 0;
 
