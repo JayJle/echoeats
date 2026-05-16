@@ -1283,18 +1283,23 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 
 输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
 
+    yield { type: "stage", stage: "rank" };
     let ranking: z.infer<typeof AiRankingSchema>;
     try {
-      const result = await generateText({
-        model,
-        prompt,
-        maxOutputTokens: 10000,
-        output: Output.object({
-          schema: AiRankingSchema,
-          name: "echo_eats_ranking",
-          description: "AI ranking of real Google Places restaurant candidates",
+      // 用心跳包裹 AI 排序：Gemini 大 prompt 偶尔 15-30s，避免边缘网关静默切流。
+      const result = yield* withHeartbeat(
+        generateText({
+          model,
+          prompt,
+          maxOutputTokens: 10000,
+          output: Output.object({
+            schema: AiRankingSchema,
+            name: "echo_eats_ranking",
+            description: "AI ranking of real Google Places restaurant candidates",
+          }),
         }),
-      });
+        "rank",
+      );
       ranking = result.output;
     } catch (e) {
       const firstErr = e instanceof Error ? e.message : String(e);
@@ -1302,13 +1307,16 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       // 兜底：用原始文本生成 + 正则抽 JSON 再 zod 校验。
       // Gemini 偶尔会输出多余前后缀文字导致 Output.object 解析失败。
       try {
-        const fallback = await generateText({
-          model,
-          prompt:
-            prompt +
-            `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-          maxOutputTokens: 10000,
-        });
+        const fallback = yield* withHeartbeat(
+          generateText({
+            model,
+            prompt:
+              prompt +
+              `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
+            maxOutputTokens: 10000,
+          }),
+          "rank-fallback",
+        );
         const text = fallback.text || "";
         const jsonText = (() => {
           const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1322,11 +1330,15 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       } catch (e2) {
         const msg = e2 instanceof Error ? e2.message : String(e2);
         console.error(`[Echo/AI-rank] fallback also failed: ${msg}`);
-        return {
-          groups: [],
-          error: `AI 排序失败：${firstErr}`,
-          suggestions: FALLBACK_SUGGESTIONS,
+        yield {
+          type: "result",
+          payload: {
+            groups: [],
+            error: `AI 排序失败：${firstErr}`,
+            suggestions: FALLBACK_SUGGESTIONS,
+          },
         };
+        return;
       }
     }
 
