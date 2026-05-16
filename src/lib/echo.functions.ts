@@ -1023,26 +1023,37 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       );
     }
 
+    const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
+    yield { type: "stage", stage: "places-done", count: totalCandidates };
+
     const placesError = placeResults.find((r) => r.error)?.error;
     if (placesError && placeResults.every((r) => !r.places.length)) {
-      return {
-        groups: [],
-        error: useDianping
-          ? `大众点评检索失败：${placesError}`
-          : `Google Places 调用失败：${placesError}`,
-        suggestions: FALLBACK_SUGGESTIONS,
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: useDianping
+            ? `大众点评检索失败：${placesError}`
+            : `Google Places 调用失败：${placesError}`,
+          suggestions: FALLBACK_SUGGESTIONS,
+        },
       };
+      return;
     }
 
     const allHaveZero = placeResults.every((r) => r.places.length === 0);
     if (allHaveZero) {
-      return {
-        groups: [],
-        error: useDianping
-          ? `大众点评在「${data.city}」没找到符合的餐厅候选`
-          : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
-        suggestions: FALLBACK_SUGGESTIONS,
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: useDianping
+            ? `大众点评在「${data.city}」没找到符合的餐厅候选`
+            : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
+          suggestions: FALLBACK_SUGGESTIONS,
+        },
       };
+      return;
     }
 
     // 日期/时间硬筛：仅当用户明示了 visitTime 才执行。
