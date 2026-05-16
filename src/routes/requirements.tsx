@@ -49,6 +49,7 @@ function StepRequirements() {
   const [currentStage, setCurrentStage] = useState<StageKey | null>(null);
   const [searchMode, setSearchMode] = useState<"quick" | "deep">("deep");
   const [error, setError] = useState<string | null>(null);
+  const [inferredCuisines, setInferredCuisines] = useState<string[] | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef(0);
