@@ -535,6 +535,7 @@ const RestaurantSchema = z.object({
     })
     .nullable(),
   weekdayDescriptions: z.array(z.string()).nullable().optional().default(null),
+  visitTimeMatch: z.enum(["open", "unknown"]).nullable().optional().default(null),
 });
 
 const ResultsSchema = z.object({
