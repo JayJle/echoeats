@@ -29,6 +29,17 @@ const ParsedSchema = z.object({
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
   mode: z.enum(["quick", "deep"]).default("deep"),
+  visitTime: z
+    .object({
+      mentioned: z.boolean(),
+      evidence: z.string(),
+      weekday: z.number().int().min(0).max(6).nullable(),
+      hhmm: z.string().regex(/^\d{2}:\d{2}$/).nullable(),
+      raw: z.string(),
+    })
+    .nullable()
+    .optional()
+    .default(null),
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
