@@ -3,7 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { useQueryStore } from "@/lib/store";
+import { useQueryStore, useStoreHydrated } from "@/lib/store";
 
 export const Route = createFileRoute("/cuisines")({
   head: () => ({
@@ -22,12 +22,14 @@ function StepCuisines() {
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
   const setCuisines = useQueryStore((s) => s.setCuisines);
+  const hydrated = useStoreHydrated();
 
   const [value, setValue] = useState(cuisines.join("，"));
 
   useEffect(() => {
+    if (!hydrated) return;
     if (!city) navigate({ to: "/" });
-  }, [city, navigate]);
+  }, [hydrated, city, navigate]);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
