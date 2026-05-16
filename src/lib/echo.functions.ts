@@ -78,7 +78,25 @@ export const parseRequirements = createServerFn({ method: "POST" })
     const key = process.env.LOVABLE_API_KEY;
     if (!key) throw new Error("Missing LOVABLE_API_KEY");
     const gateway = createLovableAiGatewayProvider(key);
-    const model = gateway("google/gemini-3-flash-preview");
+
+    // 松散 schema：让 AI SDK 转出的 JSON Schema 极宽松，避免模型偶尔返回
+    // weight:"0.8" / hhmm:"7:00" 之类被 SDK 内部 zod 直接判失败。
+    // 拿到松散对象后再用严格 ParsedSchema（含 WeightCoerced / HhmmCoerced /
+    // .catch）把脏数据救回来。
+    const LooseParsedSchema = z.object({
+      city: z.string().optional(),
+      cuisines: z.array(z.string()).optional(),
+      dateTime: z.string().optional(),
+      hardFilters: z.array(z.unknown()).optional(),
+      softPreferences: z.array(z.unknown()).optional(),
+      negativeFilters: z.array(z.unknown()).optional(),
+      dishPreferences: z.array(z.string()).optional(),
+      searchStrategy: z.array(z.string()).optional(),
+      country: z.string().optional(),
+      language: z.string().optional(),
+      mode: z.string().optional(),
+      visitTime: z.unknown().optional(),
+    });
 
     const prompt = `你是 Echo Eats 的需求结构化引擎。用户填写了餐厅搜索表单：
 
@@ -199,18 +217,20 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 输入「7pm sushi」→ \`{"mentioned":true,"evidence":"7pm","weekday":${new Date().getDay()},"hhmm":"19:00","raw":"7pm"}\`
 - 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\``;
 
-    const runOnce = async () => {
+    const runOnce = async (modelId: string) => {
+      const model = gateway(modelId);
       const { output } = await generateText({
         model,
         prompt,
-        maxOutputTokens: 4000,
+        maxOutputTokens: 8000,
         output: Output.object({
-          schema: ParsedSchema,
+          schema: LooseParsedSchema,
           name: "parsed_restaurant_requirements",
           description: "Echo Eats structured restaurant search requirements",
         }),
       });
-      return output;
+      const parsed = ParsedSchema.parse(output);
+      return parsed;
     };
 
     const sanitizeVisitTime = (
@@ -236,11 +256,11 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
     try {
       try {
-        return sanitizeVisitTime(await runOnce());
+        return sanitizeVisitTime(await runOnce("google/gemini-2.5-flash"));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
-        // 一次重试，模型偶发返回不匹配 schema 的 JSON
-        return sanitizeVisitTime(await runOnce());
+        // 跨供应商重试，避免同模型以同样方式再次失败
+        return sanitizeVisitTime(await runOnce("openai/gpt-5-mini"));
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
