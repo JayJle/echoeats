@@ -441,6 +441,8 @@ function ResultsPage() {
 }
 
 function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
+  const visitTime = useQueryStore((s) => s.parsed?.visitTime ?? null);
+  const showVisitBadge = Boolean(visitTime && r.visitTimeMatch);
   const displayName = r.localName?.trim() || r.name;
   const alternateName = r.name && r.name !== displayName ? r.name : null;
 
