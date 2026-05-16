@@ -78,7 +78,25 @@ export const parseRequirements = createServerFn({ method: "POST" })
     const key = process.env.LOVABLE_API_KEY;
     if (!key) throw new Error("Missing LOVABLE_API_KEY");
     const gateway = createLovableAiGatewayProvider(key);
-    const model = gateway("google/gemini-3-flash-preview");
+
+    // 松散 schema：让 AI SDK 转出的 JSON Schema 极宽松，避免模型偶尔返回
+    // weight:"0.8" / hhmm:"7:00" 之类被 SDK 内部 zod 直接判失败。
+    // 拿到松散对象后再用严格 ParsedSchema（含 WeightCoerced / HhmmCoerced /
+    // .catch）把脏数据救回来。
+    const LooseParsedSchema = z.object({
+      city: z.string().optional(),
+      cuisines: z.array(z.string()).optional(),
+      dateTime: z.string().optional(),
+      hardFilters: z.array(z.unknown()).optional(),
+      softPreferences: z.array(z.unknown()).optional(),
+      negativeFilters: z.array(z.unknown()).optional(),
+      dishPreferences: z.array(z.string()).optional(),
+      searchStrategy: z.array(z.string()).optional(),
+      country: z.string().optional(),
+      language: z.string().optional(),
+      mode: z.string().optional(),
+      visitTime: z.unknown().optional(),
+    });
 
     const prompt = `你是 Echo Eats 的需求结构化引擎。用户填写了餐厅搜索表单：
 
