@@ -49,6 +49,7 @@ function StepRequirements() {
   const [currentStage, setCurrentStage] = useState<StageKey | null>(null);
   const [searchMode, setSearchMode] = useState<"quick" | "deep">("deep");
   const [error, setError] = useState<string | null>(null);
+  const [inferredCuisines, setInferredCuisines] = useState<string[] | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef(0);
@@ -92,6 +93,7 @@ function StepRequirements() {
     setLoading(true);
     setSearchMode(mode);
     setFreeText(text);
+    setInferredCuisines(null);
     runIdRef.current += 1;
     const myRunId = runIdRef.current;
     abortRef.current?.abort();
@@ -106,6 +108,9 @@ function StepRequirements() {
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode };
       setParsed(parsedWithMode);
+      if (parsed.cuisinesInferred && parsed.cuisines.length > 0) {
+        setInferredCuisines(parsed.cuisines);
+      }
 
       // 进入 search 阶段；阶段切换由后端流式事件驱动（不再依赖 setTimeout 伪进度）
       setCurrentStage("search");
@@ -156,6 +161,7 @@ function StepRequirements() {
     setLoading(false);
     setCurrentStage(null);
     setError(null);
+    setInferredCuisines(null);
   };
 
   const [recording, setRecording] = useState(false);
@@ -242,6 +248,13 @@ function StepRequirements() {
                       {state === "active" && (
                         <p className="mt-0.5 text-xs text-muted-foreground">{s.hint}</p>
                       )}
+                      {state === "active" &&
+                        (s.key === "search" || s.key === "reviews") &&
+                        inferredCuisines && inferredCuisines.length > 0 && (
+                          <p className="mt-1 text-xs text-primary/80">
+                            ✨ AI 推断了 {inferredCuisines.length} 个品类（{inferredCuisines.join(" / ")}），正在并行搜索，可能稍慢
+                          </p>
+                        )}
                     </div>
                   </li>
                 );
