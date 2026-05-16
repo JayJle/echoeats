@@ -237,7 +237,8 @@ export const parseRequirements = createServerFn({ method: "POST" })
     try {
       try {
         return sanitizeVisitTime(await runOnce());
-      } catch {
+      } catch (e1) {
+        console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 一次重试，模型偶发返回不匹配 schema 的 JSON
         return sanitizeVisitTime(await runOnce());
       }
