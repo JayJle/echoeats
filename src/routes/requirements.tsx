@@ -42,7 +42,7 @@ function StepRequirements() {
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
   const setResults = useQueryStore((s) => s.setResults);
-  const hydrated = useStoreHydrated();
+  
 
   const [value, setValue] = useState(freeText);
   const [loading, setLoading] = useState(false);

@@ -22,7 +22,7 @@ function StepCuisines() {
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
   const setCuisines = useQueryStore((s) => s.setCuisines);
-  const hydrated = useStoreHydrated();
+  
 
   const [value, setValue] = useState(cuisines.join("，"));
 
