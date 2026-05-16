@@ -1347,7 +1347,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 
         if (!restaurants.length && !partialRestaurants.length) return null;
         return {
-          cuisine,
+          cuisine: cuisinesAutoFilled ? "为你推荐" : cuisine,
           restaurants,
           ...(partialRestaurants.length ? { partialRestaurants } : {}),
         };
