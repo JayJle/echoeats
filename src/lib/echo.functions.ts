@@ -866,10 +866,11 @@ function isOpenAt(
 
 export const searchRestaurants = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParsedSchema.parse(input))
-  .handler(async ({ data }): Promise<SearchResponse> => {
+  .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
     const aiKey = process.env.LOVABLE_API_KEY;
     if (!aiKey) {
-      return { groups: [], error: "服务未配置 AI 凭据", suggestions: [] };
+      yield { type: "result", payload: { groups: [], error: "服务未配置 AI 凭据", suggestions: [] } };
+      return;
     }
     // country/language 优先取 AI parse 结果，正则只做 fallback
     const country =
@@ -895,19 +896,29 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const pplxKey = process.env.PERPLEXITY_API_KEY;
 
     if (!useDianping && !process.env.GOOGLE_PLACES_API_KEY) {
-      return {
-        groups: [],
-        error: "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
-        suggestions: [],
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
+          suggestions: [],
+        },
       };
+      return;
     }
     if (useDianping && !pplxKey) {
-      return {
-        groups: [],
-        error: "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
-        suggestions: [],
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
+          suggestions: [],
+        },
       };
+      return;
     }
+
+    yield { type: "stage", stage: "places", message: `搜索 ${data.city} 候选餐厅…` };
 
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
