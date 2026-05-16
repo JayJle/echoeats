@@ -93,6 +93,7 @@ function StepRequirements() {
     setLoading(true);
     setSearchMode(mode);
     setFreeText(text);
+    setInferredCuisines(null);
     runIdRef.current += 1;
     const myRunId = runIdRef.current;
     abortRef.current?.abort();
