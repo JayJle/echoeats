@@ -117,7 +117,8 @@ function ResultsPage() {
     const ac = new AbortController();
     abortRef.current = ac;
     try {
-      const response = await searchFn({ data: parsed, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const iter = await searchFn({ data: parsed, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const response = await consumeSearchStream(iter);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       setResults(response);
     } catch (err) {
