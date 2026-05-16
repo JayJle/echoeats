@@ -256,11 +256,11 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
     try {
       try {
-        return sanitizeVisitTime(await runOnce());
+        return sanitizeVisitTime(await runOnce("google/gemini-2.5-flash"));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
-        // 一次重试，模型偶发返回不匹配 schema 的 JSON
-        return sanitizeVisitTime(await runOnce());
+        // 跨供应商重试，避免同模型以同样方式再次失败
+        return sanitizeVisitTime(await runOnce("openai/gpt-5-mini"));
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
