@@ -12,34 +12,64 @@ const ParseInput = z.object({
   freeText: z.string().default(""),
 });
 
+// 宽松的 weight：接受字符串/越界数字/缺失，归一到 [0.1, 1.0]
+const WeightCoerced = z.preprocess((v) => {
+  if (v == null || v === "") return 0.7;
+  const n = typeof v === "string" ? Number(v) : v;
+  if (typeof n !== "number" || Number.isNaN(n)) return 0.7;
+  if (n > 1 && n <= 10) return n / 10; // 模型偶尔输出 0-10
+  return Math.max(0.1, Math.min(1, n));
+}, z.number().min(0).max(1));
+
 const WeightedConditionSchema = z.object({
   text: z.string(),
-  weight: z.number().min(0).max(1).default(0.7),
+  weight: WeightCoerced.default(0.7),
 });
+
+// hhmm：允许 "7:00" / "07:00" / 不规范字符串；非法时归 null
+const HhmmCoerced = z.preprocess((v) => {
+  if (v == null) return null;
+  if (typeof v !== "string") return null;
+  const m = v.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Math.min(23, Math.max(0, parseInt(m[1], 10)));
+  return `${String(h).padStart(2, "0")}:${m[2]}`;
+}, z.string().regex(/^\d{2}:\d{2}$/).nullable());
+
+const WeekdayCoerced = z.preprocess((v) => {
+  if (v == null) return null;
+  const n = typeof v === "string" ? Number(v) : v;
+  if (typeof n !== "number" || Number.isNaN(n)) return null;
+  if (n < 0 || n > 6) return null;
+  return Math.floor(n);
+}, z.number().int().min(0).max(6).nullable());
+
+const VisitTimeSchema = z
+  .object({
+    mentioned: z.boolean().default(false),
+    evidence: z.string().default(""),
+    weekday: WeekdayCoerced.default(null),
+    hhmm: HhmmCoerced.default(null),
+    raw: z.string().default(""),
+  })
+  .nullable()
+  .optional()
+  .catch(null)
+  .default(null);
 
 const ParsedSchema = z.object({
   city: z.string().default(""),
   cuisines: z.array(z.string()).default([]),
   dateTime: z.string().default(""),
-  hardFilters: z.array(WeightedConditionSchema).default([]),
-  softPreferences: z.array(WeightedConditionSchema).default([]),
-  negativeFilters: z.array(WeightedConditionSchema).default([]),
-  dishPreferences: z.array(z.string()).default([]),
-  searchStrategy: z.array(z.string()).default([]),
+  hardFilters: z.array(WeightedConditionSchema).catch([]).default([]),
+  softPreferences: z.array(WeightedConditionSchema).catch([]).default([]),
+  negativeFilters: z.array(WeightedConditionSchema).catch([]).default([]),
+  dishPreferences: z.array(z.string()).catch([]).default([]),
+  searchStrategy: z.array(z.string()).catch([]).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
-  mode: z.enum(["quick", "deep"]).default("deep"),
-  visitTime: z
-    .object({
-      mentioned: z.boolean(),
-      evidence: z.string(),
-      weekday: z.number().int().min(0).max(6).nullable(),
-      hhmm: z.string().regex(/^\d{2}:\d{2}$/).nullable(),
-      raw: z.string(),
-    })
-    .nullable()
-    .optional()
-    .default(null),
+  mode: z.enum(["quick", "deep"]).catch("deep").default("deep"),
+  visitTime: VisitTimeSchema,
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
@@ -207,7 +237,8 @@ export const parseRequirements = createServerFn({ method: "POST" })
     try {
       try {
         return sanitizeVisitTime(await runOnce());
-      } catch {
+      } catch (e1) {
+        console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 一次重试，模型偶发返回不匹配 schema 的 JSON
         return sanitizeVisitTime(await runOnce());
       }
