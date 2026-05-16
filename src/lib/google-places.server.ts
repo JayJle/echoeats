@@ -17,6 +17,10 @@ export type PlaceCandidate = {
   reviews: { text: string; rating: number | null; authorName: string | null }[];
   photoNames: string[];
   weekdayDescriptions: string[] | null;
+  openingPeriods: Array<{
+    open: { day: number; hour: number; minute: number };
+    close: { day: number; hour: number; minute: number } | null;
+  }> | null;
 };
 
 const FIELD_MASK = [
