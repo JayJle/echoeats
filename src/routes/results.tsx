@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
-import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
+import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
