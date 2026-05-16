@@ -159,6 +159,24 @@ export async function searchPlaces(opts: {
       .filter((n): n is string => typeof n === "string" && n.length > 0)
       .slice(0, 3),
     weekdayDescriptions: p.regularOpeningHours?.weekdayDescriptions ?? null,
+    openingPeriods: (() => {
+      const periods = p.regularOpeningHours?.periods;
+      if (!Array.isArray(periods) || periods.length === 0) return null;
+      const out = periods
+        .map((pd) => {
+          const o = pd.open;
+          if (!o || typeof o.day !== "number" || typeof o.hour !== "number") return null;
+          const open = { day: o.day, hour: o.hour, minute: o.minute ?? 0 };
+          const c = pd.close;
+          const close =
+            c && typeof c.day === "number" && typeof c.hour === "number"
+              ? { day: c.day, hour: c.hour, minute: c.minute ?? 0 }
+              : null;
+          return { open, close };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x));
+      return out.length ? out : null;
+    })(),
   })).filter((p) => p.placeId && p.name);
 }
 
