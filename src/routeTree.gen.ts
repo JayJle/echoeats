@@ -9,11 +9,17 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as Char91indexChar93RouteImport } from './routes/[index]'
 import { Route as ResultsRouteImport } from './routes/results'
 import { Route as RequirementsRouteImport } from './routes/requirements'
 import { Route as CuisinesRouteImport } from './routes/cuisines'
 import { Route as IndexRouteImport } from './routes/index'
 
+const Char91indexChar93Route = Char91indexChar93RouteImport.update({
+  id: '/index',
+  path: '/index',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ResultsRoute = ResultsRouteImport.update({
   id: '/results',
   path: '/results',
@@ -38,12 +44,14 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/cuisines': typeof CuisinesRoute
+  '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/cuisines': typeof CuisinesRoute
+  '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
 }
@@ -51,26 +59,35 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/cuisines': typeof CuisinesRoute
+  '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/cuisines' | '/requirements' | '/results'
+  fullPaths: '/' | '/cuisines' | '/index' | '/requirements' | '/results'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/cuisines' | '/requirements' | '/results'
-  id: '__root__' | '/' | '/cuisines' | '/requirements' | '/results'
+  to: '/' | '/cuisines' | '/index' | '/requirements' | '/results'
+  id: '__root__' | '/' | '/cuisines' | '/index' | '/requirements' | '/results'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CuisinesRoute: typeof CuisinesRoute
+  Char91indexChar93Route: typeof Char91indexChar93Route
   RequirementsRoute: typeof RequirementsRoute
   ResultsRoute: typeof ResultsRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/index': {
+      id: '/index'
+      path: '/index'
+      fullPath: '/index'
+      preLoaderRoute: typeof Char91indexChar93RouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/results': {
       id: '/results'
       path: '/results'
@@ -105,6 +122,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CuisinesRoute: CuisinesRoute,
+  Char91indexChar93Route: Char91indexChar93Route,
   RequirementsRoute: RequirementsRoute,
   ResultsRoute: ResultsRoute,
 }
