@@ -10,6 +10,8 @@ export type WeightedCondition = {
 export type ParsedRequirements = {
   city: string;
   cuisines: string[];
+  cuisinesInferred?: boolean;
+  cuisineLevelConstraints?: WeightedCondition[];
   dateTime: string;
   hardFilters: WeightedCondition[];
   softPreferences: WeightedCondition[];
