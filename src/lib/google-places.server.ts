@@ -16,6 +16,7 @@ export type PlaceCandidate = {
   location: { lat: number; lng: number } | null;
   reviews: { text: string; rating: number | null; authorName: string | null }[];
   photoNames: string[];
+  weekdayDescriptions: string[] | null;
 };
 
 const FIELD_MASK = [
