@@ -212,7 +212,8 @@ function ResultsPage() {
         merged.hardFilters.length + merged.softPreferences.length + merged.negativeFilters.length + merged.dishPreferences.length });
       setFreeText(text);
       setParsed(merged);
-      const response = await searchFn({ data: merged, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const iter = await searchFn({ data: merged, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const response = await consumeSearchStream(iter);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       setResults(response);
       setEditing(false);
