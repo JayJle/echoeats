@@ -6,7 +6,7 @@ import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { useQueryStore } from "@/lib/store";
+import { useQueryStore, useStoreHydrated } from "@/lib/store";
 import { useServerFn } from "@tanstack/react-start";
 import { parseRequirements, searchRestaurants } from "@/lib/echo.functions";
 
@@ -40,6 +40,7 @@ function StepRequirements() {
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
   const setResults = useQueryStore((s) => s.setResults);
+  const hydrated = useStoreHydrated();
 
   const [value, setValue] = useState(freeText);
   const [loading, setLoading] = useState(false);
@@ -54,8 +55,9 @@ function StepRequirements() {
   const searchFn = useServerFn(searchRestaurants);
 
   useEffect(() => {
+    if (!hydrated) return;
     if (!city || cuisines.length === 0) navigate({ to: "/" });
-  }, [city, cuisines, navigate]);
+  }, [hydrated, city, cuisines, navigate]);
 
   useEffect(() => () => {
     timersRef.current.forEach(clearTimeout);
