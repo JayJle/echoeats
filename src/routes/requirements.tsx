@@ -248,6 +248,13 @@ function StepRequirements() {
                       {state === "active" && (
                         <p className="mt-0.5 text-xs text-muted-foreground">{s.hint}</p>
                       )}
+                      {state === "active" &&
+                        (s.key === "search" || s.key === "reviews") &&
+                        inferredCuisines && inferredCuisines.length > 0 && (
+                          <p className="mt-1 text-xs text-primary/80">
+                            ✨ AI 推断了 {inferredCuisines.length} 个品类（{inferredCuisines.join(" / ")}），正在并行搜索，可能稍慢
+                          </p>
+                        )}
                     </div>
                   </li>
                 );
