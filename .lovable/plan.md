@@ -1,46 +1,50 @@
-## 问题
-1. **看不到泡泡**：`bg-primary/10` 叠在奶油色 card 上对比度太低，加上 `text-foreground/85`，几乎看不见；自定义 `@keyframes` + absolute 定位还可能因为 HMR / Tailwind v4 没识别而完全消失。
-2. **点了不追加**：用户反馈点击后泡泡只是消失、文字没进输入框。代码里 `onPick(b.text)` 确实先于 popping 调用，逻辑上没问题；但如果 NeedBubbles 整段因为 CSS 故障被裁切到 0 高度，看到的「破裂」实际上是空气，自然也不会有文字。两件事很可能同一个根因——视觉层崩了。
+## 目标
+把 `NeedBubbles` 从"静态 chip + 点击补位"改成"横向滚动跑马灯（从右进、从左出）"，点击泡泡仍然追加到输入框，并大幅扩充词库。
 
-## 方案
-重写 `src/components/NeedBubbles.tsx`，砍掉 absolute + 自定义 keyframes 这套脆弱玩法，改成更稳的实现：
+## 改动范围
+只动两个文件，零业务逻辑变化：
+- `src/components/NeedBubbles.tsx` —— 重写交互
+- `src/routes/requirements.tsx` —— 不变（`appendBubble` 已经正确）；如需调整布局间距再微调
 
-### 1. 布局：flex-wrap 居中
-- 容器 `flex flex-wrap items-center justify-center gap-2 min-h-[120px]`，泡泡像 chip 一样自然排开，移动端 440px 也不会溢出。
-- 不再依赖 absolute 定位 / 百分比 / overflow-hidden，移动端绝对可见。
+## 1. 词库扩充（约 30+ 条，分组覆盖更多筛选维度）
+在 `POOL` 中加入以下类别，保证一屏跑马灯内容丰富：
 
-### 2. 视觉：清晰可见的胶囊
-- 背景 `bg-card`，边框 `border-primary/40`，文字 `text-foreground`，hover `bg-primary/10 border-primary`。
-- 圆角 `rounded-full`，padding `px-4 py-2`，字号 `text-sm`。
-- 给胶囊加柔和阴影 `shadow-sm`，hover 时 `shadow-md` + 轻微 `scale-105`（用 `transition-all`）。
-- 三档尺寸保留，但只通过 padding/字号微调（sm/md/lg），不动定位。
+- 价位：`人均 100 元以内`、`人均 200 元以内`、`人均 500+ 高端`、`性价比高`
+- 评分/口碑：`谷歌评分 4.0 以上`、`必比登推荐`、`米其林`、`本地人爱去`、`不要游客店`
+- 氛围：`适合约会`、`安静能聊天`、`氛围有格调`、`适合商务`、`适合带小孩`、`适合多人聚餐`
+- 位置：`靠近地铁`、`在商场里`、`步行可达`、`有停车位`
+- 体验：`有包间`、`可以预约`、`不用排队`、`有英文菜单`、`有中文菜单`、`室外座位`、`夜里也开`
+- 食材/出品：`食材新鲜`、`现做现卖`、`分量足`、`摆盘精致`、`辣度可调`、`有素食选项`
+- 菜品偏好：`推荐刺身`、`想吃烧鸟`、`想配清酒`、`招牌菜必点`、`适合拍照`
 
-### 3. 动画：用 Tailwind 内置 + 简单 keyframe
-- 出现：`animate-in fade-in zoom-in-75 duration-300`（tailwindcss-animate 已在项目里，看 styles.css 第 3 行 `tw-animate-css`）。
-- 破裂：用 React state 切到 `animate-out fade-out zoom-out-0 duration-200`，200ms 后从数组移除并补一个新泡泡。
-- 漂浮：可选——给容器外层加一个极轻的 `animate-pulse` 替代复杂浮动，或者干脆不浮动（用户重点是「能点 → 进输入框」，飘动只是锦上添花）。先做静态版+破裂动画，确认能用再加浮动。
+## 2. 跑马灯实现（纯 CSS，稳）
+- 容器：`relative overflow-hidden` + 左右两侧渐隐遮罩（`mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent)`），高度固定一行（约 48px）。
+- 内部一个 `flex gap-3` 跑道，把"词库 × 2"渲染两遍首尾相接，用 CSS `@keyframes marquee { from { transform: translateX(0) } to { transform: translateX(-50%) } }`，`animation: marquee 60s linear infinite`。
+- hover / 任一泡泡进入 `:focus-within` 时 `animation-play-state: paused`，方便用户瞄准点击。
+- 单个泡泡：`rounded-full border bg-card text-sm px-4 py-2 shrink-0 hover:bg-primary/10 hover:border-primary hover:-translate-y-0.5 transition`。
+- 点击：
+  1. `onPick(text)` 追加到 textarea（沿用现有 `appendBubble`）。
+  2. 给该按钮 200ms `animate-out zoom-out-75 fade-out`，结束后保持空位（跑马灯继续滚动，不补位 —— 因为词库循环本身就够多了）。
+  3. 同时把该 text 加入一个 `Set<string>`（state），渲染时被点过的词渲染成 `opacity-30 line-through pointer-events-none`，表示"已加入"，避免重复点击；用户清空 textarea 不重置（这是灵感提示，不是必选）。
+- 移动端（440px）：跑马灯保持单行，字号 `text-xs`，速度略快或保持 60s（默认就 OK）。
 
-### 4. 词库与补位
-保留现有词库；维护 `bubbles: {id, text, size, leaving?: boolean}[]`，初始 6 条；点击：
-- `onPick(text)` 立刻调用 → 父组件 setValue 追加；
-- 标记该 bubble `leaving=true` 触发 zoom-out 动画；
-- 200ms 后 setState 用一条新随机文案替换该 id 的 bubble（保持总数 6）。
+## 3. styles.css
+新增一段：
+```
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+```
+不动其它 token、不动 `mic-ring`。
 
-### 5. 父组件 (`requirements.tsx`) 不动
-`appendBubble` 已经正确：`setValue((v) => v.trim() ? \`${v}、${text}\` : text)`。只需要确认 NeedBubbles 真的调到了它。本次重写后会调到。
-
-### 6. 清理 styles.css 里的死代码
-顺手删掉上次加的 `bubble-float / bubble-rise-in / bubble-pop` 三个 @keyframes（保留 `mic-ring`，麦克风按钮还在用）。
-
-## 不动 / 不做
-- 不动麦克风占位按钮（工作正常）。
-- 不动 textarea / 标题 / 搜索按钮。
-- 不动业务逻辑、store、AI prompt。
-- 不接真实语音识别。
+## 4. 不动的部分
+- 麦克风按钮、textarea、标题、搜索按钮、loading 卡片、store、AI prompt、路由、`/index` 测试入口。
+- `requirements.tsx` 内 `<NeedBubbles onPick={appendBubble} />` 一行不变。
 
 ## 验收
-- 打开 `/requirements`：标题下方立刻看见 6 个明显的胶囊泡泡（白底深字描边，对比度足够）。
-- 点任意泡泡：泡泡缩小淡出（约 200ms），同时 textarea 立刻多出该条文案（多次点击用「、」分隔，已有用户输入时追加在末尾）。
-- 泡泡消失后大约 200ms 内有新泡泡淡入补位，词库不重复。
-- 移动端 440px 不溢出、不挡按钮。
-- 麦克风按钮、深度/快速搜索、返回链接、loading 卡片全部行为不变。
+- `/requirements`：标题下方一条横向滚动的泡泡带，从右进、从左消失，循环不断。
+- 鼠标悬停带子或单个泡泡时滚动暂停，方便点击。
+- 点击泡泡：文字立刻追加到 textarea（多个用 `、` 分隔），该泡泡缩小淡出并在后续滚动中以"灰色删除线"状态出现（防重复）。
+- 移动端 440px：单行不溢出，字号清晰，不挡麦克风按钮。
+- 词库至少 30 条，覆盖价位/评分/氛围/位置/体验/食材/菜品 7 类。

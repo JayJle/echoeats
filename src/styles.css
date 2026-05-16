@@ -106,3 +106,8 @@
   70%  { box-shadow: 0 0 0 14px color-mix(in oklab, var(--primary) 0%, transparent); }
   100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent); }
 }
+
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
