@@ -1,6 +1,8 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Check, HelpCircle, Loader2 } from "lucide-react";
+import { Check, HelpCircle, Loader2, Mic, Square } from "lucide-react";
+import { toast } from "sonner";
+import { NeedBubbles } from "@/components/NeedBubbles";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
@@ -151,29 +153,58 @@ function StepRequirements() {
     setError(null);
   };
 
+  const [recording, setRecording] = useState(false);
+  const toggleRecording = () => {
+    if (recording) {
+      setRecording(false);
+      toast("语音输入即将上线");
+    } else {
+      setRecording(true);
+    }
+  };
+
+  const appendBubble = (text: string) => {
+    setValue((v) => (v.trim() ? `${v.replace(/[、，,]\s*$/, "")}、${text}` : text));
+  };
+
   return (
-    <StepShell
-      step={3}
-      total={3}
-      title="还有什么要求?随便写"
-      hint="可跳过,先看结果再补充。预算、人数、氛围、菜品偏好、避雷……越具体越好"
-    >
+    <StepShell step={3} total={3} title="还想要点什么?">
       <form
         onSubmit={(e) => {
           e.preventDefault();
           void runSearch(value, "deep");
         }}
-        className="space-y-6"
+        className="space-y-5"
       >
-        <Textarea
-          autoFocus
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="两个人预算 15000 日元以内,不要游客店,适合聊天,最好有蟹刺身,评分高一点,可以预约。"
-          className="min-h-[160px] text-base resize-none"
-          maxLength={1000}
-          disabled={loading}
-        />
+        <NeedBubbles onPick={appendBubble} />
+
+        <div className="relative">
+          <Textarea
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            className="min-h-[120px] text-base resize-none pr-20"
+            maxLength={1000}
+            disabled={loading}
+          />
+          <div className="absolute bottom-3 right-3 flex flex-col items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleRecording}
+              aria-label={recording ? "停止录音" : "开始语音输入"}
+              className={`flex h-14 w-14 items-center justify-center rounded-full text-primary-foreground shadow-md transition-colors ${
+                recording
+                  ? "bg-destructive hover:bg-destructive/90"
+                  : "bg-primary hover:bg-primary/90"
+              }`}
+              style={recording ? { animation: "mic-ring 1.4s ease-out infinite" } : undefined}
+            >
+              {recording ? <Square className="h-5 w-5" fill="currentColor" /> : <Mic className="h-6 w-6" />}
+            </button>
+            <span className="text-[10px] text-muted-foreground">
+              {recording ? "录音中…" : "语音输入"}
+            </span>
+          </div>
+        </div>
 
         {loading && currentStage && (
           <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-4">
