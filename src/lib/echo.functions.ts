@@ -1471,35 +1471,46 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       .filter((g): g is NonNullable<typeof g> => Boolean(g));
 
     if (!groups.length) {
-      return {
-        groups: [],
-        error: "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
-        suggestions: FALLBACK_SUGGESTIONS,
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
+          suggestions: FALLBACK_SUGGESTIONS,
+        },
       };
+      return;
     }
 
+    yield { type: "stage", stage: "photos" };
     // Resolve Google photo URLs for displayed restaurants in parallel
     const allRestaurants = groups.flatMap((g) => [
       ...g.restaurants,
       ...(g.partialRestaurants ?? []),
     ]);
-    await Promise.all(
-      allRestaurants.map(async (r) => {
-        const p = placeByRestaurantId.get(r.id);
-        const names = (p?.photoNames ?? []).slice(0, 6);
-        if (!names.length) return;
-        const urls = await Promise.all(names.map((n) => resolvePhotoUrl(n, 800)));
-        r.photoUrls = urls.filter((u): u is string => Boolean(u));
-      }),
+    yield* withHeartbeat(
+      Promise.all(
+        allRestaurants.map(async (r) => {
+          const p = placeByRestaurantId.get(r.id);
+          const names = (p?.photoNames ?? []).slice(0, 6);
+          if (!names.length) return;
+          const urls = await Promise.all(names.map((n) => resolvePhotoUrl(n, 800)));
+          r.photoUrls = urls.filter((u): u is string => Boolean(u));
+        }),
+      ),
+      "photos",
     );
 
     const missing = data.cuisines.filter(
       (c) => !groups.some((g) => g.cuisine.toLowerCase() === c.toLowerCase()),
     );
-    return {
-      groups: ResultsSchema.parse({ groups }).groups,
-      error: missing.length ? `没有找到「${missing.join("、")}」的可靠候选` : null,
-      suggestions: missing.length ? FALLBACK_SUGGESTIONS : [],
+    yield {
+      type: "result",
+      payload: {
+        groups: ResultsSchema.parse({ groups }).groups,
+        error: missing.length ? `没有找到「${missing.join("、")}」的可靠候选` : null,
+        suggestions: missing.length ? FALLBACK_SUGGESTIONS : [],
+      },
     };
   });
 
