@@ -108,6 +108,9 @@ function StepRequirements() {
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode };
       setParsed(parsedWithMode);
+      if (parsed.cuisinesInferred && parsed.cuisines.length > 0) {
+        setInferredCuisines(parsed.cuisines);
+      }
 
       // 进入 search 阶段；阶段切换由后端流式事件驱动（不再依赖 setTimeout 伪进度）
       setCurrentStage("search");
