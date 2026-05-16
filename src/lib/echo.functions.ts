@@ -65,6 +65,7 @@ const ParsedSchema = z.object({
   softPreferences: z.array(WeightedConditionSchema).catch([]).default([]),
   negativeFilters: z.array(WeightedConditionSchema).catch([]).default([]),
   dishPreferences: z.array(z.string()).catch([]).default([]),
+  cuisineLevelConstraints: z.array(WeightedConditionSchema).catch([]).default([]),
   searchStrategy: z.array(z.string()).catch([]).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
@@ -91,6 +92,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
       softPreferences: z.array(z.unknown()).optional(),
       negativeFilters: z.array(z.unknown()).optional(),
       dishPreferences: z.array(z.string()).optional(),
+      cuisineLevelConstraints: z.array(z.unknown()).optional(),
       searchStrategy: z.array(z.string()).optional(),
       country: z.string().optional(),
       language: z.string().optional(),
@@ -114,6 +116,30 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
 - dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight）。
 - searchStrategy：3-5 条搜索策略说明。
+- cuisineLevelConstraints：**品类级约束**（对象数组，形如 \`{"text":"原话 → 翻译","weight":0.1-1.0}\`），见下节。
+
+## 品类级 vs 餐厅级约束（最高优先级，先判这一条）
+
+有一类条件**本质上不是单家餐厅的可查属性，而是「整个品类」的特征**。这类条件直接当 hardFilter 塞给地图文本搜索会查不到（候选变空），必须用「先推品类、再搜索」的方式处理。
+
+**品类级约束识别清单**（凡涉及以下语义之一，即视为品类级，按需自行扩展）：
+
+- 用餐时长 / 总耗时：「1 小时内吃完」、「快一点」、「想慢慢吃」、「2 小时左右」
+- 同行人结构：「带 3 岁小孩」、「带宝宝」、「家庭聚餐」、「一个人吃」、「10 人聚会」
+- 食量/口味强度：「想轻一点」、「不想太饱」、「吃饱一点」、「想吃辣」、「想清淡」
+- 氛围属性：「想热闹」、「想安静」、「适合约会」、「适合谈事」
+- 用餐场景：「快速解决一顿」、「顺路解决」、「慢慢喝一杯」、「夜宵」
+
+**处理规则（务必按顺序执行）**：
+
+1. 这类条件**必须**进 \`cuisineLevelConstraints\`（带 weight，规则同下文权重表）。
+2. **同时**把同一条复制进 \`softPreferences\`（保留排序信号，weight 相同）。
+3. **绝对不要**进 \`hardFilters\`（会让 Google Maps 文本搜索查不到候选）。
+4. 当**用户输入的 cuisines 为空时**，模型必须根据这些约束在 \`cuisines\` 字段里**主动产出 1–3 个匹配品类**，替代之前那种 \`["餐厅"]\` 的兜底。例：
+   - 「东京、用餐 1 小时内、想轻一点」→ cuisines: ["拉面","乌冬","定食"]
+   - 「大阪、带 3 岁小孩、想吃饱」→ cuisines: ["家庭餐厅","回转寿司","お好み焼き"]
+   - 「京都、想慢慢吃、安静」→ cuisines: ["怀石","会席料理","日本料理"]
+5. 当用户**已显式提供 cuisines** 时，**不要覆盖** cuisines；在 \`searchStrategy\` 里说明会按这些品类级约束做排序倾斜即可。
 
 ## hardFilters 判定规则（关键，务必严格执行）
 
