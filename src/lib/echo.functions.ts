@@ -1145,6 +1145,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
       }
+      yield { type: "stage", stage: "tabelog", total: allTargets.length };
       const CONCURRENCY = 8;
       let cursor = 0;
       const runWorker = async () => {
@@ -1160,8 +1161,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           }
         }
       };
-      await Promise.all(
-        Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+      // 心跳包裹：抓取期间每 4s yield 一次，避免边缘网关因为长时间静默切断响应。
+      yield* withHeartbeat(
+        Promise.all(
+          Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+        ),
+        "tabelog",
       );
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
