@@ -182,11 +182,25 @@ function StepRequirements() {
     setValue((v) => (v.trim() ? `${v.replace(/[、，,]\s*$/, "")}、${text}` : text));
   };
 
+  const isIOS = () => {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    return /iPad|iPhone|iPod/.test(ua) ||
+      (ua.includes("Mac") && typeof document !== "undefined" && "ontouchend" in document);
+  };
+
   const pickMimeType = (): string | null => {
     if (typeof MediaRecorder === "undefined") return null;
-    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+    // iOS Safari 只稳定支持 audio/mp4
+    const candidates = isIOS()
+      ? ["audio/mp4", "audio/aac", "audio/webm"]
+      : ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
     for (const t of candidates) {
-      if (MediaRecorder.isTypeSupported(t)) return t;
+      try {
+        if (MediaRecorder.isTypeSupported(t)) return t;
+      } catch {
+        // ignore
+      }
     }
     return null;
   };
