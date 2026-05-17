@@ -165,18 +165,130 @@ function StepRequirements() {
   };
 
   const [recording, setRecording] = useState(false);
-  const toggleRecording = () => {
-    if (recording) {
-      setRecording(false);
-      toast("语音输入即将上线");
-    } else {
-      setRecording(true);
-    }
+  const [transcribing, setTranscribing] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const appendText = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setValue((v) => (v.trim() ? `${v.replace(/[、，,。.\s]+$/, "")}、${trimmed}` : trimmed));
   };
 
   const appendBubble = (text: string) => {
     setValue((v) => (v.trim() ? `${v.replace(/[、，,]\s*$/, "")}、${text}` : text));
   };
+
+  const pickMimeType = (): string | null => {
+    if (typeof MediaRecorder === "undefined") return null;
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+    for (const t of candidates) {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return null;
+  };
+
+  const stopRecordingInternal = () => {
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current);
+      elapsedTimerRef.current = null;
+    }
+    if (autoStopTimerRef.current) {
+      clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== "inactive") {
+      mr.stop();
+    }
+  };
+
+  const toggleRecording = async () => {
+    if (recording) {
+      stopRecordingInternal();
+      return;
+    }
+    if (transcribing) return;
+
+    const mimeType = pickMimeType();
+    if (!mimeType) {
+      toast.error("当前浏览器不支持录音,请用 Chrome 或 Safari 16.4+");
+      return;
+    }
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+    } catch {
+      toast.error("无法访问麦克风,请检查浏览器权限");
+      return;
+    }
+
+    chunksRef.current = [];
+    const recorder = new MediaRecorder(stream, { mimeType });
+    mediaRecorderRef.current = recorder;
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+    };
+
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      setRecording(false);
+      setElapsed(0);
+
+      const blob = new Blob(chunksRef.current, { type: mimeType });
+      chunksRef.current = [];
+      if (blob.size === 0) {
+        toast.error("没有录到声音,请再试一次");
+        return;
+      }
+
+      setTranscribing(true);
+      try {
+        const fd = new FormData();
+        fd.append("audio", blob, `audio.${mimeType.includes("mp4") ? "mp4" : "webm"}`);
+        const res = await fetch("/api/transcribe", { method: "POST", body: fd });
+        const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+        if (!res.ok) {
+          if (res.status === 429) toast.error("请求过于频繁,请稍后再试");
+          else if (res.status === 402) toast.error("ElevenLabs 额度不足");
+          else toast.error(data.error || "转写失败,请重试");
+          return;
+        }
+        if (data.text) {
+          appendText(data.text);
+        } else {
+          toast.error("没识别到内容,请再试一次");
+        }
+      } catch {
+        toast.error("网络错误,转写失败");
+      } finally {
+        setTranscribing(false);
+      }
+    };
+
+    recorder.start();
+    setRecording(true);
+    setElapsed(0);
+    const startedAt = Date.now();
+    elapsedTimerRef.current = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 250);
+    autoStopTimerRef.current = setTimeout(() => stopRecordingInternal(), 60_000);
+  };
+
+  useEffect(() => () => {
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== "inactive") mr.stop();
+  }, []);
 
   return (
     <StepShell step={3} total={3} title="还有什么要求吗？">
