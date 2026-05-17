@@ -219,13 +219,31 @@ function StepRequirements() {
       return;
     }
 
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error("当前环境无法访问麦克风,请在新标签页打开或使用 HTTPS");
+      return;
+    }
+    const inIframe = typeof window !== "undefined" && window.self !== window.top;
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
       });
-    } catch {
-      toast.error("无法访问麦克风,请检查浏览器权限");
+    } catch (err) {
+      const name = (err as { name?: string })?.name || "";
+      const msg = (err as { message?: string })?.message || "";
+      console.error("getUserMedia failed:", name, msg, err);
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        toast.error(
+          inIframe
+            ? "预览窗口被禁止使用麦克风,请点击右上角\"在新标签打开\"后再试"
+            : "麦克风权限被拒绝,请在浏览器地址栏左侧允许麦克风",
+        );
+      } else if (name === "NotFoundError") {
+        toast.error("没有检测到麦克风设备");
+      } else {
+        toast.error(`无法访问麦克风: ${name || msg || "未知错误"}`);
+      }
       return;
     }
 
