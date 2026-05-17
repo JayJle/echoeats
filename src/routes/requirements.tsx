@@ -294,7 +294,7 @@ function StepRequirements() {
       setRecording(false);
       setElapsed(0);
 
-      const blob = new Blob(chunksRef.current, { type: mimeType });
+      const blob = new Blob(chunksRef.current, { type: usedMime });
       chunksRef.current = [];
       if (blob.size === 0) {
         toast.error("没有录到声音,请再试一次");
@@ -304,7 +304,12 @@ function StepRequirements() {
       setTranscribing(true);
       try {
         const fd = new FormData();
-        fd.append("audio", blob, `audio.${mimeType.includes("mp4") ? "mp4" : "webm"}`);
+        const ext = usedMime.includes("mp4") || usedMime.includes("aac")
+          ? "mp4"
+          : usedMime.includes("ogg")
+            ? "ogg"
+            : "webm";
+        fd.append("audio", blob, `audio.${ext}`);
         const res = await fetch("/api/transcribe", { method: "POST", body: fd });
         const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
         if (!res.ok) {
