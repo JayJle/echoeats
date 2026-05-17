@@ -235,6 +235,19 @@ function StepRequirements() {
     const ios = isIOS();
     const inIframe = typeof window !== "undefined" && window.self !== window.top;
 
+    // Chrome / 多数桌面浏览器:跨域 iframe 默认不允许 microphone,
+    // 直接调 getUserMedia 会被 Permissions Policy 拦截。先给用户一个明确出口。
+    if (inIframe && !ios) {
+      toast.error("预览窗口禁用了麦克风,请在新标签打开页面后再录音", {
+        action: {
+          label: "在新标签打开",
+          onClick: () => window.open(window.location.href, "_blank", "noopener,noreferrer"),
+        },
+        duration: 8000,
+      });
+      return;
+    }
+
     // ⚠️ iOS Safari 要求在用户手势的同一个同步 tick 内调用 getUserMedia,
     // 在前面 await 任何东西都会让系统把权限弹窗当成"非手势触发"拦掉。
     // 因此这里先同步发起 Promise,再 await 它。
