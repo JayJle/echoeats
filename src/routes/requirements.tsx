@@ -312,19 +312,26 @@ function StepRequirements() {
           <div className="absolute bottom-3 right-3 flex flex-col items-center gap-1">
             <button
               type="button"
-              onClick={toggleRecording}
+              onClick={() => void toggleRecording()}
+              disabled={transcribing || loading}
               aria-label={recording ? "停止录音" : "开始语音输入"}
-              className={`flex h-14 w-14 items-center justify-center rounded-full text-primary-foreground shadow-md transition-colors ${
+              className={`flex h-14 w-14 items-center justify-center rounded-full text-primary-foreground shadow-md transition-colors disabled:opacity-60 ${
                 recording
                   ? "bg-destructive hover:bg-destructive/90"
                   : "bg-primary hover:bg-primary/90"
               }`}
               style={recording ? { animation: "mic-ring 1.4s ease-out infinite" } : undefined}
             >
-              {recording ? <Square className="h-5 w-5" fill="currentColor" /> : <Mic className="h-6 w-6" />}
+              {transcribing ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : recording ? (
+                <Square className="h-5 w-5" fill="currentColor" />
+              ) : (
+                <Mic className="h-6 w-6" />
+              )}
             </button>
             <span className="text-[10px] text-muted-foreground">
-              {recording ? "录音中…" : "语音输入"}
+              {transcribing ? "转写中…" : recording ? `${elapsed}s · 点击停止` : "语音输入"}
             </span>
           </div>
         </div>
