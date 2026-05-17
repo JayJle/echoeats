@@ -182,11 +182,25 @@ function StepRequirements() {
     setValue((v) => (v.trim() ? `${v.replace(/[、，,]\s*$/, "")}、${text}` : text));
   };
 
+  const isIOS = () => {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    return /iPad|iPhone|iPod/.test(ua) ||
+      (ua.includes("Mac") && typeof document !== "undefined" && "ontouchend" in document);
+  };
+
   const pickMimeType = (): string | null => {
     if (typeof MediaRecorder === "undefined") return null;
-    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+    // iOS Safari 只稳定支持 audio/mp4
+    const candidates = isIOS()
+      ? ["audio/mp4", "audio/aac", "audio/webm"]
+      : ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
     for (const t of candidates) {
-      if (MediaRecorder.isTypeSupported(t)) return t;
+      try {
+        if (MediaRecorder.isTypeSupported(t)) return t;
+      } catch {
+        // ignore
+      }
     }
     return null;
   };
@@ -213,22 +227,25 @@ function StepRequirements() {
     }
     if (transcribing) return;
 
-    const mimeType = pickMimeType();
-    if (!mimeType) {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       toast.error("当前浏览器不支持录音,请用 Chrome 或 Safari 16.4+");
       return;
     }
 
-    if (!navigator.mediaDevices?.getUserMedia) {
-      toast.error("当前环境无法访问麦克风,请在新标签页打开或使用 HTTPS");
-      return;
-    }
+    const ios = isIOS();
     const inIframe = typeof window !== "undefined" && window.self !== window.top;
+
+    // ⚠️ iOS Safari 要求在用户手势的同一个同步 tick 内调用 getUserMedia,
+    // 在前面 await 任何东西都会让系统把权限弹窗当成"非手势触发"拦掉。
+    // 因此这里先同步发起 Promise,再 await 它。
+    const constraints: MediaStreamConstraints = ios
+      ? { audio: true } // iOS 对复杂约束容易直接 reject
+      : { audio: { echoCancellation: true, noiseSuppression: true } };
+    const streamPromise = navigator.mediaDevices.getUserMedia(constraints);
+
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
+      stream = await streamPromise;
     } catch (err) {
       const name = (err as { name?: string })?.name || "";
       const msg = (err as { message?: string })?.message || "";
@@ -237,18 +254,35 @@ function StepRequirements() {
         toast.error(
           inIframe
             ? "预览窗口被禁止使用麦克风,请点击右上角\"在新标签打开\"后再试"
-            : "麦克风权限被拒绝,请在浏览器地址栏左侧允许麦克风",
+            : ios
+              ? "请到 设置 → Safari → 麦克风 允许本站,或在弹窗里点\"允许\""
+              : "麦克风权限被拒绝,请在浏览器地址栏左侧允许麦克风",
         );
       } else if (name === "NotFoundError") {
         toast.error("没有检测到麦克风设备");
+      } else if (name === "NotReadableError") {
+        toast.error("麦克风被其它应用占用,请关闭后重试");
       } else {
         toast.error(`无法访问麦克风: ${name || msg || "未知错误"}`);
       }
       return;
     }
 
+    // 拿到流之后再挑 mimeType;iOS 上交给浏览器自己决定最稳
+    const mimeType = pickMimeType();
     chunksRef.current = [];
-    const recorder = new MediaRecorder(stream, { mimeType });
+    let recorder: MediaRecorder;
+    try {
+      recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+    } catch (err) {
+      console.error("MediaRecorder init failed:", err);
+      stream.getTracks().forEach((t) => t.stop());
+      toast.error("当前浏览器无法录音,请升级到 Safari 16.4+ 或换 Chrome");
+      return;
+    }
+    const usedMime = recorder.mimeType || mimeType || "audio/webm";
     mediaRecorderRef.current = recorder;
 
     recorder.ondataavailable = (e) => {
@@ -260,7 +294,7 @@ function StepRequirements() {
       setRecording(false);
       setElapsed(0);
 
-      const blob = new Blob(chunksRef.current, { type: mimeType });
+      const blob = new Blob(chunksRef.current, { type: usedMime });
       chunksRef.current = [];
       if (blob.size === 0) {
         toast.error("没有录到声音,请再试一次");
@@ -270,7 +304,12 @@ function StepRequirements() {
       setTranscribing(true);
       try {
         const fd = new FormData();
-        fd.append("audio", blob, `audio.${mimeType.includes("mp4") ? "mp4" : "webm"}`);
+        const ext = usedMime.includes("mp4") || usedMime.includes("aac")
+          ? "mp4"
+          : usedMime.includes("ogg")
+            ? "ogg"
+            : "webm";
+        fd.append("audio", blob, `audio.${ext}`);
         const res = await fetch("/api/transcribe", { method: "POST", body: fd });
         const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
         if (!res.ok) {
