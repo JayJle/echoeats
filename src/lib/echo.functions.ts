@@ -666,18 +666,25 @@ const ResultsSchema = z.object({
 const AiPickSchema = z.object({
   placeId: z.string(),
   matchScore: z.number().min(0).max(100),
-  matchTier: z.enum(["perfect", "high", "partial"]),
+  matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
   aiSummary: z.string(),
   pros: z.array(z.string()).default([]),
   cons: z.array(z.string()).default([]),
   matchDetails: z
-    .array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) }))
+    .array(
+      z.object({
+        label: z.string(),
+        // 模型偶发返回 "unknown"/"fail"/"pending" 等非白名单值——一律兜底为 warn，
+        // 避免整个 AI 排序因为 schema 校验失败被打掉。下游归一化时统一映射为 warn。
+        status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
+      }),
+    )
     .default([]),
   hardFilterChecks: z
     .array(
       z.object({
         filter: z.string(),
-        status: z.enum(["ok", "unknown", "fail"]),
+        status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
         note: z.string().optional(),
       }),
     )
@@ -1352,19 +1359,20 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 - aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台。
 - **Tabelog 信号（仅日本店铺可能有）**：candidate.tabelog 是来自 Tabelog（食べログ）的独立信号。**仅 tabelog.priceJPY 参与硬过滤**（见上方"价格判断"）；tabelog.rating / reviewCount / summary **不参与硬过滤、不参与匹配度评分**，只作为附加信息展示给用户，仅可在 aiSummary 里轻量提及（"Tabelog 评分 X.XX"），且必须忠实于原文。Tabelog 普遍偏低，3.5+ 已是优质店；不要把 Tabelog 评分和 Google 评分相加平均。tabelog 为 null 时不影响判断，不要因此扣分。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
-- matchDetails: 3-6 条短描述，每条带 status (ok/warn)。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。**严格限定范围**：只能围绕用户实际提到的需求（hardFilters / softPreferences / negativeFilters / dishPreferences）来写。**绝对禁止**对用户没有提到的维度发出 warn 或提醒——例如用户没提预算/价格，就不准出现"价格偏高""人均较贵""超出预算"之类的条目；用户没提氛围，就不准提"氛围一般"；用户没提服务，就不准提"服务慢"。如果某维度用户没提，哪怕网评有相关吐槽，也只能放进 cons，不能进 matchDetails。
+- matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**，禁止写 "unknown" / "fail" / "pending" 等其它值；信息不足或轻微不达标的条目一律标 warn。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。**严格限定范围**：只能围绕用户实际提到的需求（hardFilters / softPreferences / negativeFilters / dishPreferences）来写。**绝对禁止**对用户没有提到的维度发出 warn 或提醒——例如用户没提预算/价格，就不准出现"价格偏高""人均较贵""超出预算"之类的条目；用户没提氛围，就不准提"氛围一般"；用户没提服务，就不准提"服务慢"。如果某维度用户没提，哪怕网评有相关吐槽，也只能放进 cons，不能进 matchDetails。
 
 输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
 
     yield { type: "stage", stage: "rank" };
     let ranking: z.infer<typeof AiRankingSchema>;
+    const rankStartedAt = Date.now();
     try {
       // 用心跳包裹 AI 排序：Gemini 大 prompt 偶尔 15-30s，避免边缘网关静默切流。
       const result = yield* withHeartbeat(
         generateText({
           model,
           prompt,
-          maxOutputTokens: 20000,
+          maxOutputTokens: 12000,
           output: Output.object({
             schema: AiRankingSchema,
             name: "echo_eats_ranking",
@@ -1374,6 +1382,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         "rank",
       );
       ranking = result.output;
+      console.log(`[Echo/AI-rank] Output.object succeeded in ${Date.now() - rankStartedAt}ms`);
     } catch (e) {
       const firstErr = e instanceof Error ? e.message : String(e);
       console.warn(`[Echo/AI-rank] Output.object failed (${firstErr}), retrying with raw text…`);
@@ -1385,7 +1394,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             prompt:
               prompt +
               `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-            maxOutputTokens: 20000,
+            maxOutputTokens: 12000,
           }),
           "rank-fallback",
         );
@@ -1490,7 +1499,11 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               }
               return { label: `？ 硬条件待核实：${h.text}${noteSuffix}`, status: "warn" as const };
             });
-            const aiDetails = (pick.matchDetails ?? []).slice(0, 6);
+            // 归一化：模型偶发返回的 "unknown" 在前端没对应样式，统一映射为 warn。
+            const aiDetails = (pick.matchDetails ?? []).slice(0, 6).map((d) => ({
+              label: d.label,
+              status: (d.status === "ok" ? "ok" : "warn") as "ok" | "warn",
+            }));
             const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);
 
             const review = reviewById.get(p.placeId) ?? null;
