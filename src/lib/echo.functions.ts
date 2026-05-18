@@ -1365,13 +1365,14 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 
     yield { type: "stage", stage: "rank" };
     let ranking: z.infer<typeof AiRankingSchema>;
+    const rankStartedAt = Date.now();
     try {
       // 用心跳包裹 AI 排序：Gemini 大 prompt 偶尔 15-30s，避免边缘网关静默切流。
       const result = yield* withHeartbeat(
         generateText({
           model,
           prompt,
-          maxOutputTokens: 20000,
+          maxOutputTokens: 12000,
           output: Output.object({
             schema: AiRankingSchema,
             name: "echo_eats_ranking",
@@ -1381,6 +1382,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         "rank",
       );
       ranking = result.output;
+      console.log(`[Echo/AI-rank] Output.object succeeded in ${Date.now() - rankStartedAt}ms`);
     } catch (e) {
       const firstErr = e instanceof Error ? e.message : String(e);
       console.warn(`[Echo/AI-rank] Output.object failed (${firstErr}), retrying with raw text…`);
