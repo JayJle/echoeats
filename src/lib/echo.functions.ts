@@ -666,18 +666,25 @@ const ResultsSchema = z.object({
 const AiPickSchema = z.object({
   placeId: z.string(),
   matchScore: z.number().min(0).max(100),
-  matchTier: z.enum(["perfect", "high", "partial"]),
+  matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
   aiSummary: z.string(),
   pros: z.array(z.string()).default([]),
   cons: z.array(z.string()).default([]),
   matchDetails: z
-    .array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) }))
+    .array(
+      z.object({
+        label: z.string(),
+        // 模型偶发返回 "unknown"/"fail"/"pending" 等非白名单值——一律兜底为 warn，
+        // 避免整个 AI 排序因为 schema 校验失败被打掉。下游归一化时统一映射为 warn。
+        status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
+      }),
+    )
     .default([]),
   hardFilterChecks: z
     .array(
       z.object({
         filter: z.string(),
-        status: z.enum(["ok", "unknown", "fail"]),
+        status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
         note: z.string().optional(),
       }),
     )
