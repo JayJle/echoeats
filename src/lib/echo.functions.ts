@@ -1499,7 +1499,11 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
               }
               return { label: `？ 硬条件待核实：${h.text}${noteSuffix}`, status: "warn" as const };
             });
-            const aiDetails = (pick.matchDetails ?? []).slice(0, 6);
+            // 归一化：模型偶发返回的 "unknown" 在前端没对应样式，统一映射为 warn。
+            const aiDetails = (pick.matchDetails ?? []).slice(0, 6).map((d) => ({
+              label: d.label,
+              status: (d.status === "ok" ? "ok" : "warn") as "ok" | "warn",
+            }));
             const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);
 
             const review = reviewById.get(p.placeId) ?? null;
