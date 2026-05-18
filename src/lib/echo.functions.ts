@@ -1364,7 +1364,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         generateText({
           model,
           prompt,
-          maxOutputTokens: 10000,
+          maxOutputTokens: 20000,
           output: Output.object({
             schema: AiRankingSchema,
             name: "echo_eats_ranking",
@@ -1378,7 +1378,6 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       const firstErr = e instanceof Error ? e.message : String(e);
       console.warn(`[Echo/AI-rank] Output.object failed (${firstErr}), retrying with raw text…`);
       // 兜底：用原始文本生成 + 正则抽 JSON 再 zod 校验。
-      // Gemini 偶尔会输出多余前后缀文字导致 Output.object 解析失败。
       try {
         const fallback = yield* withHeartbeat(
           generateText({
@@ -1386,10 +1385,16 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             prompt:
               prompt +
               `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-            maxOutputTokens: 10000,
+            maxOutputTokens: 20000,
           }),
           "rank-fallback",
         );
+        const finishReason = (fallback as { finishReason?: string }).finishReason;
+        if (finishReason === "length" || finishReason === "max-tokens") {
+          throw new Error(
+            `模型输出被截断（finishReason=${finishReason}），请缩小需求或减少候选`,
+          );
+        }
         const text = fallback.text || "";
         const jsonText = (() => {
           const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1399,7 +1404,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         })();
         const parsed = JSON.parse(jsonText);
         ranking = AiRankingSchema.parse(parsed);
-        console.log(`[Echo/AI-rank] fallback parse succeeded`);
+        console.log(`[Echo/AI-rank] fallback parse succeeded (finishReason=${finishReason})`);
       } catch (e2) {
         const msg = e2 instanceof Error ? e2.message : String(e2);
         console.error(`[Echo/AI-rank] fallback also failed: ${msg}`);
@@ -1407,7 +1412,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           type: "result",
           payload: {
             groups: [],
-            error: `AI 排序失败：${firstErr}`,
+            error: `AI 排序失败：模型输出被截断或返回非 JSON，请再试一次或缩小需求（${msg.slice(0, 120)}）`,
             suggestions: FALLBACK_SUGGESTIONS,
           },
         };
