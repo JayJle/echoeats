@@ -1224,47 +1224,67 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
 
+    // 限制送给 AI 的候选数量：每个 cuisine 分组按 (rating × log(reviewCount)) 排序取前 25
+    // AI 排序输出本来也只用 top N，输入侧超过 ~60 家纯属浪费 token、加大输出截断风险。
+    const PER_CUISINE_CAP = 25;
     const candidatesForPrompt = placeResults
       .filter((r) => r.places.length)
-      .map((r) => ({
-        cuisine: r.cuisine,
-        candidates: r.places.map((p) => {
-          const review = reviewById.get(p.placeId) ?? null;
-          const tabelog = tabelogById.get(p.placeId) ?? null;
-          return {
-            placeId: p.placeId,
-            name: p.name,
-            address: p.address,
-            rating: p.rating,
-            userRatingCount: p.userRatingCount,
-            priceLevel: priceLevelLabel(p.priceLevel),
-            priceFromReviews:
-              review?.priceLevel != null
+      .map((r) => {
+        const ranked = [...r.places].sort((a, b) => {
+          const sa = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
+          const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
+          return sb - sa;
+        });
+        return {
+          cuisine: r.cuisine,
+          candidates: ranked.slice(0, PER_CUISINE_CAP).map((p) => {
+            const review = reviewById.get(p.placeId) ?? null;
+            const tabelog = tabelogById.get(p.placeId) ?? null;
+            return {
+              placeId: p.placeId,
+              name: p.name,
+              address: p.address,
+              rating: p.rating,
+              userRatingCount: p.userRatingCount,
+              priceLevel: priceLevelLabel(p.priceLevel),
+              priceFromReviews:
+                review?.priceLevel != null
+                  ? {
+                      amount: review.priceLevel,
+                      currency: review.priceCurrency,
+                      context: review.priceContext,
+                    }
+                  : null,
+              openNow: p.openNow,
+              primaryType: p.primaryType,
+              editorialSummary: p.editorialSummary,
+              realWorldReviews: review,
+              tabelog: tabelog
                 ? {
-                    amount: review.priceLevel,
-                    currency: review.priceCurrency,
-                    context: review.priceContext,
+                    rating: tabelog.rating,
+                    reviewCount: tabelog.reviewCount,
+                    priceRange: tabelog.priceRange,
+                    priceJPY: tabelog.priceJPY,
+                    summary: tabelog.summary,
                   }
                 : null,
-            openNow: p.openNow,
-            primaryType: p.primaryType,
-            editorialSummary: p.editorialSummary,
-            realWorldReviews: review,
-            tabelog: tabelog
-              ? {
-                  rating: tabelog.rating,
-                  reviewCount: tabelog.reviewCount,
-                  priceRange: tabelog.priceRange,
-                  priceJPY: tabelog.priceJPY,
-                  summary: tabelog.summary,
-                }
-              : null,
-          };
-        }),
-      }));
+            };
+          }),
+        };
+      });
+    const totalCandidatesForPrompt = candidatesForPrompt.reduce(
+      (n, g) => n + g.candidates.length,
+      0,
+    );
+    console.log(
+      `[Echo/AI-rank] sending ${totalCandidatesForPrompt} candidates across ${candidatesForPrompt.length} cuisine(s) to model`,
+    );
 
     const gateway = createLovableAiGatewayProvider(aiKey);
-    const model = gateway("google/gemini-3-flash-preview");
+    // gemini-3-flash-preview 在当前 AI Gateway 下不支持 responseFormat JSON Schema
+    // （会触发 "Output.object failed: No output generated."），换回稳定的 2.5-flash。
+    const model = gateway("google/gemini-2.5-flash");
+
 
     const hardFiltersList = data.hardFilters.map((h) => h.text);
     const hardFiltersJson = JSON.stringify(
@@ -1344,7 +1364,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         generateText({
           model,
           prompt,
-          maxOutputTokens: 10000,
+          maxOutputTokens: 20000,
           output: Output.object({
             schema: AiRankingSchema,
             name: "echo_eats_ranking",
@@ -1358,7 +1378,6 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       const firstErr = e instanceof Error ? e.message : String(e);
       console.warn(`[Echo/AI-rank] Output.object failed (${firstErr}), retrying with raw text…`);
       // 兜底：用原始文本生成 + 正则抽 JSON 再 zod 校验。
-      // Gemini 偶尔会输出多余前后缀文字导致 Output.object 解析失败。
       try {
         const fallback = yield* withHeartbeat(
           generateText({
@@ -1366,10 +1385,16 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             prompt:
               prompt +
               `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-            maxOutputTokens: 10000,
+            maxOutputTokens: 20000,
           }),
           "rank-fallback",
         );
+        const finishReason = (fallback as { finishReason?: string }).finishReason;
+        if (finishReason === "length" || finishReason === "max-tokens") {
+          throw new Error(
+            `模型输出被截断（finishReason=${finishReason}），请缩小需求或减少候选`,
+          );
+        }
         const text = fallback.text || "";
         const jsonText = (() => {
           const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1379,7 +1404,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         })();
         const parsed = JSON.parse(jsonText);
         ranking = AiRankingSchema.parse(parsed);
-        console.log(`[Echo/AI-rank] fallback parse succeeded`);
+        console.log(`[Echo/AI-rank] fallback parse succeeded (finishReason=${finishReason})`);
       } catch (e2) {
         const msg = e2 instanceof Error ? e2.message : String(e2);
         console.error(`[Echo/AI-rank] fallback also failed: ${msg}`);
@@ -1387,7 +1412,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           type: "result",
           payload: {
             groups: [],
-            error: `AI 排序失败：${firstErr}`,
+            error: `AI 排序失败：模型输出被截断或返回非 JSON，请再试一次或缩小需求（${msg.slice(0, 120)}）`,
             suggestions: FALLBACK_SUGGESTIONS,
           },
         };
