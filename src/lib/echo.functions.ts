@@ -1224,47 +1224,67 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
 
+    // 限制送给 AI 的候选数量：每个 cuisine 分组按 (rating × log(reviewCount)) 排序取前 25
+    // AI 排序输出本来也只用 top N，输入侧超过 ~60 家纯属浪费 token、加大输出截断风险。
+    const PER_CUISINE_CAP = 25;
     const candidatesForPrompt = placeResults
       .filter((r) => r.places.length)
-      .map((r) => ({
-        cuisine: r.cuisine,
-        candidates: r.places.map((p) => {
-          const review = reviewById.get(p.placeId) ?? null;
-          const tabelog = tabelogById.get(p.placeId) ?? null;
-          return {
-            placeId: p.placeId,
-            name: p.name,
-            address: p.address,
-            rating: p.rating,
-            userRatingCount: p.userRatingCount,
-            priceLevel: priceLevelLabel(p.priceLevel),
-            priceFromReviews:
-              review?.priceLevel != null
+      .map((r) => {
+        const ranked = [...r.places].sort((a, b) => {
+          const sa = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
+          const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
+          return sb - sa;
+        });
+        return {
+          cuisine: r.cuisine,
+          candidates: ranked.slice(0, PER_CUISINE_CAP).map((p) => {
+            const review = reviewById.get(p.placeId) ?? null;
+            const tabelog = tabelogById.get(p.placeId) ?? null;
+            return {
+              placeId: p.placeId,
+              name: p.name,
+              address: p.address,
+              rating: p.rating,
+              userRatingCount: p.userRatingCount,
+              priceLevel: priceLevelLabel(p.priceLevel),
+              priceFromReviews:
+                review?.priceLevel != null
+                  ? {
+                      amount: review.priceLevel,
+                      currency: review.priceCurrency,
+                      context: review.priceContext,
+                    }
+                  : null,
+              openNow: p.openNow,
+              primaryType: p.primaryType,
+              editorialSummary: p.editorialSummary,
+              realWorldReviews: review,
+              tabelog: tabelog
                 ? {
-                    amount: review.priceLevel,
-                    currency: review.priceCurrency,
-                    context: review.priceContext,
+                    rating: tabelog.rating,
+                    reviewCount: tabelog.reviewCount,
+                    priceRange: tabelog.priceRange,
+                    priceJPY: tabelog.priceJPY,
+                    summary: tabelog.summary,
                   }
                 : null,
-            openNow: p.openNow,
-            primaryType: p.primaryType,
-            editorialSummary: p.editorialSummary,
-            realWorldReviews: review,
-            tabelog: tabelog
-              ? {
-                  rating: tabelog.rating,
-                  reviewCount: tabelog.reviewCount,
-                  priceRange: tabelog.priceRange,
-                  priceJPY: tabelog.priceJPY,
-                  summary: tabelog.summary,
-                }
-              : null,
-          };
-        }),
-      }));
+            };
+          }),
+        };
+      });
+    const totalCandidatesForPrompt = candidatesForPrompt.reduce(
+      (n, g) => n + g.candidates.length,
+      0,
+    );
+    console.log(
+      `[Echo/AI-rank] sending ${totalCandidatesForPrompt} candidates across ${candidatesForPrompt.length} cuisine(s) to model`,
+    );
 
     const gateway = createLovableAiGatewayProvider(aiKey);
-    const model = gateway("google/gemini-3-flash-preview");
+    // gemini-3-flash-preview 在当前 AI Gateway 下不支持 responseFormat JSON Schema
+    // （会触发 "Output.object failed: No output generated."），换回稳定的 2.5-flash。
+    const model = gateway("google/gemini-2.5-flash");
+
 
     const hardFiltersList = data.hardFilters.map((h) => h.text);
     const hardFiltersJson = JSON.stringify(
