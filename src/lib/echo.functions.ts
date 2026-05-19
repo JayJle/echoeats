@@ -1453,7 +1453,9 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           type: "result",
           payload: {
             groups: [],
-            error: `AI 排序失败：模型输出被截断或返回非 JSON，请再试一次或缩小需求（${msg.slice(0, 120)}）`,
+            error: isEn
+              ? `AI ranking failed: the model output was truncated or returned non-JSON. Please retry or narrow your request (${msg.slice(0, 120)})`
+              : `AI 排序失败：模型输出被截断或返回非 JSON，请再试一次或缩小需求（${msg.slice(0, 120)}）`,
             suggestions: FALLBACK_SUGGESTIONS,
           },
         };
