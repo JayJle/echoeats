@@ -707,6 +707,11 @@ const AiRankingSchema = z.object({
   ),
 });
 
+// 单 cuisine 分组的 AI 输出 schema：用于按 cuisine 分批并行调用，避免一次性输出过长触发截断。
+const AiPickGroupSchema = z.object({
+  picks: z.array(AiPickSchema),
+});
+
 function tierFromScore(score: number): "perfect" | "high" | "partial" {
   if (score >= 92) return "perfect";
   if (score >= 80) return "high";
