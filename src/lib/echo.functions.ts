@@ -789,10 +789,14 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
   return links.slice(0, 6);
 }
 
-function formatPriceFromReview(review: ReviewSummary | null): string | null {
+function formatPriceFromReview(review: ReviewSummary | null, isEn = false): string | null {
   if (!review || review.priceLevel == null) return null;
   const sym = review.priceCurrency ? CURRENCY_SYMBOL[review.priceCurrency] ?? "" : "";
   const amount = `${sym}${review.priceLevel}`;
+  if (isEn) {
+    const ctx = review.priceContext ? ` (${review.priceContext}, from reviews)` : " (from reviews)";
+    return `${amount}${ctx}`;
+  }
   const ctx = review.priceContext ? `（${review.priceContext}，来自网评）` : "（来自网评）";
   return `${amount}${ctx}`;
 }
@@ -801,6 +805,7 @@ function candidateRatings(
   p: PlaceCandidate,
   review: ReviewSummary | null,
   tabelog: TabelogInfo | null,
+  isEn = false,
 ) {
   const score =
     p.rating != null
@@ -808,10 +813,13 @@ function candidateRatings(
       : null;
   const dpScore =
     review?.dianpingRating != null
-      ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
+      ? `${review.dianpingRating.toFixed(1)} / 5${isEn ? " (reviews)" : "（网评）"}`
       : null;
-  const priceFromReview = formatPriceFromReview(review);
-  const priceScore = priceFromReview ?? null;
+  const reviewPrice = formatPriceFromReview(review, isEn);
+  const googleFallback = priceLevelLabel(p.priceLevel);
+  const priceScore =
+    reviewPrice ??
+    (googleFallback ? `${googleFallback}${isEn ? " (Google)" : "（Google）"}` : null);
   const tabelogScore =
     tabelog?.rating != null
       ? `${tabelog.rating} / 5${tabelog.reviewCount ? ` (${tabelog.reviewCount})` : ""}`
@@ -819,8 +827,8 @@ function candidateRatings(
   return [
     { platform: "Google Maps", score },
     { platform: "Tabelog", score: tabelogScore },
-    { platform: "大众点评", score: dpScore },
-    { platform: "人均价格", score: priceScore },
+    { platform: isEn ? "Dianping" : "大众点评", score: dpScore },
+    { platform: isEn ? "Avg. price" : "人均价格", score: priceScore },
   ];
 }
 
