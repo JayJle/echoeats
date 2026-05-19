@@ -107,7 +107,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 - 城市：${data.city}
 - 料理类型：${data.cuisines.length ? data.cuisines.join("、") : "（用户跳过了料理选择，请从「其它需求」推断 1-3 个料理候选；推断不出来就填 [\"餐厅\"]）"}
-- 日期：${data.date || "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）"}
+- 日期：${data.date || (data.uiLanguage === "en" ? "（用户未指定，dateTime 字段必须填英文字符串 \"Unspecified\"，不要填中文，也不要把日期/营业时间当 hardFilter）" : "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）")}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
 请把需求结构化为 JSON。**所有自由文本字段（hardFilters/softPreferences/negativeFilters/dishPreferences/cuisineLevelConstraints/searchStrategy/cuisines/dateTime/visitTime.raw/visitTime.evidence 中所有人类可读内容）必须用 ${data.uiLanguage === "en" ? "English（英文）" : "简体中文"} 撰写**。注意：\`language\` 字段（BCP47 搜索目标语言，用于 Google Maps）按城市本地语言填写，不受此影响；\`visitTime.evidence\` 必须是用户原文片段，保持原文不翻译。如果用户没提到某类，返回空数组。
