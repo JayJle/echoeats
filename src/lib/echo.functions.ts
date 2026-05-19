@@ -73,6 +73,7 @@ const ParsedSchema = z.object({
   language: z.string().default(""), // BCP 47
   mode: z.enum(["quick", "deep"]).catch("deep").default("deep"),
   visitTime: VisitTimeSchema,
+  uiLanguage: z.enum(["zh", "en"]).catch("zh").default("zh"),
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
