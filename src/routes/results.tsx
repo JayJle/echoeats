@@ -17,36 +17,27 @@ import {
 } from "@/components/ui/alert-dialog";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
+import { useT } from "@/lib/i18n/context";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
     meta: [
-      { title: "Echo Eats — 搜索结果" },
-      { name: "description", content: "AI 跨平台搜索后的餐厅推荐结果。" },
+      { title: "Echo Eats — Results" },
+      { name: "description", content: "Restaurant picks from an AI cross-platform search." },
     ],
   }),
   component: ResultsPage,
 });
 
-const TIER_LABEL: Record<Restaurant["matchTier"], string> = {
-  perfect: "★ 完全匹配",
-  high: "高度匹配",
-  partial: "部分匹配",
-};
-
-const TIER_CLASS: Record<Restaurant["matchTier"], string> = {
-  perfect: "bg-primary text-primary-foreground",
-  high: "bg-accent text-accent-foreground",
-  partial: "bg-secondary text-secondary-foreground",
-};
-
 function todayHoursLabel(
   weekdayDescriptions: string[] | null | undefined,
   openNow: boolean,
+  t: (k: string, v?: Record<string, string | number>) => string,
 ): string {
   if (!weekdayDescriptions?.length) {
-    return openNow ? "营业中（时间未公开）" : "营业时间未公开";
+    return openNow ? t("results.hoursOpenNoInfo") : t("results.hoursClosed");
   }
   const idx = (new Date().getDay() + 6) % 7;
   const line = weekdayDescriptions[idx] ?? weekdayDescriptions[0];
@@ -55,6 +46,7 @@ function todayHoursLabel(
 
 function ResultsPage() {
   const navigate = useNavigate();
+  const { lang, t } = useT();
   const parsed = useQueryStore((s) => s.parsed);
   const results = useQueryStore((s) => s.results);
   const freeText = useQueryStore((s) => s.freeText);
@@ -82,16 +74,14 @@ function ResultsPage() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center px-6">
         <div className="max-w-md text-center space-y-4">
-          <h1 className="text-xl font-semibold tracking-tight">还没有搜索结果</h1>
-          <p className="text-sm text-muted-foreground">
-            会话状态已失效或还未开始搜索，请回到首页重新发起。
-          </p>
+          <h1 className="text-xl font-semibold tracking-tight">{t("results.empty.title")}</h1>
+          <p className="text-sm text-muted-foreground">{t("results.empty.desc")}</p>
           <div className="flex justify-center gap-2">
             <Link to="/" className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-              回到首页
+              {t("results.empty.home")}
             </Link>
             <Link to="/requirements" className="inline-flex items-center justify-center rounded-md border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
-              去填写需求
+              {t("results.empty.requirements")}
             </Link>
           </div>
         </div>
@@ -100,6 +90,17 @@ function ResultsPage() {
   }
 
   const isEmpty = results.groups.length === 0;
+  const TIER_LABEL: Record<Restaurant["matchTier"], string> = {
+    perfect: t("results.tier.perfect"),
+    high: t("results.tier.high"),
+    partial: t("results.tier.partial"),
+  };
+  const TIER_CLASS: Record<Restaurant["matchTier"], string> = {
+    perfect: "bg-primary text-primary-foreground",
+    high: "bg-accent text-accent-foreground",
+    partial: "bg-secondary text-secondary-foreground",
+  };
+  const weekdayShort = t("results.weekday.short").split(",");
 
   const cancelRefine = () => {
     abortRef.current?.abort();
@@ -107,6 +108,8 @@ function ResultsPage() {
     setRefining(false);
     setRefineError(null);
   };
+
+  const buildParsedForSearch = () => ({ ...parsed, uiLanguage: lang });
 
   const runSearchAgain = async () => {
     setRefineError(null);
@@ -117,14 +120,14 @@ function ResultsPage() {
     const ac = new AbortController();
     abortRef.current = ac;
     try {
-      const iter = await searchFn({ data: parsed, signal: ac.signal } as Parameters<typeof searchFn>[0]);
+      const iter = await searchFn({ data: buildParsedForSearch(), signal: ac.signal } as Parameters<typeof searchFn>[0]);
       const response = await consumeSearchStream(iter);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       setResults(response);
     } catch (err) {
       if (ac.signal.aborted || myRunId !== runIdRef.current) return;
-      const msg = err instanceof Error ? err.message : "搜索失败";
-      setRefineError(msg.includes("429") ? "请求过于频繁，请稍后再试" : msg);
+      const msg = err instanceof Error ? err.message : t("err.fetchFailed");
+      setRefineError(msg.includes("429") ? t("err.rateLimited") : msg);
     } finally {
       if (myRunId === runIdRef.current) setRefining(false);
     }
@@ -150,13 +153,11 @@ function ResultsPage() {
     abortRef.current = ac;
     try {
       const newParsed = await parseFn({
-        data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: text },
+        data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: text, uiLanguage: lang },
         signal: ac.signal,
       } as Parameters<typeof parseFn>[0]);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
 
-      // 覆盖式更新：新的需求文字就是完整描述,直接用新解析覆盖旧条件。
-      // 仅在新解析疑似为空(解析失败)时回退到旧值,避免清空。
       const newTotal =
         (newParsed.hardFilters?.length ?? 0) +
         (newParsed.softPreferences?.length ?? 0) +
@@ -168,14 +169,14 @@ function ResultsPage() {
       const parseLikelyEmpty = newTotal === 0 && oldTotal > 0;
 
       const merged = parseLikelyEmpty
-        ? { ...parsed, mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep" }
+        ? { ...parsed, mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep", uiLanguage: lang }
         : {
             ...newParsed,
             city: newParsed.city || parsed.city,
             cuisines: newParsed.cuisines?.length ? newParsed.cuisines : parsed.cuisines,
             mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep",
+            uiLanguage: lang,
           };
-      console.log("[applyEdit] overwrite", { oldTotal, newTotal, parseLikelyEmpty });
       setFreeText(text);
       setParsed(merged);
       const iter = await searchFn({ data: merged, signal: ac.signal } as Parameters<typeof searchFn>[0]);
@@ -185,9 +186,9 @@ function ResultsPage() {
       setEditing(false);
     } catch (err) {
       if (ac.signal.aborted || myRunId !== runIdRef.current) return;
-      const msg = err instanceof Error ? err.message : "搜索失败";
-      if (msg.includes("429")) setRefineError("请求过于频繁，请稍后再试");
-      else if (msg.includes("402")) setRefineError("AI 额度已用完，请在 Settings → Workspace 添加额度");
+      const msg = err instanceof Error ? err.message : t("err.fetchFailed");
+      if (msg.includes("429")) setRefineError(t("err.rateLimited"));
+      else if (msg.includes("402")) setRefineError(t("err.quotaExhausted"));
       else setRefineError(msg);
     } finally {
       if (myRunId === runIdRef.current) setRefining(false);
@@ -206,28 +207,27 @@ function ResultsPage() {
           Echo <span className="text-primary">Eats</span>
         </Link>
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <Button
             variant="outline"
             size="sm"
             onClick={runSearchAgain}
             disabled={refining}
           >
-            ↻ 再次搜索
+            {t("results.header.refetch")}
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm">重新开始</Button>
+              <Button variant="outline" size="sm">{t("results.header.restart")}</Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>确定要重新开始吗？</AlertDialogTitle>
-                <AlertDialogDescription>
-                  当前的搜索条件和结果将被清空，回到第一步重新输入。
-                </AlertDialogDescription>
+                <AlertDialogTitle>{t("results.confirm.title")}</AlertDialogTitle>
+                <AlertDialogDescription>{t("results.confirm.desc")}</AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction onClick={restartFlow}>确认重新开始</AlertDialogAction>
+                <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+                <AlertDialogAction onClick={restartFlow}>{t("results.confirm.ok")}</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -237,9 +237,9 @@ function ResultsPage() {
       {refining && (
         <div className="fixed inset-0 z-50 bg-background/70 backdrop-blur-sm flex items-center justify-center">
           <div className="bg-card border border-border rounded-2xl px-6 py-5 shadow-lg text-sm flex flex-col items-center gap-3">
-            <p>AI 正在重新搜索餐厅…</p>
+            <p>{t("results.refining")}</p>
             <Button type="button" variant="ghost" size="sm" onClick={cancelRefine}>
-              取消搜索
+              {t("results.cancelSearch")}
             </Button>
           </div>
         </div>
@@ -249,7 +249,7 @@ function ResultsPage() {
         <div ref={conditionsRef} className="mb-6 bg-card border border-border rounded-2xl p-6">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-xs uppercase tracking-wider text-muted-foreground">搜索结果</p>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">{t("results.label")}</p>
               <h1 className="mt-1 text-2xl font-semibold tracking-tight flex flex-wrap items-center gap-x-2 gap-y-2">
                 <span>{parsed.city} ·</span>
                 {parsed.cuisines.map((c, i) => (
@@ -271,12 +271,12 @@ function ResultsPage() {
           </div>
           {parsed.visitTime?.weekday != null && parsed.visitTime?.hhmm && (
             <div className="mt-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">营业时间</p>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.openHours")}</p>
               <div className="flex flex-wrap gap-1.5">
                 <span className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
-                  🕐 {parsed.visitTime.raw || "所选时段"}{" "}
+                  🕐 {parsed.visitTime.raw || t("results.visit.defaultRaw")}{" "}
                   <span className="opacity-60">
-                    · {["周日", "周一", "周二", "周三", "周四", "周五", "周六"][parsed.visitTime.weekday]} {parsed.visitTime.hhmm} 营业
+                    {t("results.weekdayPrefix", { day: weekdayShort[parsed.visitTime.weekday], time: parsed.visitTime.hhmm })}
                   </span>
                 </span>
               </div>
@@ -284,7 +284,7 @@ function ResultsPage() {
           )}
           {parsed.hardFilters.length > 0 && (
             <div className="mt-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">硬条件</p>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.hardFilters")}</p>
               <div className="flex flex-wrap gap-1.5">
                 {parsed.hardFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
@@ -296,7 +296,7 @@ function ResultsPage() {
           )}
           {parsed.softPreferences.length > 0 && (
             <div className="mt-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">偏好</p>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.softPrefs")}</p>
               <div className="flex flex-wrap gap-1.5">
                 {parsed.softPreferences.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground">
@@ -308,7 +308,7 @@ function ResultsPage() {
           )}
           {parsed.negativeFilters.length > 0 && (
             <div className="mt-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">排除</p>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.negative")}</p>
               <div className="flex flex-wrap gap-1.5">
                 {parsed.negativeFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
@@ -320,7 +320,7 @@ function ResultsPage() {
           )}
           {parsed.dishPreferences.length > 0 && (
             <div className="mt-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">菜品偏好</p>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.dishes")}</p>
               <div className="flex flex-wrap gap-1.5">
                 {parsed.dishPreferences.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-accent text-accent-foreground">
@@ -332,7 +332,7 @@ function ResultsPage() {
           )}
           {freeText && !editing && (
             <details className="mt-3">
-              <summary className="text-[11px] uppercase tracking-wider text-muted-foreground cursor-pointer hover:text-foreground">原始描述 ▾</summary>
+              <summary className="text-[11px] uppercase tracking-wider text-muted-foreground cursor-pointer hover:text-foreground">{t("results.rawDesc")}</summary>
               <p className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">{freeText}</p>
             </details>
           )}
@@ -345,13 +345,13 @@ function ResultsPage() {
               className="mt-5 w-full"
             >
               <Pencil className="w-4 h-4 mr-2" />
-              编辑需求并重新搜索
+              {t("results.edit")}
             </Button>
           )}
           {editing && (
             <div className="mt-4 pt-4 border-t border-border space-y-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                改写需求(原话已填好,可以直接改)
+                {t("results.editTitle")}
               </p>
               <Textarea
                 autoFocus
@@ -360,11 +360,9 @@ function ResultsPage() {
                 maxLength={1000}
                 disabled={refining}
                 className="min-h-[120px] text-sm resize-none"
-                placeholder="例如:把人均提高到 2 万日元,改成想要安静的店,去掉有蟹的硬要求…"
+                placeholder={t("results.editPlaceholder")}
               />
-              <p className="text-xs text-muted-foreground">
-                改完点应用,会用新条件重新排一次,店铺会刷新。
-              </p>
+              <p className="text-xs text-muted-foreground">{t("results.editHint")}</p>
               <div className="flex justify-end gap-2">
                 <Button
                   type="button"
@@ -376,11 +374,11 @@ function ResultsPage() {
                   }}
                   disabled={refining}
                 >
-                  取消
+                  {t("common.cancel")}
                 </Button>
                 {refining ? (
                   <Button type="button" variant="outline" size="sm" onClick={cancelRefine}>
-                    取消搜索
+                    {t("results.cancelSearch")}
                   </Button>
                 ) : (
                   <Button
@@ -389,7 +387,7 @@ function ResultsPage() {
                     onClick={() => void applyEdit()}
                     disabled={draftText.trim() === freeText.trim()}
                   >
-                    应用并重新搜索
+                    {t("results.applyEdit")}
                   </Button>
                 )}
               </div>
@@ -416,20 +414,16 @@ function ResultsPage() {
                 ))}
               </ul>
             )}
-            <p className="mt-3 text-xs text-muted-foreground">
-              Echo Eats 是 AI 决策层，不直接抓取地图数据。如果 AI 对某个城市/料理把握不大，会诚实说"没把握"，而不是编造店铺。
-            </p>
+            <p className="mt-3 text-xs text-muted-foreground">{t("results.disclaimer")}</p>
           </div>
         )}
 
         {isEmpty ? (
           <div className="bg-card border border-border rounded-2xl p-8 text-center">
-            <p className="text-base font-medium">没有可展示的餐厅</p>
-            <p className="mt-2 text-sm text-muted-foreground">
-              请回到上一步调整需求后重新搜索。
-            </p>
+            <p className="text-base font-medium">{t("results.noneTitle")}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{t("results.noneDesc")}</p>
             <Button asChild className="mt-5">
-              <Link to="/requirements">返回编辑需求</Link>
+              <Link to="/requirements">{t("results.noneBack")}</Link>
             </Button>
           </div>
         ) : (
@@ -441,7 +435,7 @@ function ResultsPage() {
                 </h2>
                 <div className="space-y-5">
                   {group.restaurants.map((r, i) => (
-                    <RestaurantCard key={r.id} index={i + 1} r={r} />
+                    <RestaurantCard key={r.id} index={i + 1} r={r} tierLabel={TIER_LABEL} tierClass={TIER_CLASS} />
                   ))}
                 </div>
 
@@ -449,15 +443,13 @@ function ResultsPage() {
                   <div className="mt-8">
                     <div className="mb-3 border-l-4 border-warning pl-3">
                       <h3 className="text-base font-semibold tracking-tight">
-                        ⚠ 信息不足，部分硬条件无法核实
+                        {t("results.partialTitle")}
                       </h3>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        以下店其它条件大部分满足，但有硬条件因网评/Google 数据缺失无法确认，请自行到平台核对。
-                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">{t("results.partialDesc")}</p>
                     </div>
                     <div className="space-y-5">
                       {group.partialRestaurants.map((r, i) => (
-                        <RestaurantCard key={r.id} index={i + 1} r={r} />
+                        <RestaurantCard key={r.id} index={i + 1} r={r} tierLabel={TIER_LABEL} tierClass={TIER_CLASS} />
                       ))}
                     </div>
                   </div>
@@ -483,18 +475,16 @@ function ResultsPage() {
         <div className="mt-12 flex justify-center">
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline">重新搜索</Button>
+              <Button variant="outline">{t("results.searchAgain")}</Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>确定要重新开始吗？</AlertDialogTitle>
-                <AlertDialogDescription>
-                  当前的搜索条件和结果将被清空，回到第一步重新输入。
-                </AlertDialogDescription>
+                <AlertDialogTitle>{t("results.confirm.title")}</AlertDialogTitle>
+                <AlertDialogDescription>{t("results.confirm.desc")}</AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction onClick={restartFlow}>确认重新开始</AlertDialogAction>
+                <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+                <AlertDialogAction onClick={restartFlow}>{t("results.confirm.ok")}</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -504,11 +494,11 @@ function ResultsPage() {
   );
 }
 
-function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
+function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: Restaurant; tierLabel: Record<Restaurant["matchTier"], string>; tierClass: Record<Restaurant["matchTier"], string> }) {
+  const { t } = useT();
   const visitTime = useQueryStore((s) => s.parsed?.visitTime ?? null);
   const showVisitBadge = Boolean(visitTime && r.visitTimeMatch);
   const displayName = r.localName?.trim() || r.name;
-  const alternateName = r.name && r.name !== displayName ? r.name : null;
 
   return (
     <article className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
@@ -516,12 +506,7 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
         <div>
           <div className="text-xs text-muted-foreground">#{index}</div>
           <h3 className="mt-0.5 text-xl font-semibold tracking-tight">
-            <a
-              href={r.googleMapsUri}
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-primary transition-colors"
-            >
+            <a href={r.googleMapsUri} target="_blank" rel="noreferrer" className="hover:text-primary transition-colors">
               {displayName}
             </a>
           </h3>
@@ -535,40 +520,38 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
             className="mt-0.5 text-sm text-muted-foreground"
             title={r.weekdayDescriptions?.join("\n") ?? undefined}
           >
-            🕐 今日 {todayHoursLabel(r.weekdayDescriptions, r.openNow)}
+            {t("results.todayHours", { label: todayHoursLabel(r.weekdayDescriptions, r.openNow, t) })}
           </p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             {showVisitBadge && r.visitTimeMatch === "open" && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
-                ✓ {visitTime?.raw || "所选时段"} 营业
+                {t("results.visit.open", { raw: visitTime?.raw || t("results.visit.defaultRaw") })}
               </span>
             )}
             {showVisitBadge && r.visitTimeMatch === "unknown" && (
               <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                ? {visitTime?.raw || "所选时段"} 营业未知
+                {t("results.visit.unknown", { raw: visitTime?.raw || t("results.visit.defaultRaw") })}
               </span>
             )}
             {r.openNow && !showVisitBadge && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
-                ✓ 当前营业
+                {t("results.openNow")}
               </span>
             )}
             {r.needsReview && (
               <span className="px-2 py-0.5 rounded-full bg-warning/15 text-warning">
-                ⚠ 需平台核实
+                {t("results.needsReview")}
               </span>
             )}
           </div>
         </div>
         <div className="text-right shrink-0">
-          <span
-            className={`inline-block px-2.5 py-1 rounded-full text-xs font-medium ${TIER_CLASS[r.matchTier]}`}
-          >
-            {TIER_LABEL[r.matchTier]}
+          <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-medium ${tierClass[r.matchTier]}`}>
+            {tierLabel[r.matchTier]}
           </span>
           <div className="mt-2 text-2xl font-bold tracking-tight">{r.matchScore}%</div>
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            Match Score
+            {t("results.matchScore")}
           </div>
         </div>
       </div>
@@ -589,7 +572,7 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
               >
                 <img
                   src={url}
-                  alt={`${displayName} 照片 ${i + 1}`}
+                  alt={`${displayName} ${i + 1}`}
                   loading="lazy"
                   className="w-full h-full object-cover hover:scale-105 transition-transform duration-500"
                 />
@@ -603,20 +586,20 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
             rel="noreferrer"
             className="block aspect-[16/9] rounded-lg bg-gradient-to-br from-accent to-secondary flex items-center justify-center text-xs text-muted-foreground hover:opacity-80 transition"
           >
-            🔍 在 Google 图片中查看「{displayName}」
+            {t("results.imgSearch", { name: displayName })}
           </a>
         )}
       </div>
 
       <div className="px-6 py-4 border-t border-border">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-          Ratings
+          {t("results.ratings")}
         </h4>
         <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
           {r.ratings.map((rt) => (
             <div key={rt.platform} className="flex justify-between">
               <span className="text-muted-foreground">{rt.platform}</span>
-              <span className="font-medium">{rt.score ?? "无数据"}</span>
+              <span className="font-medium">{rt.score ?? t("results.noData")}</span>
             </div>
           ))}
         </div>
@@ -626,14 +609,14 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
         <div className="px-6 py-4 border-t border-border bg-accent/20">
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Tabelog 补充信号
+              {t("results.tabelog.title")}
             </h4>
             <span className="text-[10px] text-muted-foreground">食べログ</span>
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm mb-2">
             {r.tabelog.rating != null && (
               <div className="flex justify-between">
-                <span className="text-muted-foreground">评分</span>
+                <span className="text-muted-foreground">{t("results.tabelog.rating")}</span>
                 <span className="font-medium">
                   {r.tabelog.rating}
                   {r.tabelog.reviewCount ? ` (${r.tabelog.reviewCount})` : ""}
@@ -642,7 +625,7 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
             )}
             {r.tabelog.priceRange && (
               <div className="flex justify-between">
-                <span className="text-muted-foreground">价格带</span>
+                <span className="text-muted-foreground">{t("results.tabelog.price")}</span>
                 <span className="font-medium">{r.tabelog.priceRange}</span>
               </div>
             )}
@@ -653,13 +636,8 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
             </p>
           )}
           {r.tabelog.url && (
-            <a
-              href={r.tabelog.url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-block text-xs text-primary hover:underline"
-            >
-              在 Tabelog 查看 →
+            <a href={r.tabelog.url} target="_blank" rel="noreferrer" className="inline-block text-xs text-primary hover:underline">
+              {t("results.tabelog.viewOn")}
             </a>
           )}
         </div>
@@ -667,14 +645,14 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
 
       <div className="px-6 py-4 border-t border-border bg-muted/30">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-          AI 总结
+          {t("results.aiSummary")}
         </h4>
         <p className="text-sm leading-relaxed">{r.aiSummary}</p>
       </div>
 
       <div className="px-6 py-4 border-t border-border">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-          匹配详情
+          {t("results.matchDetails")}
         </h4>
         <ul className="space-y-1 text-sm">
           {r.matchDetails.map((d, i) => (
@@ -691,7 +669,7 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
       <div className="px-6 py-4 border-t border-border grid sm:grid-cols-2 gap-4">
         <div>
           <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            高频好评
+            {t("results.pros")}
           </h4>
           {r.pros.length > 0 ? (
             <ul className="space-y-1 text-sm">
@@ -703,12 +681,12 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground italic">暂无可信网评</p>
+            <p className="text-sm text-muted-foreground italic">{t("results.pros.empty")}</p>
           )}
         </div>
         <div>
           <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            高频差评
+            {t("results.cons")}
           </h4>
           {r.cons.length > 0 ? (
             <ul className="space-y-1 text-sm">
@@ -720,7 +698,7 @@ function RestaurantCard({ index, r }: { index: number; r: Restaurant }) {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground italic">暂无明显差评</p>
+            <p className="text-sm text-muted-foreground italic">{t("results.cons.empty")}</p>
           )}
         </div>
       </div>

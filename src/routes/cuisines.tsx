@@ -1,32 +1,30 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useQueryStore } from "@/lib/store";
+import { useT } from "@/lib/i18n/context";
+import { CUISINE_SUGGESTIONS } from "@/lib/i18n/dict";
 
 export const Route = createFileRoute("/cuisines")({
   head: () => ({
     meta: [
-      { title: "Echo Eats — 选择料理类型" },
-      { name: "description", content: "选择你想吃的料理类型。" },
+      { title: "Echo Eats — Pick a cuisine" },
+      { name: "description", content: "Choose the cuisine you're in the mood for." },
     ],
   }),
   component: StepCuisines,
 });
 
-const SUGGESTIONS = ["寿司", "烧鸟", "omakase", "拉面", "牛排", "居酒屋", "蟹料理", "法餐", "甜品"];
-
 function StepCuisines() {
   const navigate = useNavigate();
-  const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
   const setCuisines = useQueryStore((s) => s.setCuisines);
-  
+  const { lang, t } = useT();
 
-  const [value, setValue] = useState(cuisines.join("，"));
-
-  // 不再强制跳首页：缺城市时下一步会提示补全
+  const sep = lang === "zh" ? "，" : ", ";
+  const [value, setValue] = useState(cuisines.join(sep));
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -42,7 +40,7 @@ function StepCuisines() {
   const addSuggestion = (s: string) => {
     const current = value.trim();
     if (current.split(/[，,、\s]+/).includes(s)) return;
-    setValue(current ? `${current}，${s}` : s);
+    setValue(current ? `${current}${sep}${s}` : s);
   };
 
   const onSkip = () => {
@@ -51,33 +49,31 @@ function StepCuisines() {
   };
 
   return (
-    <StepShell
-      step={2}
-      total={3}
-      title="想吃什么料理？"
-      hint="可输入多个，用逗号或空格分隔；不确定也可以跳过，由 AI 根据其它需求推荐"
-    >
+    <StepShell step={2} total={3} title={t("step2.title")} hint={t("step2.hint")}>
       <form onSubmit={onSubmit} className="space-y-6">
         <div className="space-y-2">
           <Input
             autoFocus
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder="牛排,居酒屋,蟹料理"
+            placeholder={t("step2.placeholder")}
             className="h-12 text-base"
             maxLength={200}
           />
           <div className="flex flex-wrap gap-2 pt-1">
-            {SUGGESTIONS.map((s) => (
-              <button
-                type="button"
-                key={s}
-                onClick={() => addSuggestion(s)}
-                className="px-3 py-1.5 text-xs rounded-full bg-secondary text-secondary-foreground hover:bg-accent transition-colors"
-              >
-                + {s}
-              </button>
-            ))}
+            {CUISINE_SUGGESTIONS.map((s) => {
+              const label = s[lang];
+              return (
+                <button
+                  type="button"
+                  key={label}
+                  onClick={() => addSuggestion(label)}
+                  className="px-3 py-1.5 text-xs rounded-full bg-secondary text-secondary-foreground hover:bg-accent transition-colors"
+                >
+                  + {label}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -86,14 +82,14 @@ function StepCuisines() {
             to="/"
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
-            ← 返回
+            {t("common.back")}
           </Link>
           <div className="flex items-center gap-2">
             <Button type="button" variant="ghost" onClick={onSkip} size="lg">
-              跳过 →
+              {t("common.skip")}
             </Button>
             <Button type="submit" disabled={!value.trim()} size="lg">
-              下一步 →
+              {t("common.next")}
             </Button>
           </div>
         </div>

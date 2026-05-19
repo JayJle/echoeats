@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import { Restaurant } from "@/lib/store";
+import { useT } from "@/lib/i18n/context";
 import {
   createSearchSession,
   submitSearchFeedback,
@@ -21,14 +22,6 @@ function getAnonId(): string {
   return id;
 }
 
-const DOWN_REASONS = [
-  "推荐的店不符合我的硬条件",
-  "推荐的店不是我想要的料理",
-  "评分/评价信息不靠谱",
-  "漏掉了我知道的好店",
-  "排序不合理",
-];
-
 type Props = {
   city: string;
   cuisines: string[];
@@ -44,8 +37,17 @@ export function FeedbackPanel({
   restaurants,
   resultsSnapshot,
 }: Props) {
+  const { t } = useT();
   const create = useServerFn(createSearchSession);
   const submit = useServerFn(submitSearchFeedback);
+
+  const DOWN_REASONS = [
+    { key: "feedback.down.r1", text: t("feedback.down.r1") },
+    { key: "feedback.down.r2", text: t("feedback.down.r2") },
+    { key: "feedback.down.r3", text: t("feedback.down.r3") },
+    { key: "feedback.down.r4", text: t("feedback.down.r4") },
+    { key: "feedback.down.r5", text: t("feedback.down.r5") },
+  ];
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -57,7 +59,6 @@ export function FeedbackPanel({
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 第一次渲染时落 session
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -92,7 +93,7 @@ export function FeedbackPanel({
   if (submitted) {
     return (
       <div className="mt-10 bg-card border border-border rounded-2xl p-6 text-center text-sm text-muted-foreground">
-        感谢反馈 ✓ 你的意见会用来改进我们的搜索质量。
+        {t("feedback.thanks")}
       </div>
     );
   }
@@ -115,10 +116,10 @@ export function FeedbackPanel({
         },
       });
       if (res.ok) setSubmitted(true);
-      else setError(res.error || "提交失败，请稍后重试");
+      else setError(res.error || t("feedback.submitFail"));
     } catch (e) {
       console.error(e);
-      setError("提交失败，请稍后重试");
+      setError(t("feedback.submitFail"));
     }
   };
 
@@ -130,17 +131,12 @@ export function FeedbackPanel({
 
   return (
     <section className="mt-10 bg-card border border-border rounded-2xl p-6">
-      <h3 className="text-base font-semibold tracking-tight">
-        帮我们改进搜索质量
-      </h3>
-      <p className="mt-1 text-xs text-muted-foreground">
-        反馈仅用于评估搜索系统是否准确，不会影响任何具体店铺以后是否出现。
-      </p>
+      <h3 className="text-base font-semibold tracking-tight">{t("feedback.title")}</h3>
+      <p className="mt-1 text-xs text-muted-foreground">{t("feedback.note")}</p>
 
-      {/* 最后选了哪家 */}
       <div className="mt-5">
         <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-          最后我去了哪家？（可选）
+          {t("feedback.chosenLabel")}
         </div>
         <div className="flex flex-wrap gap-1.5">
           {restaurantOptions.map((r) => {
@@ -176,7 +172,7 @@ export function FeedbackPanel({
                 : "bg-background border-border hover:border-primary"
             }`}
           >
-            去了别的店
+            {t("feedback.external")}
           </button>
         </div>
         {showExternal && (
@@ -184,16 +180,15 @@ export function FeedbackPanel({
             type="text"
             value={externalName}
             onChange={(e) => setExternalName(e.target.value.slice(0, 200))}
-            placeholder="店名（可选）"
+            placeholder={t("feedback.externalPlaceholder")}
             className="mt-2 w-full px-3 py-2 text-sm rounded-lg bg-background border border-border focus:outline-none focus:border-primary"
           />
         )}
       </div>
 
-      {/* 推荐准吗 */}
       <div className="mt-5">
         <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-          这次推荐准吗？
+          {t("feedback.qualityLabel")}
         </div>
         <div className="flex gap-2">
           <button
@@ -205,7 +200,7 @@ export function FeedbackPanel({
                 : "bg-background border-border hover:border-success"
             }`}
           >
-            👍 准
+            {t("feedback.up")}
           </button>
           <button
             type="button"
@@ -216,25 +211,24 @@ export function FeedbackPanel({
                 : "bg-background border-border hover:border-destructive"
             }`}
           >
-            👎 不准
+            {t("feedback.down")}
           </button>
         </div>
       </div>
 
-      {/* 不准的原因 */}
       {overall === "down" && (
         <div className="mt-4">
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            不准在哪？（多选）
+            {t("feedback.downLabel")}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {DOWN_REASONS.map((r) => {
-              const active = downReasons.includes(r);
+              const active = downReasons.includes(r.text);
               return (
                 <button
-                  key={r}
+                  key={r.key}
                   type="button"
-                  onClick={() => toggleReason(r)}
+                  onClick={() => toggleReason(r.text)}
                   className={`px-2.5 py-1 text-xs rounded-full border transition ${
                     active
                       ? "bg-destructive/10 text-destructive border-destructive"
@@ -242,7 +236,7 @@ export function FeedbackPanel({
                   }`}
                 >
                   {active ? "✓ " : ""}
-                  {r}
+                  {r.text}
                 </button>
               );
             })}
@@ -250,26 +244,23 @@ export function FeedbackPanel({
         </div>
       )}
 
-      {/* 评论 */}
       {overall !== null && (
         <div className="mt-4">
           <textarea
             value={comment}
             onChange={(e) => setComment(e.target.value.slice(0, 500))}
-            placeholder="可选：说两句（最多 500 字）"
+            placeholder={t("feedback.commentPlaceholder")}
             rows={2}
             className="w-full px-3 py-2 text-sm rounded-lg bg-background border border-border focus:outline-none focus:border-primary resize-none"
           />
         </div>
       )}
 
-      {error && (
-        <p className="mt-3 text-xs text-destructive">{error}</p>
-      )}
+      {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
 
       <div className="mt-5 flex justify-end">
         <Button onClick={handleSubmit} disabled={!canSubmit} size="sm">
-          提交反馈
+          {t("feedback.submit")}
         </Button>
       </div>
     </section>
