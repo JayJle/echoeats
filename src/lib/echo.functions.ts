@@ -735,7 +735,7 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-function buildLinks(p: PlaceCandidate, city: string, country: string) {
+function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = false) {
   const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
   const qName = encodeURIComponent(p.name);
@@ -747,12 +747,12 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
   if (isCN) {
     // 大众点评 H5 搜索深链（手机会拉起 App）
     links.push({
-      label: "大众点评",
+      label: isEn ? "Dianping" : "大众点评",
       url: `https://m.dianping.com/searchshop?keyword=${qName}&regionname=${qCity}`,
     });
     // 小红书搜索（用户口碑）
     links.push({
-      label: "小红书",
+      label: isEn ? "Xiaohongshu" : "小红书",
       url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
     });
   }
@@ -768,7 +768,9 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
   if (p.websiteUri) {
     const isDianpingShop = /dianping\.com\/shop\//i.test(p.websiteUri);
     links.push({
-      label: isDianpingShop ? "大众点评店铺页" : "官网",
+      label: isDianpingShop
+        ? isEn ? "Dianping page" : "大众点评店铺页"
+        : isEn ? "Website" : "官网",
       url: p.websiteUri,
     });
   }
@@ -785,7 +787,7 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
     });
   }
 
-  links.push({ label: "Google 搜索", url: `https://www.google.com/search?q=${q}` });
+  links.push({ label: isEn ? "Google Search" : "Google 搜索", url: `https://www.google.com/search?q=${q}` });
   return links.slice(0, 6);
 }
 
@@ -1358,7 +1360,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     );
 
     const langDirective = isEn
-      ? `\n## OUTPUT LANGUAGE (MANDATORY)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English**. Do not use Chinese characters in any of those fields, even if the source review snippets are Chinese (translate/paraphrase them into concise English). Keep \`placeId\` and any enum/status values exactly as specified.\n`
+      ? `\n## OUTPUT LANGUAGE (MANDATORY, ZERO TOLERANCE)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English only**. **No CJK characters are allowed in any of those fields**, not even as quoted source snippets. If the source review is in Chinese, paraphrase it into concise English and DROP the original Chinese — do NOT include the Chinese phrase in quotes followed by a translation.\n\nBad (forbidden):\n  - "Reviews mention '氛围复古有特色' (retro and unique atmosphere)"\n  - "高峰期可能要等位 (may have to wait during peak hours)"\nGood:\n  - "Diners praise the retro, characterful atmosphere"\n  - "May involve a wait during peak hours"\n\nRule of thumb: if any character matches /[\\u4e00-\\u9fff]/ in those fields, the output is invalid — rewrite it in pure English. Keep \`placeId\` and any enum/status values exactly as specified.\n`
       : `\n## 输出语言（强制）\n你产出的所有人类可读字符串字段（aiSummary、pros、cons、matchDetails[].label、hardFilterChecks[].note）必须用**简体中文**撰写。\n`;
 
     type GroupForPrompt = (typeof candidatesForPrompt)[number];
@@ -1631,7 +1633,7 @@ ${JSON.stringify(group.candidates, null, 2)}
               matchDetails,
               pros: pick.pros,
               cons: pick.cons,
-              links: buildLinks(p, data.city, country),
+              links: buildLinks(p, data.city, country, isEn),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
               weekdayDescriptions: p.weekdayDescriptions ?? null,
