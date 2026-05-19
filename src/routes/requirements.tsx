@@ -9,14 +9,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useQueryStore } from "@/lib/store";
+import { useT } from "@/lib/i18n/context";
 import { useServerFn } from "@tanstack/react-start";
 import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/requirements")({
   head: () => ({
     meta: [
-      { title: "Echo Eats — 描述你的需求" },
-      { name: "description", content: "用自然语言描述预算、氛围、菜品偏好和避雷需求。可跳过。" },
+      { title: "Echo Eats — Tell us your needs" },
+      { name: "description", content: "Describe budget, vibe, dish preferences and dealbreakers in natural language. Optional." },
     ],
   }),
   component: StepRequirements,
@@ -27,22 +28,22 @@ type StageKey = "parse" | "search" | "reviews" | "rank";
 const JP_CITIES = ["东京", "大阪", "京都", "札幌", "福冈", "名古屋", "横滨", "神户", "tokyo", "osaka", "kyoto", "sapporo", "fukuoka", "nagoya", "yokohama", "kobe"];
 const CN_CITIES = ["北京", "上海", "广州", "深圳", "成都", "杭州", "南京", "重庆", "武汉", "西安", "苏州", "天津", "厦门", "长沙"];
 
-function reviewsHintFor(city: string) {
+function reviewsHintKey(city: string): string {
   const c = city.toLowerCase();
-  if (JP_CITIES.some((x) => c.includes(x.toLowerCase()))) return "翻 Tabelog、食べログ、小红书…";
-  if (CN_CITIES.some((x) => city.includes(x))) return "翻大众点评、小红书…";
-  return "翻 Google、Yelp、小红书…";
+  if (JP_CITIES.some((x) => c.includes(x.toLowerCase()))) return "stage.reviews.hint.jp";
+  if (CN_CITIES.some((x) => city.includes(x))) return "stage.reviews.hint.cn";
+  return "stage.reviews.hint.other";
 }
 
 function StepRequirements() {
   const navigate = useNavigate();
+  const { lang, t } = useT();
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
   const freeText = useQueryStore((s) => s.freeText);
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
   const setResults = useQueryStore((s) => s.setResults);
-  
 
   const [value, setValue] = useState(freeText);
   const [loading, setLoading] = useState(false);
@@ -57,8 +58,6 @@ function StepRequirements() {
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
 
-  // 不再强制跳首页：缺城市/料理时显示补全入口
-
   useEffect(() => () => {
     timersRef.current.forEach(clearTimeout);
     abortRef.current?.abort();
@@ -72,15 +71,15 @@ function StepRequirements() {
   const stages: { key: StageKey; label: string; hint: string }[] =
     searchMode === "deep"
       ? [
-          { key: "parse", label: "理解你的需求", hint: "AI 在拆解预算、氛围、避雷点…" },
-          { key: "search", label: `在 ${city || "目的地"} 搜寻候选餐厅`, hint: "扫一遍主流地图和本地榜单" },
-          { key: "reviews", label: "抓取本地点评与口碑", hint: reviewsHintFor(city) },
-          { key: "rank", label: "AI 综合排序", hint: "把口碑、价位、距离揉在一起打分" },
+          { key: "parse", label: t("stage.parse.label"), hint: t("stage.parse.hint") },
+          { key: "search", label: t("stage.search.label", { city: city || t("stage.search.placeholder") }), hint: t("stage.search.hintDeep") },
+          { key: "reviews", label: t("stage.reviews.label"), hint: t(reviewsHintKey(city)) },
+          { key: "rank", label: t("stage.rank.label"), hint: t("stage.rank.hintDeep") },
         ]
       : [
-          { key: "parse", label: "理解你的需求", hint: "AI 在拆解预算、氛围、避雷点…" },
-          { key: "search", label: `在 ${city || "目的地"} 搜寻候选餐厅`, hint: "扫一遍主流地图,几秒就好" },
-          { key: "rank", label: "AI 综合排序", hint: "把候选揉在一起打分" },
+          { key: "parse", label: t("stage.parse.label"), hint: t("stage.parse.hint") },
+          { key: "search", label: t("stage.search.label", { city: city || t("stage.search.placeholder") }), hint: t("stage.search.hintQuick") },
+          { key: "rank", label: t("stage.rank.label"), hint: t("stage.rank.hintQuick") },
         ];
 
   const currentIndex = currentStage ? stages.findIndex((s) => s.key === currentStage) : -1;
@@ -102,17 +101,16 @@ function StepRequirements() {
     try {
       setCurrentStage("parse");
       const parsed = await parseFn({
-        data: { city, cuisines, date: "", freeText: text },
+        data: { city, cuisines, date: "", freeText: text, uiLanguage: lang },
         signal: ac.signal,
       } as Parameters<typeof parseFn>[0]);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
-      const parsedWithMode = { ...parsed, mode };
+      const parsedWithMode = { ...parsed, mode, uiLanguage: lang };
       setParsed(parsedWithMode);
       if (parsed.cuisinesInferred && parsed.cuisines.length > 0) {
         setInferredCuisines(parsed.cuisines);
       }
 
-      // 进入 search 阶段；阶段切换由后端流式事件驱动（不再依赖 setTimeout 伪进度）
       setCurrentStage("search");
       clearTimers();
 
@@ -143,9 +141,9 @@ function StepRequirements() {
       navigate({ to: "/results" });
     } catch (err) {
       if (ac.signal.aborted || myRunId !== runIdRef.current) return;
-      const msg = err instanceof Error ? err.message : "搜索失败,请重试";
-      if (msg.includes("429")) setError("请求过于频繁,请稍后再试");
-      else if (msg.includes("402")) setError("AI 额度已用完,请在 Settings → Workspace 添加额度");
+      const msg = err instanceof Error ? err.message : t("err.fetchFailed");
+      if (msg.includes("429")) setError(t("err.rateLimited"));
+      else if (msg.includes("402")) setError(t("err.quotaExhausted"));
       else setError(msg);
       clearTimers();
       setCurrentStage(null);
@@ -191,7 +189,6 @@ function StepRequirements() {
 
   const pickMimeType = (): string | null => {
     if (typeof MediaRecorder === "undefined") return null;
-    // iOS Safari 只稳定支持 audio/mp4
     const candidates = isIOS()
       ? ["audio/mp4", "audio/aac", "audio/webm"]
       : ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
@@ -199,7 +196,7 @@ function StepRequirements() {
       try {
         if (MediaRecorder.isTypeSupported(t)) return t;
       } catch {
-        // ignore
+        /* ignore */
       }
     }
     return null;
@@ -228,19 +225,17 @@ function StepRequirements() {
     if (transcribing) return;
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      toast.error("当前浏览器不支持录音,请用 Chrome 或 Safari 16.4+");
+      toast.error(t("err.mic.unsupported"));
       return;
     }
 
     const ios = isIOS();
     const inIframe = typeof window !== "undefined" && window.self !== window.top;
 
-    // Chrome / 多数桌面浏览器:跨域 iframe 默认不允许 microphone,
-    // 直接调 getUserMedia 会被 Permissions Policy 拦截。先给用户一个明确出口。
     if (inIframe && !ios) {
-      toast.error("预览窗口禁用了麦克风,请在新标签打开页面后再录音", {
+      toast.error(t("err.mic.iframe"), {
         action: {
-          label: "在新标签打开",
+          label: t("err.mic.iframeAction"),
           onClick: () => window.open(window.location.href, "_blank", "noopener,noreferrer"),
         },
         duration: 8000,
@@ -248,11 +243,8 @@ function StepRequirements() {
       return;
     }
 
-    // ⚠️ iOS Safari 要求在用户手势的同一个同步 tick 内调用 getUserMedia,
-    // 在前面 await 任何东西都会让系统把权限弹窗当成"非手势触发"拦掉。
-    // 因此这里先同步发起 Promise,再 await 它。
     const constraints: MediaStreamConstraints = ios
-      ? { audio: true } // iOS 对复杂约束容易直接 reject
+      ? { audio: true }
       : { audio: { echoCancellation: true, noiseSuppression: true } };
     const streamPromise = navigator.mediaDevices.getUserMedia(constraints);
 
@@ -266,22 +258,21 @@ function StepRequirements() {
       if (name === "NotAllowedError" || name === "SecurityError") {
         toast.error(
           inIframe
-            ? "预览窗口被禁止使用麦克风,请点击右上角\"在新标签打开\"后再试"
+            ? t("err.mic.denied.iframe")
             : ios
-              ? "请到 设置 → Safari → 麦克风 允许本站,或在弹窗里点\"允许\""
-              : "麦克风权限被拒绝,请在浏览器地址栏左侧允许麦克风",
+              ? t("err.mic.denied.ios")
+              : t("err.mic.denied"),
         );
       } else if (name === "NotFoundError") {
-        toast.error("没有检测到麦克风设备");
+        toast.error(t("err.mic.notFound"));
       } else if (name === "NotReadableError") {
-        toast.error("麦克风被其它应用占用,请关闭后重试");
+        toast.error(t("err.mic.busy"));
       } else {
-        toast.error(`无法访问麦克风: ${name || msg || "未知错误"}`);
+        toast.error(t("err.mic.unknown", { detail: name || msg || "?" }));
       }
       return;
     }
 
-    // 拿到流之后再挑 mimeType;iOS 上交给浏览器自己决定最稳
     const mimeType = pickMimeType();
     chunksRef.current = [];
     let recorder: MediaRecorder;
@@ -292,7 +283,7 @@ function StepRequirements() {
     } catch (err) {
       console.error("MediaRecorder init failed:", err);
       stream.getTracks().forEach((t) => t.stop());
-      toast.error("当前浏览器无法录音,请升级到 Safari 16.4+ 或换 Chrome");
+      toast.error(t("err.mic.initFail"));
       return;
     }
     const usedMime = recorder.mimeType || mimeType || "audio/webm";
@@ -303,14 +294,14 @@ function StepRequirements() {
     };
 
     recorder.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop());
+      stream.getTracks().forEach((tr) => tr.stop());
       setRecording(false);
       setElapsed(0);
 
       const blob = new Blob(chunksRef.current, { type: usedMime });
       chunksRef.current = [];
       if (blob.size === 0) {
-        toast.error("没有录到声音,请再试一次");
+        toast.error(t("err.mic.empty"));
         return;
       }
 
@@ -326,18 +317,18 @@ function StepRequirements() {
         const res = await fetch("/api/transcribe", { method: "POST", body: fd });
         const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
         if (!res.ok) {
-          if (res.status === 429) toast.error("请求过于频繁,请稍后再试");
-          else if (res.status === 402) toast.error("ElevenLabs 额度不足");
-          else toast.error(data.error || "转写失败,请重试");
+          if (res.status === 429) toast.error(t("err.transcribe.busy"));
+          else if (res.status === 402) toast.error(t("err.transcribe.elevenQuota"));
+          else toast.error(data.error || t("err.transcribe.fail"));
           return;
         }
         if (data.text) {
           appendText(data.text);
         } else {
-          toast.error("没识别到内容,请再试一次");
+          toast.error(t("err.transcribe.noContent"));
         }
       } catch {
-        toast.error("网络错误,转写失败");
+        toast.error(t("err.transcribe.network"));
       } finally {
         setTranscribing(false);
       }
@@ -361,7 +352,7 @@ function StepRequirements() {
   }, []);
 
   return (
-    <StepShell step={3} total={3} title="还有什么要求吗？">
+    <StepShell step={3} total={3} title={t("step3.title")}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -384,7 +375,7 @@ function StepRequirements() {
               type="button"
               onClick={() => void toggleRecording()}
               disabled={transcribing || loading}
-              aria-label={recording ? "停止录音" : "开始语音输入"}
+              aria-label={recording ? t("step3.mic.stop") : t("step3.mic.start")}
               className={`flex h-14 w-14 items-center justify-center rounded-full text-primary-foreground shadow-md transition-colors disabled:opacity-60 ${
                 recording
                   ? "bg-destructive hover:bg-destructive/90"
@@ -401,7 +392,7 @@ function StepRequirements() {
               )}
             </button>
             <span className="text-[10px] text-muted-foreground">
-              {transcribing ? "转写中…" : recording ? `${elapsed}s · 点击停止` : "语音输入"}
+              {transcribing ? t("step3.mic.transcribing") : recording ? t("step3.mic.recording", { s: elapsed }) : t("step3.mic.tip")}
             </span>
           </div>
         </div>
@@ -441,7 +432,7 @@ function StepRequirements() {
                         (s.key === "search" || s.key === "reviews") &&
                         inferredCuisines && inferredCuisines.length > 0 && (
                           <p className="mt-1 text-xs text-primary/80">
-                            ✨ AI 推断了 {inferredCuisines.length} 个品类（{inferredCuisines.join(" / ")}），正在并行搜索，可能稍慢
+                            {t("step3.inferred", { n: inferredCuisines.length, list: inferredCuisines.join(" / ") })}
                           </p>
                         )}
                     </div>
@@ -451,7 +442,7 @@ function StepRequirements() {
             </ul>
             <div className="flex justify-end pt-1">
               <Button type="button" variant="ghost" size="sm" onClick={handleCancel}>
-                取消搜索
+                {t("step3.cancel")}
               </Button>
             </div>
           </div>
@@ -467,7 +458,7 @@ function StepRequirements() {
             to="/cuisines"
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
-            ← 返回
+            {t("common.back")}
           </Link>
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-3">
             <Button
@@ -478,7 +469,7 @@ function StepRequirements() {
               onClick={() => void runSearch(value, "quick")}
               className="w-full sm:w-auto"
             >
-              {loading && searchMode === "quick" ? "搜索中…" : "⚡ 快速搜索"}
+              {loading && searchMode === "quick" ? t("step3.quickLoading") : t("step3.quickBtn")}
             </Button>
             <div className="relative w-full sm:w-auto">
               <Button
@@ -487,25 +478,25 @@ function StepRequirements() {
                 size="lg"
                 className="w-full sm:w-auto"
               >
-                {loading && searchMode === "deep" ? "深度搜索中…" : "🔍 深度搜索"}
+                {loading && searchMode === "deep" ? t("step3.deepLoading") : t("step3.deepBtn")}
               </Button>
               <Popover>
                 <PopoverTrigger asChild>
                   <button
                     type="button"
-                    aria-label="深度搜索说明"
+                    aria-label={t("step3.modeTitle")}
                     className="absolute -top-2 -right-2 z-10 rounded-full bg-background p-0.5 text-muted-foreground hover:text-foreground transition-colors shadow-sm border border-border"
                   >
                     <HelpCircle className="w-4 h-4" />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="w-72 text-sm leading-relaxed" align="end">
-                  <p className="font-medium mb-2">两种搜索模式</p>
+                  <p className="font-medium mb-2">{t("step3.modeTitle")}</p>
                   <p className="mb-1">
-                    <span className="font-medium">⚡ 快速搜索</span>:只取主流地图候选 + AI 排序,几秒出结果。
+                    <span className="font-medium">{t("step3.modeQuick")}</span>: {t("step3.modeQuickDesc")}
                   </p>
                   <p>
-                    <span className="font-medium">🔍 深度搜索</span>:根据所在地区综合多个本地点评/美食平台,抓真实网友口碑、价位等信号再交给 AI 综合判断,更准但更慢。
+                    <span className="font-medium">{t("step3.modeDeep")}</span>: {t("step3.modeDeepDesc")}
                   </p>
                 </PopoverContent>
               </Popover>
