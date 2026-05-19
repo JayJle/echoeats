@@ -1437,7 +1437,7 @@ ${JSON.stringify(group.candidates, null, 2)}
         const result = await generateText({
           model,
           prompt,
-          maxOutputTokens: 16000,
+          maxOutputTokens: 6000,
           output: Output.object({
             schema: AiPickGroupSchema,
             name: "echo_eats_picks",
