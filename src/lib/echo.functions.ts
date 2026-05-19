@@ -808,7 +808,10 @@ function candidateRatings(
   review: ReviewSummary | null,
   tabelog: TabelogInfo | null,
   isEn = false,
+  country = "",
 ) {
+  const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
+  const isJP = country === "JP";
   const score =
     p.rating != null
       ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
@@ -826,12 +829,14 @@ function candidateRatings(
     tabelog?.rating != null
       ? `${tabelog.rating} / 5${tabelog.reviewCount ? ` (${tabelog.reviewCount})` : ""}`
       : null;
-  return [
+  const rows: { platform: string; score: string | null }[] = [
     { platform: "Google Maps", score },
-    { platform: "Tabelog", score: tabelogScore },
-    { platform: isEn ? "Dianping" : "大众点评", score: dpScore },
-    { platform: isEn ? "Avg. price" : "人均价格", score: priceScore },
   ];
+  if (isJP) rows.push({ platform: "Tabelog", score: tabelogScore });
+  if (isCN) rows.push({ platform: isEn ? "Dianping" : "大众点评", score: dpScore });
+  rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
+  return rows;
+}
 }
 
 const SearchResponseSchema = z.object({
