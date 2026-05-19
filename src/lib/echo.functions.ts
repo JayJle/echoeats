@@ -1374,7 +1374,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
         : `- 「${group.cuisine}」：（无额外扩展）`;
 
-      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**尽可能多挑出符合的店（最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。${langDirective}
+      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**精挑 3-5 家最匹配的店（硬上限 5 家，宁缺毋滥；只有当候选明显都不合适时才返回少于 3 家）**，并给出打分和理由。${langDirective}
 
 用户需求：
 - 城市：${data.city}
@@ -1437,7 +1437,7 @@ ${JSON.stringify(group.candidates, null, 2)}
         const result = await generateText({
           model,
           prompt,
-          maxOutputTokens: 16000,
+          maxOutputTokens: 6000,
           output: Output.object({
             schema: AiPickGroupSchema,
             name: "echo_eats_picks",
@@ -1459,7 +1459,7 @@ ${JSON.stringify(group.candidates, null, 2)}
             prompt:
               prompt +
               `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-            maxOutputTokens: 16000,
+            maxOutputTokens: 6000,
           });
           const finishReason = (fb as { finishReason?: string }).finishReason;
           if (finishReason === "length" || finishReason === "max-tokens") {
@@ -1529,7 +1529,7 @@ ${JSON.stringify(group.candidates, null, 2)}
         const aiGroup =
           ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
           ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 20);
+        const picks = (aiGroup?.picks ?? []).slice(0, 5);
 
         type Bucket = "ok" | "partial" | null;
 
