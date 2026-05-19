@@ -1529,7 +1529,7 @@ ${JSON.stringify(group.candidates, null, 2)}
         const aiGroup =
           ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
           ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 20);
+        const picks = (aiGroup?.picks ?? []).slice(0, 5);
 
         type Bucket = "ok" | "partial" | null;
 
