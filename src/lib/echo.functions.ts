@@ -1580,12 +1580,27 @@ ${JSON.stringify(group.candidates, null, 2)}
               const c = checks[i];
               const noteSuffix = c.note ? ` — ${c.note}` : "";
               if (c.status === "ok") {
-                return { label: `✓ 硬条件：${h.text}${noteSuffix}`, status: "ok" as const };
+                return {
+                  label: isEn
+                    ? `✓ Constraint: ${h.text}${noteSuffix}`
+                    : `✓ 硬条件：${h.text}${noteSuffix}`,
+                  status: "ok" as const,
+                };
               }
               if (c.status === "fail") {
-                return { label: `✗ 硬条件未满足：${h.text}${noteSuffix}`, status: "warn" as const };
+                return {
+                  label: isEn
+                    ? `✗ Constraint not met: ${h.text}${noteSuffix}`
+                    : `✗ 硬条件未满足：${h.text}${noteSuffix}`,
+                  status: "warn" as const,
+                };
               }
-              return { label: `？ 硬条件待核实：${h.text}${noteSuffix}`, status: "warn" as const };
+              return {
+                label: isEn
+                  ? `? Constraint to verify: ${h.text}${noteSuffix}`
+                  : `？ 硬条件待核实：${h.text}${noteSuffix}`,
+                status: "warn" as const,
+              };
             });
             // 归一化：模型偶发返回的 "unknown" 在前端没对应样式，统一映射为 warn。
             const aiDetails = (pick.matchDetails ?? []).slice(0, 6).map((d) => ({
