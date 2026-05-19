@@ -976,7 +976,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         type: "result",
         payload: {
           groups: [],
-          error: "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
+          error: isEn
+            ? "Google Places API key (GOOGLE_PLACES_API_KEY) is not configured"
+            : "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
           suggestions: [],
         },
       };
@@ -987,14 +989,20 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         type: "result",
         payload: {
           groups: [],
-          error: "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
+          error: isEn
+            ? "Mainland China cities require a Perplexity API key to fetch Dianping data, but none is configured"
+            : "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
           suggestions: [],
         },
       };
       return;
     }
 
-    yield { type: "stage", stage: "places", message: `搜索 ${data.city} 候选餐厅…` };
+    yield {
+      type: "stage",
+      stage: "places",
+      message: isEn ? `Searching candidates in ${data.city}…` : `搜索 ${data.city} 候选餐厅…`,
+    };
 
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
