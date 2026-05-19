@@ -1,27 +1,38 @@
-## 建议：每个品类输出 5 家
+## 问题
 
-理由：
-- **用户体验**：5 家正好是 "scan 一眼能记住" 的上限（米其林榜单、Eater "Best 5" 都是这个量级）。15 家用户翻到第 6 家就开始疲劳，决策反而更慢。
-- **延迟收益明显**：当前每个候选的输出包含 `aiSummary`(2-3 句) + `pros[]` + `cons[]` + `matchDetails[]` + 评分理由，单家约 250-400 output tokens。15 → 5 家，输出 tokens 直接砍掉 ~65%。`generateText` 的耗时主要由 output token 数决定（一个一个吐），所以**单品类排序耗时大约从 ~12-18s 降到 ~5-8s**，多品类并行下整体响应能从 20s+ 降到 10s 上下。
-- **截断风险消失**：之前 75 候选输出 15 家就触发过 `finishReason=length`，现在 5 家完全没压力，可以把 `maxOutputTokens` 也调小（更省 quota，且让模型更专注挑精）。
-- **质量不降反升**：让模型从 25 个候选里挑 5 家 vs 挑 15 家，挑 5 家会更严格、更聚焦头部，AI 不会被迫"凑数"把次优店也写进来。
+英文版结果页仍残留中文：
 
-## 改动范围
+1. **Pros / Cons** 直接保留原始中文短语（如 "高峰期可能要等位"、"氛围复古有特色"），再附英文翻译。说明 AI 没严格遵守 langDirective —— 它把原文当"引用证据"塞进去了。
+2. **链接按钮**："官网"、"Google 搜索"、"大众点评"、"小红书"、"大众点评店铺页" 这些 label 在 `buildLinks` 里硬编码中文，没有按 `uiLanguage` 分支。
 
-仅改 `src/lib/echo.functions.ts`：
+## 修复
 
-1. **Prompt 文案**（line 1377）：把 "最多 15 家，不要刻意压缩数量" 改为 "**精挑 3-5 家最匹配的店**，宁缺毋滥；只有当候选明显都不合适时才返回少于 3 家"。中英文 prompt 同步。
-2. **Schema 限制**（如果 `AiPickGroupSchema.picks` 上有 `.max()` 也下调到 8 作为硬上限，给模型一点缓冲但不爆）。
-3. **`maxOutputTokens`**：从 16000 调到 **6000**（5 家足够，留 buffer 应对 reasoning）。
-4. **后处理 slice**（line 1532）：`picks.slice(0, 20)` → `picks.slice(0, 5)`。
-5. **保留**：`PER_CUISINE_CAP = 25`（输入侧候选池）不变 —— 输入候选多对成本/延迟影响很小（input token 便宜且并行处理），但能让模型有更大筛选空间。
+仅改 `src/lib/echo.functions.ts`。
+
+### 1. 强化英文 langDirective（line 1360）
+
+把英文版语言指令写得更狠：
+- 明令 **禁止任何 CJK 字符**出现在 `aiSummary / pros / cons / matchDetails[].label / hardFilterChecks[].note`。
+- 明确说："如果源 review 是中文，**只输出英文意译，不要把中文原文用引号附上**。"举一个反例（"❌ Reviews mention '氛围复古有特色' (retro and unique atmosphere)" → "✅ Diners praise the retro, characterful atmosphere"）。
+- 给一个简短的判定：任何 char.match(/[\u4e00-\u9fff]/) 都视为违规。
+
+### 2. `buildLinks` 接收 `isEn`（line 738）
+
+在 `buildLinks(p, city, country, isEn)` 中：
+- "大众点评" → `isEn ? "Dianping" : "大众点评"`
+- "小红书" → `isEn ? "Xiaohongshu" : "小红书"`
+- "大众点评店铺页" → `isEn ? "Dianping page" : "大众点评店铺页"`
+- "官网" → `isEn ? "Website" : "官网"`
+- "Google 搜索" → `isEn ? "Google Search" : "Google 搜索"`
+
+调用点（line 1611 附近）：`buildLinks(p, data.city, country, isEn)`。
 
 ## 不改动
 
-- 前端 UI 不动（自然显示更少卡片即可）。
-- 输入候选数、Tabelog/Dianping 抓取流程不动。
-- 多品类并行架构不动。
+- `Tabelog / Yelp / TripAdvisor / Google Maps` 等专有名词保持原样。
+- 中文版输出完全不变。
+- AI 不强制翻译用户的原始硬条件文字（那是用户自己的输入）。
 
-## 不确定的点
+## 不确定
 
-是否需要保留 "用户主动展开看更多" 的入口？当前方案直接砍到 5 家，14 家被丢弃。如果你想保留 "默认 5 家 + 展开查看其余" 的体验，需要额外前端改动（plan 里没含）。我倾向**不加展开**：核心是减少决策时间，给得多就是反目标。
+是否保留中文链接 label 中"大众点评/小红书"作为品牌专名（在中国大陆访问中文平台时，纯英文 label 可能让人困惑）。我倾向用英文专名 "Dianping" / "Xiaohongshu"（业内公认）。
