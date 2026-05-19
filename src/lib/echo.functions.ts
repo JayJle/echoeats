@@ -837,7 +837,6 @@ function candidateRatings(
   rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
   return rows;
 }
-}
 
 const SearchResponseSchema = z.object({
   groups: ResultsSchema.shape.groups,
