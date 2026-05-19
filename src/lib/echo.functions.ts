@@ -1117,8 +1117,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         payload: {
           groups: [],
           error: useDianping
-            ? `大众点评检索失败：${placesError}`
-            : `Google Places 调用失败：${placesError}`,
+            ? isEn
+              ? `Dianping lookup failed: ${placesError}`
+              : `大众点评检索失败：${placesError}`
+            : isEn
+              ? `Google Places call failed: ${placesError}`
+              : `Google Places 调用失败：${placesError}`,
           suggestions: FALLBACK_SUGGESTIONS,
         },
       };
@@ -1132,8 +1136,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         payload: {
           groups: [],
           error: useDianping
-            ? `大众点评在「${data.city}」没找到符合的餐厅候选`
-            : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
+            ? isEn
+              ? `Dianping found no matching candidates in "${data.city}"`
+              : `大众点评在「${data.city}」没找到符合的餐厅候选`
+            : isEn
+              ? `Google Places found no matching candidates in "${data.city}"`
+              : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
           suggestions: FALLBACK_SUGGESTIONS,
         },
       };
