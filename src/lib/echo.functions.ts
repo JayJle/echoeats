@@ -1349,19 +1349,24 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       data.negativeFilters.map((n) => ({ text: n.text, weight: n.weight })),
     );
 
-    const cuisineFidelityBlock = Array.from(cuisineExpansions.entries())
-      .map(([c, exp]) => {
-        const syn = exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
-        const neg = exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
-        return `- 「${c}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`;
-      })
-      .join("\n");
-
     const langDirective = isEn
       ? `\n## OUTPUT LANGUAGE (MANDATORY)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English**. Do not use Chinese characters in any of those fields, even if the source review snippets are Chinese (translate/paraphrase them into concise English). Keep \`placeId\` and any enum/status values exactly as specified.\n`
       : `\n## 输出语言（强制）\n你产出的所有人类可读字符串字段（aiSummary、pros、cons、matchDetails[].label、hardFilterChecks[].note）必须用**简体中文**撰写。\n`;
 
-    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。${langDirective}
+    type GroupForPrompt = (typeof candidatesForPrompt)[number];
+
+    // 单 cuisine 的 prompt：只塞当前 cuisine 的候选 + 该 cuisine 的扩展词，输出体量约为
+    // 原来的 1/N（N = cuisine 数），从根本上避免触发 maxOutputTokens 截断。
+    const buildPromptForGroup = (group: GroupForPrompt) => {
+      const exp = cuisineExpansions.get(group.cuisine);
+      const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
+      const neg =
+        exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
+      const fidelity = exp
+        ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
+        : `- 「${group.cuisine}」：（无额外扩展）`;
+
+      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**尽可能多挑出符合的店（最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。${langDirective}
 
 用户需求：
 - 城市：${data.city}
@@ -1374,16 +1379,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 权重含义：1.0=务必、0.9=必须、0.8=明确硬属性、0.6=希望、0.4=可选。**只有 weight ≥ 0.85 的硬条件 fail 才会真的剔除餐厅**；低权重 fail 会扣分但保留。
 
 ## 料理保真（最高优先级，先于其它硬条件）
-本次每个分组的「料理类型」就是该组的 cuisine 字段。每个分组的本地化主词、同义词、反例如下：
-${cuisineFidelityBlock || "（无额外扩展）"}
+本组料理 = 「${group.cuisine}」。本地化主词、同义词、反例：
+${fidelity}
 判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
-- 命中本组反例关键词且未命中本组主词/同义词 → **直接剔除，不进 picks 也不进 partial**。例如本组要"猪肉饭"但候选明显是鳗鱼饭/牛丼/海鲜丼，不要解释，剔除。
+- 命中本组反例关键词且未命中本组主词/同义词 → **直接剔除，不进 picks 也不进 partial**。
 - 候选本身就是主菜的小店（招牌菜与本组料理一致）→ 优先纳入。
-- 候选模糊（综合定食店、菜单不明）→ 允许保留，对应 matchDetails 标 warn 注明"未确认主营是否为${"${"}本组料理${"}"}"。
+- 候选模糊（综合定食店、菜单不明）→ 允许保留，对应 matchDetails 标 warn 注明"未确认主营是否为本组料理"。
 - 这条规则**不计入 hardFilterChecks 数组**（hardFilterChecks 仍严格等于 ${hardFiltersList.length} 条用户原始硬条件）。
 
 候选数据（JSON）：
-${JSON.stringify(candidatesForPrompt, null, 2)}
+${JSON.stringify(group.candidates, null, 2)}
 
 铁律：
 - **只能使用候选列表里的 placeId**，禁止虚构 placeId、禁止编造店名。
@@ -1393,92 +1398,116 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
     - "fail" = 明确证实不满足
   note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
 - **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
-- **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用（例：editorialSummary 写明"仅晚市营业"但用户要求午餐；commonComplaints 明确提到"不接受预约"但用户要求可预约）。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。宁可放进 partial 让用户自己核实，也不要错杀。
+- **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。
 - 价格判断（重要，按以下优先级，**前者命中后不再回退**）：
     1. **Tabelog 价位优先（仅当用户预算币种是 JPY）**：若 candidate.tabelog.priceJPY 存在且用户预算硬条件币种是 JPY → **必须**用 Tabelog 价位判断（覆盖 priceFromReviews 和 Google priceLevel）：
-       - priceJPY.low > 用户预算上限 → fail（note 例："Tabelog ￥6000~7999 > ¥5000"）
-       - priceJPY.high != null 且 priceJPY.high ≤ 用户预算上限 → ok（note 例："Tabelog ￥3000~4500 ≤ ¥5000"）
+       - priceJPY.low > 用户预算上限 → fail
+       - priceJPY.high != null 且 priceJPY.high ≤ 用户预算上限 → ok
        - 区间跨过预算上限（low ≤ 上限 < high，或上限缺一边）→ unknown
     2. 否则若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
     3. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
     4. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
-- **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度，而不是只看 Google 评分；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
-- **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字、提炼具体菜名/服务点，但不得新增事实）。**如果 realWorldReviews 为 null，或 reviewHighlights 与 commonComplaints 都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据（rating、primaryType、editorialSummary、address），不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
-- **pros/cons 必须取真实素材**：当 reviewHighlights 非空时，pros 至少 2 条（不超过可用条数）来自 reviewHighlights 的真实文本浓缩；当 commonComplaints 非空时，cons 至少 1 条来自 commonComplaints（为空则 cons 留空，不要瞎编）。禁止"环境不错""值得一试"等空话。Google Reviews 来源的 highlights 是顾客原文整句，必须提炼成短句（如"出品稳定、服务热情"而不是照抄一整段）。
-- aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，${isEn ? '如 "(based on Dianping / Xiaohongshu user reviews)"' : '如「（综合大众点评、小红书等网友评价）」'}，只列实际出现在 sources 里的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : ""}
-- **Tabelog 信号（仅日本店铺可能有）**：candidate.tabelog 是来自 Tabelog（食べログ）的独立信号。**仅 tabelog.priceJPY 参与硬过滤**（见上方"价格判断"）；tabelog.rating / reviewCount / summary **不参与硬过滤、不参与匹配度评分**，只作为附加信息展示给用户，仅可在 aiSummary 里轻量提及（"Tabelog 评分 X.XX"），且必须忠实于原文。Tabelog 普遍偏低，3.5+ 已是优质店；不要把 Tabelog 评分和 Google 评分相加平均。tabelog 为 null 时不影响判断，不要因此扣分。
+- **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
+- **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字，不得新增事实）。**如果 realWorldReviews 为 null，或两个数组都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据，不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
+- **pros/cons 必须取真实素材**：reviewHighlights 非空时 pros 至少 2 条来自其浓缩；commonComplaints 非空时 cons 至少 1 条来自其浓缩。禁止"环境不错""值得一试"等空话。
+- aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加${isEn ? '"(based on Dianping / Xiaohongshu user reviews)"' : '「（综合大众点评、小红书等网友评价）」'}，只列实际出现的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : ""}
+- **Tabelog 信号（仅日本店铺可能有）**：仅 tabelog.priceJPY 参与硬过滤；其它字段只作展示，不参与评分。tabelog 为 null 时不要因此扣分。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
-- matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**，禁止写 "unknown" / "fail" / "pending" 等其它值；信息不足或轻微不达标的条目一律标 warn。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。**严格限定范围**：只能围绕用户实际提到的需求（hardFilters / softPreferences / negativeFilters / dishPreferences）来写。**绝对禁止**对用户没有提到的维度发出 warn 或提醒——例如用户没提预算/价格，就不准出现"价格偏高""人均较贵""超出预算"之类的条目；用户没提氛围，就不准提"氛围一般"；用户没提服务，就不准提"服务慢"。如果某维度用户没提，哪怕网评有相关吐槽，也只能放进 cons，不能进 matchDetails。
+- matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**。不要重复 hardFilterChecks 的内容。**严格限定范围**：只能围绕用户实际提到的需求来写，用户没提的维度禁止出现在 matchDetails 里（哪怕网评有相关吐槽，也只能放进 cons）。
 
-输出 JSON：{ "groups": [{ "cuisine": "...", "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }] }`;
+输出 JSON：{ "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }`;
+    };
 
-    yield { type: "stage", stage: "rank" };
-    let ranking: z.infer<typeof AiRankingSchema>;
-    const rankStartedAt = Date.now();
-    try {
-      // 用心跳包裹 AI 排序：Gemini 大 prompt 偶尔 15-30s，避免边缘网关静默切流。
-      const result = yield* withHeartbeat(
-        generateText({
+    // 每个 cuisine 独立调用 AI（主调用 + raw 文本兜底）。失败时返回空 picks，不抛出，
+    // 这样单个 cuisine 失败不会拖垮整次搜索。
+    const rankOneGroup = async (
+      group: GroupForPrompt,
+    ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
+      const prompt = buildPromptForGroup(group);
+      const startedAt = Date.now();
+      try {
+        const result = await generateText({
           model,
           prompt,
-          maxOutputTokens: 12000,
+          maxOutputTokens: 16000,
           output: Output.object({
-            schema: AiRankingSchema,
-            name: "echo_eats_ranking",
-            description: "AI ranking of real Google Places restaurant candidates",
+            schema: AiPickGroupSchema,
+            name: "echo_eats_picks",
+            description: `AI ranking of real candidates for cuisine "${group.cuisine}"`,
           }),
-        }),
-        "rank",
-      );
-      ranking = result.output;
-      console.log(`[Echo/AI-rank] Output.object succeeded in ${Date.now() - rankStartedAt}ms`);
-    } catch (e) {
-      const firstErr = e instanceof Error ? e.message : String(e);
-      console.warn(`[Echo/AI-rank] Output.object failed (${firstErr}), retrying with raw text…`);
-      // 兜底：用原始文本生成 + 正则抽 JSON 再 zod 校验。
-      try {
-        const fallback = yield* withHeartbeat(
-          generateText({
+        });
+        console.log(
+          `[Echo/AI-rank] "${group.cuisine}" Output.object ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
+        );
+        return { cuisine: group.cuisine, picks: result.output.picks };
+      } catch (e1) {
+        const m1 = e1 instanceof Error ? e1.message : String(e1);
+        console.warn(
+          `[Echo/AI-rank] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
+        );
+        try {
+          const fb = await generateText({
             model,
             prompt:
               prompt +
               `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-            maxOutputTokens: 12000,
-          }),
-          "rank-fallback",
-        );
-        const finishReason = (fallback as { finishReason?: string }).finishReason;
-        if (finishReason === "length" || finishReason === "max-tokens") {
-          throw new Error(
-            `模型输出被截断（finishReason=${finishReason}），请缩小需求或减少候选`,
+            maxOutputTokens: 16000,
+          });
+          const finishReason = (fb as { finishReason?: string }).finishReason;
+          if (finishReason === "length" || finishReason === "max-tokens") {
+            throw new Error(`truncated (finishReason=${finishReason})`);
+          }
+          const text = fb.text || "";
+          const jsonText = (() => {
+            const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+            if (fenced) return fenced[1].trim();
+            const m = text.match(/\{[\s\S]*\}/);
+            return m ? m[0] : text;
+          })();
+          const parsed = AiPickGroupSchema.parse(JSON.parse(jsonText));
+          console.log(
+            `[Echo/AI-rank] "${group.cuisine}" fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
           );
+          return { cuisine: group.cuisine, picks: parsed.picks };
+        } catch (e2) {
+          const m2 = e2 instanceof Error ? e2.message : String(e2);
+          console.error(`[Echo/AI-rank] "${group.cuisine}" failed: ${m2}`);
+          return { cuisine: group.cuisine, picks: [] };
         }
-        const text = fallback.text || "";
-        const jsonText = (() => {
-          const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-          if (fenced) return fenced[1].trim();
-          const m = text.match(/\{[\s\S]*\}/);
-          return m ? m[0] : text;
-        })();
-        const parsed = JSON.parse(jsonText);
-        ranking = AiRankingSchema.parse(parsed);
-        console.log(`[Echo/AI-rank] fallback parse succeeded (finishReason=${finishReason})`);
-      } catch (e2) {
-        const msg = e2 instanceof Error ? e2.message : String(e2);
-        console.error(`[Echo/AI-rank] fallback also failed: ${msg}`);
-        yield {
-          type: "result",
-          payload: {
-            groups: [],
-            error: isEn
-              ? `AI ranking failed: the model output was truncated or returned non-JSON. Please retry or narrow your request (${msg.slice(0, 120)})`
-              : `AI 排序失败：模型输出被截断或返回非 JSON，请再试一次或缩小需求（${msg.slice(0, 120)}）`,
-            suggestions: fallbackSuggestions(uiLang),
-          },
-        };
-        return;
       }
+    };
+
+    yield { type: "stage", stage: "rank" };
+    const rankStartedAt = Date.now();
+    // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
+    const groupResults = yield* withHeartbeat(
+      Promise.all(candidatesForPrompt.map(rankOneGroup)),
+      "rank",
+    );
+    console.log(
+      `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
+    );
+    const ranking: z.infer<typeof AiRankingSchema> = { groups: groupResults };
+
+    // 所有 cuisine 都拿不到 picks 时，给一个友好兜底（输入侧本来就有候选才报错）。
+    if (
+      groupResults.length > 0 &&
+      groupResults.every((g) => g.picks.length === 0) &&
+      candidatesForPrompt.some((g) => g.candidates.length > 0)
+    ) {
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: isEn
+            ? "AI ranking failed for all cuisines. Please retry or narrow your request."
+            : "AI 排序对所有料理都失败了，请稍后重试或缩小需求范围。",
+          suggestions: fallbackSuggestions(uiLang),
+        },
+      };
+      return;
     }
+
 
     // 3. 合并 AI picks 与真实 Place 数据
     const placeById = new Map<string, { cuisine: string; place: PlaceCandidate }>();
