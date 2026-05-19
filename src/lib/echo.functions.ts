@@ -1380,7 +1380,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
         : `- 「${group.cuisine}」：（无额外扩展）`;
 
-      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**精挑 3-5 家最匹配的店（硬上限 5 家，宁缺毋滥；只有当候选明显都不合适时才返回少于 3 家）**，并给出打分和理由。${langDirective}
+      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**目标返回 5 家最匹配的店（硬上限 5 家）**。如果候选里实在凑不出 5 家像样的店，可以返回少于 5 家——剩下的会由系统从其它候选自动补齐。${langDirective}
 
 用户需求：
 - 城市：${data.city}
