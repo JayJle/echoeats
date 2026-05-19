@@ -259,12 +259,14 @@ export const parseRequirements = createServerFn({ method: "POST" })
         }),
       });
       const parsed = ParsedSchema.parse(output);
+      parsed.uiLanguage = data.uiLanguage;
       // 用户未选 cuisines 且 AI 推断出了非兜底品类 → 标注为 AI 识别
       const userProvidedCuisines = data.cuisines.length > 0;
+      const fallbackWord = data.uiLanguage === "en" ? "Restaurants" : "餐厅";
       parsed.cuisinesInferred =
         !userProvidedCuisines &&
         parsed.cuisines.length > 0 &&
-        !(parsed.cuisines.length === 1 && parsed.cuisines[0] === "餐厅");
+        !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
       return parsed;
     };
 
