@@ -10,6 +10,7 @@ const ParseInput = z.object({
   cuisines: z.array(z.string()).default([]),
   date: z.string().default(""),
   freeText: z.string().default(""),
+  uiLanguage: z.enum(["zh", "en"]).default("zh"),
 });
 
 // 宽松的 weight：接受字符串/越界数字/缺失，归一到 [0.1, 1.0]
