@@ -107,7 +107,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 - 城市：${data.city}
 - 料理类型：${data.cuisines.length ? data.cuisines.join("、") : "（用户跳过了料理选择，请从「其它需求」推断 1-3 个料理候选；推断不出来就填 [\"餐厅\"]）"}
-- 日期：${data.date || "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）"}
+- 日期：${data.date || (data.uiLanguage === "en" ? "（用户未指定，dateTime 字段必须填英文字符串 \"Unspecified\"，不要填中文，也不要把日期/营业时间当 hardFilter）" : "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）")}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
 请把需求结构化为 JSON。**所有自由文本字段（hardFilters/softPreferences/negativeFilters/dishPreferences/cuisineLevelConstraints/searchStrategy/cuisines/dateTime/visitTime.raw/visitTime.evidence 中所有人类可读内容）必须用 ${data.uiLanguage === "en" ? "English（英文）" : "简体中文"} 撰写**。注意：\`language\` 字段（BCP47 搜索目标语言，用于 Google Maps）按城市本地语言填写，不受此影响；\`visitTime.evidence\` 必须是用户原文片段，保持原文不翻译。如果用户没提到某类，返回空数组。
@@ -789,10 +789,14 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
   return links.slice(0, 6);
 }
 
-function formatPriceFromReview(review: ReviewSummary | null): string | null {
+function formatPriceFromReview(review: ReviewSummary | null, isEn = false): string | null {
   if (!review || review.priceLevel == null) return null;
   const sym = review.priceCurrency ? CURRENCY_SYMBOL[review.priceCurrency] ?? "" : "";
   const amount = `${sym}${review.priceLevel}`;
+  if (isEn) {
+    const ctx = review.priceContext ? ` (${review.priceContext}, from reviews)` : " (from reviews)";
+    return `${amount}${ctx}`;
+  }
   const ctx = review.priceContext ? `（${review.priceContext}，来自网评）` : "（来自网评）";
   return `${amount}${ctx}`;
 }
@@ -801,6 +805,7 @@ function candidateRatings(
   p: PlaceCandidate,
   review: ReviewSummary | null,
   tabelog: TabelogInfo | null,
+  isEn = false,
 ) {
   const score =
     p.rating != null
@@ -808,10 +813,13 @@ function candidateRatings(
       : null;
   const dpScore =
     review?.dianpingRating != null
-      ? `${review.dianpingRating.toFixed(1)} / 5（网评）`
+      ? `${review.dianpingRating.toFixed(1)} / 5${isEn ? " (reviews)" : "（网评）"}`
       : null;
-  const priceFromReview = formatPriceFromReview(review);
-  const priceScore = priceFromReview ?? null;
+  const reviewPrice = formatPriceFromReview(review, isEn);
+  const googleFallback = priceLevelLabel(p.priceLevel);
+  const priceScore =
+    reviewPrice ??
+    (googleFallback ? `${googleFallback}${isEn ? " (Google)" : "（Google）"}` : null);
   const tabelogScore =
     tabelog?.rating != null
       ? `${tabelog.rating} / 5${tabelog.reviewCount ? ` (${tabelog.reviewCount})` : ""}`
@@ -819,8 +827,8 @@ function candidateRatings(
   return [
     { platform: "Google Maps", score },
     { platform: "Tabelog", score: tabelogScore },
-    { platform: "大众点评", score: dpScore },
-    { platform: "人均价格", score: priceScore },
+    { platform: isEn ? "Dianping" : "大众点评", score: dpScore },
+    { platform: isEn ? "Avg. price" : "人均价格", score: priceScore },
   ];
 }
 
@@ -1572,12 +1580,27 @@ ${JSON.stringify(group.candidates, null, 2)}
               const c = checks[i];
               const noteSuffix = c.note ? ` — ${c.note}` : "";
               if (c.status === "ok") {
-                return { label: `✓ 硬条件：${h.text}${noteSuffix}`, status: "ok" as const };
+                return {
+                  label: isEn
+                    ? `✓ Constraint: ${h.text}${noteSuffix}`
+                    : `✓ 硬条件：${h.text}${noteSuffix}`,
+                  status: "ok" as const,
+                };
               }
               if (c.status === "fail") {
-                return { label: `✗ 硬条件未满足：${h.text}${noteSuffix}`, status: "warn" as const };
+                return {
+                  label: isEn
+                    ? `✗ Constraint not met: ${h.text}${noteSuffix}`
+                    : `✗ 硬条件未满足：${h.text}${noteSuffix}`,
+                  status: "warn" as const,
+                };
               }
-              return { label: `？ 硬条件待核实：${h.text}${noteSuffix}`, status: "warn" as const };
+              return {
+                label: isEn
+                  ? `? Constraint to verify: ${h.text}${noteSuffix}`
+                  : `？ 硬条件待核实：${h.text}${noteSuffix}`,
+                status: "warn" as const,
+              };
             });
             // 归一化：模型偶发返回的 "unknown" 在前端没对应样式，统一映射为 warn。
             const aiDetails = (pick.matchDetails ?? []).slice(0, 6).map((d) => ({
@@ -1602,7 +1625,7 @@ ${JSON.stringify(group.candidates, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null || visitMatchById.get(p.placeId) === "unknown",
-              ratings: candidateRatings(p, review, tabelogInfo),
+              ratings: candidateRatings(p, review, tabelogInfo, isEn),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
