@@ -305,11 +305,14 @@ export const parseRequirements = createServerFn({ method: "POST" })
       console.warn("[parseRequirements] AI 解析失败，使用兜底结构：", msg);
       return ParsedSchema.parse({
         city: data.city,
-        cuisines: data.cuisines.length ? data.cuisines : ["餐厅"],
-        dateTime: data.date || "未指定",
+        cuisines: data.cuisines.length
+          ? data.cuisines
+          : [data.uiLanguage === "en" ? "Restaurants" : "餐厅"],
+        dateTime: data.date || (data.uiLanguage === "en" ? "Unspecified" : "未指定"),
         country: "",
         language: "",
         visitTime: null,
+        uiLanguage: data.uiLanguage,
       });
     }
   });
