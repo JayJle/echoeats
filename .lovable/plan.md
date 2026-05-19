@@ -1,44 +1,48 @@
-# Finish English Mode End-to-End
+## Problem
 
-## Behavior the user wants
+On the English version of the results page, several strings still render in Chinese, and the per-person price row hides Google Place's price level when no review-based price is available.
 
-- The language toggle only switches **UI chrome** (buttons, labels, headings, chips' surrounding text).
-- It does **NOT** re-run AI search and does **NOT** change already-rendered results.
-- The language chosen **at the moment a search is launched** decides what language the AI generates results in. Those results stay in that language forever, even if the user toggles afterwards.
+Specifically:
+1. **"未指定"** appears when no date is chosen (line 311 — already language-aware, but verify it's reaching UI in EN).
+2. **"硬条件 / 硬条件未满足 / 硬条件待核实"** — match-detail labels are hardcoded in Chinese (`src/lib/echo.functions.ts` lines 1575–1580). They ignore `uiLanguage`.
+3. **"大众点评 / 人均价格"** — `candidateRatings` (lines 819–824) emits Chinese platform labels regardless of language. Plus `formatPriceFromReview` appends `（来自网评）` / `（…，来自网评）` in Chinese.
+4. **Per-person price ("人均消费") falls back to nothing** when there is no review-derived `priceLevel`. User wants the Google Places `priceLevel` ($, $$, $$$, $$$$) shown as a fallback even though the AI ranker doesn't weight it heavily.
 
-So: search in EN → English results, then toggle to 中文 → UI becomes Chinese but the restaurant cards stay English. Toggle back → UI English again, same cards. No extra AI calls, no billing surprises.
+## Fix
 
-## Why results page still looks Chinese today
+All changes are presentation-only (server function shapes the strings going to the UI; no schema or business-logic change).
 
-UI on `/results` already uses `t()`. What stays Chinese is **AI-generated content**: `aiSummary`, `pros`/`cons`, `matchDetails.label`, `hardFilterChecks.note`, `reviewHighlights`/`commonComplaints`, plus the parsed condition chips (because `parseRequirements` itself writes Chinese). Server functions never received `uiLanguage`, so prompts hardcode 简体中文.
+### 1. Plumb `uiLanguage` into the result-builder helpers
 
-## Changes
+Around line 1605 (`ratings: candidateRatings(p, review, tabelogInfo)`) and around line 1575 (match-detail labels), pass `data.uiLanguage` (already in scope as `isEn`).
 
-### `src/lib/echo.functions.ts`
-- Add `uiLanguage: z.enum(['zh','en']).default('zh')` to `ParseInput` and to the parsed schema consumed by `searchRestaurants`.
-- `parseRequirements` prompt: replace "所有内容用简体中文" with `All free-text fields must be in ${uiLanguage === 'en' ? 'English' : '简体中文'}`. Leave `language` (BCP47 for Google Maps) alone.
-- `searchRestaurants` reads `data.uiLanguage` and threads it to:
-  - `ai-rank` prompt → `aiSummary` (2-3 sentences), `pros`, `cons`, `matchDetails[].label`, `hardFilterChecks[].note` in `${uiLanguage}`. When `en`, source suffix becomes `(based on Dianping / Xiaohongshu user reviews)`.
-  - `dianping` summary → `reviewHighlights` / `commonComplaints` in `${uiLanguage}`; add `uiLanguage` to its function signature and its memoization key.
-- `cuisine-expand` unchanged (driven by destination city language).
+### 2. Localize `candidateRatings` (lines 800–825)
 
-### `src/routes/results.tsx`
-- **Do NOT** auto re-run search on toggle. `LanguageToggle` only flips UI text.
-- `buildParsedForSearch()` and `applyEdit()` already attach `uiLanguage: lang`. Verified.
-- Keep header `LanguageToggle` as-is.
+- Accept `isEn` arg.
+- Platform labels when `isEn`:
+  - `"大众点评"` → `"Dianping"`
+  - `"人均价格"` → `"Avg. price"`
+- Inside `dpScore`, replace `（网评）` with `(reviews)` when `isEn`.
+- **Price fallback**: if `formatPriceFromReview(review)` returns `null`, fall back to `priceLevelLabel(p.priceLevel)` (the Google `$$$` string). When using the Google fallback, append `(Google)` / `（Google）` so users know the source. This addresses the "show Google price even if not weighted" request.
 
-### `src/lib/dianping.server.ts`
-- Accept `uiLanguage`, inject into prompt, include in cache key so zh/en don't collide.
+### 3. Localize `formatPriceFromReview` (lines 792–798)
 
-### `src/lib/store.ts`
-- No change. `uiLanguage` is only attached on the request to the server, never persisted on `parsed`.
+Accept `isEn`; in EN return `"$120 (from reviews)"` or `"$120 (avg. price, from reviews)"`.
+
+### 4. Localize hard-constraint match-detail labels (lines 1570–1582)
+
+Use the existing i18n keys already defined in `dict.ts` (`results.hardCheckOk / Fail / Unknown`) — render via `translate(data.uiLanguage, "results.hardCheckOk", { text: h.text, suffix: noteSuffix })` from `src/lib/i18n/dict.ts`. Also localize `noteSuffix` separator (`（…）` → `(…)`).
+
+### 5. Date placeholder
+
+Confirm line 311 — `"Unspecified"` is already emitted for `uiLanguage === "en"`. If "未指定" still showing on EN UI, it likely comes from the AI model echoing the prompt template (line 110). Tighten the prompt: when `uiLanguage === "en"`, instruct the model to use `"Unspecified"` in `dateTime` instead of `"未指定"`.
 
 ## Out of scope
-- Translating already-stored Chinese results on toggle (no AI call on toggle).
-- `/api/transcribe` language hint (Whisper auto-detects).
 
-## Verification
-1. Set EN on `/`, run search → parsed chips, AI summaries, pros/cons, match labels, dianping highlights all English. Toggle to 中文 → UI chrome flips but cards stay English. No network call to AI.
-2. Set 中文 on `/`, run search → everything Chinese. Toggle to EN → UI flips, cards stay Chinese. No AI call.
-3. Edit conditions in EN mode after toggling from 中文 → new parse + search runs in EN (uses **current** toggle at the time of the new search).
-4. Regression: full ZH flow unchanged.
+- Source-side Chinese strings inside Dianping prompts (only used for CN cities, never surfaced raw on EN UI).
+- "Google 搜索" / "官网" link button labels (separate pass if user wants).
+- Changing how the AI ranker weights price (user explicitly said: keep behavior, just display).
+
+## Files touched
+
+- `src/lib/echo.functions.ts` — `candidateRatings`, `formatPriceFromReview`, match-detail builder, ranker prompt date-line.
