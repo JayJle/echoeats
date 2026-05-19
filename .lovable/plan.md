@@ -1,48 +1,27 @@
-## Problem
+## 建议：每个品类输出 5 家
 
-On the English version of the results page, several strings still render in Chinese, and the per-person price row hides Google Place's price level when no review-based price is available.
+理由：
+- **用户体验**：5 家正好是 "scan 一眼能记住" 的上限（米其林榜单、Eater "Best 5" 都是这个量级）。15 家用户翻到第 6 家就开始疲劳，决策反而更慢。
+- **延迟收益明显**：当前每个候选的输出包含 `aiSummary`(2-3 句) + `pros[]` + `cons[]` + `matchDetails[]` + 评分理由，单家约 250-400 output tokens。15 → 5 家，输出 tokens 直接砍掉 ~65%。`generateText` 的耗时主要由 output token 数决定（一个一个吐），所以**单品类排序耗时大约从 ~12-18s 降到 ~5-8s**，多品类并行下整体响应能从 20s+ 降到 10s 上下。
+- **截断风险消失**：之前 75 候选输出 15 家就触发过 `finishReason=length`，现在 5 家完全没压力，可以把 `maxOutputTokens` 也调小（更省 quota，且让模型更专注挑精）。
+- **质量不降反升**：让模型从 25 个候选里挑 5 家 vs 挑 15 家，挑 5 家会更严格、更聚焦头部，AI 不会被迫"凑数"把次优店也写进来。
 
-Specifically:
-1. **"未指定"** appears when no date is chosen (line 311 — already language-aware, but verify it's reaching UI in EN).
-2. **"硬条件 / 硬条件未满足 / 硬条件待核实"** — match-detail labels are hardcoded in Chinese (`src/lib/echo.functions.ts` lines 1575–1580). They ignore `uiLanguage`.
-3. **"大众点评 / 人均价格"** — `candidateRatings` (lines 819–824) emits Chinese platform labels regardless of language. Plus `formatPriceFromReview` appends `（来自网评）` / `（…，来自网评）` in Chinese.
-4. **Per-person price ("人均消费") falls back to nothing** when there is no review-derived `priceLevel`. User wants the Google Places `priceLevel` ($, $$, $$$, $$$$) shown as a fallback even though the AI ranker doesn't weight it heavily.
+## 改动范围
 
-## Fix
+仅改 `src/lib/echo.functions.ts`：
 
-All changes are presentation-only (server function shapes the strings going to the UI; no schema or business-logic change).
+1. **Prompt 文案**（line 1377）：把 "最多 15 家，不要刻意压缩数量" 改为 "**精挑 3-5 家最匹配的店**，宁缺毋滥；只有当候选明显都不合适时才返回少于 3 家"。中英文 prompt 同步。
+2. **Schema 限制**（如果 `AiPickGroupSchema.picks` 上有 `.max()` 也下调到 8 作为硬上限，给模型一点缓冲但不爆）。
+3. **`maxOutputTokens`**：从 16000 调到 **6000**（5 家足够，留 buffer 应对 reasoning）。
+4. **后处理 slice**（line 1532）：`picks.slice(0, 20)` → `picks.slice(0, 5)`。
+5. **保留**：`PER_CUISINE_CAP = 25`（输入侧候选池）不变 —— 输入候选多对成本/延迟影响很小（input token 便宜且并行处理），但能让模型有更大筛选空间。
 
-### 1. Plumb `uiLanguage` into the result-builder helpers
+## 不改动
 
-Around line 1605 (`ratings: candidateRatings(p, review, tabelogInfo)`) and around line 1575 (match-detail labels), pass `data.uiLanguage` (already in scope as `isEn`).
+- 前端 UI 不动（自然显示更少卡片即可）。
+- 输入候选数、Tabelog/Dianping 抓取流程不动。
+- 多品类并行架构不动。
 
-### 2. Localize `candidateRatings` (lines 800–825)
+## 不确定的点
 
-- Accept `isEn` arg.
-- Platform labels when `isEn`:
-  - `"大众点评"` → `"Dianping"`
-  - `"人均价格"` → `"Avg. price"`
-- Inside `dpScore`, replace `（网评）` with `(reviews)` when `isEn`.
-- **Price fallback**: if `formatPriceFromReview(review)` returns `null`, fall back to `priceLevelLabel(p.priceLevel)` (the Google `$$$` string). When using the Google fallback, append `(Google)` / `（Google）` so users know the source. This addresses the "show Google price even if not weighted" request.
-
-### 3. Localize `formatPriceFromReview` (lines 792–798)
-
-Accept `isEn`; in EN return `"$120 (from reviews)"` or `"$120 (avg. price, from reviews)"`.
-
-### 4. Localize hard-constraint match-detail labels (lines 1570–1582)
-
-Use the existing i18n keys already defined in `dict.ts` (`results.hardCheckOk / Fail / Unknown`) — render via `translate(data.uiLanguage, "results.hardCheckOk", { text: h.text, suffix: noteSuffix })` from `src/lib/i18n/dict.ts`. Also localize `noteSuffix` separator (`（…）` → `(…)`).
-
-### 5. Date placeholder
-
-Confirm line 311 — `"Unspecified"` is already emitted for `uiLanguage === "en"`. If "未指定" still showing on EN UI, it likely comes from the AI model echoing the prompt template (line 110). Tighten the prompt: when `uiLanguage === "en"`, instruct the model to use `"Unspecified"` in `dateTime` instead of `"未指定"`.
-
-## Out of scope
-
-- Source-side Chinese strings inside Dianping prompts (only used for CN cities, never surfaced raw on EN UI).
-- "Google 搜索" / "官网" link button labels (separate pass if user wants).
-- Changing how the AI ranker weights price (user explicitly said: keep behavior, just display).
-
-## Files touched
-
-- `src/lib/echo.functions.ts` — `candidateRatings`, `formatPriceFromReview`, match-detail builder, ranker prompt date-line.
+是否需要保留 "用户主动展开看更多" 的入口？当前方案直接砍到 5 家，14 家被丢弃。如果你想保留 "默认 5 家 + 展开查看其余" 的体验，需要额外前端改动（plan 里没含）。我倾向**不加展开**：核心是减少决策时间，给得多就是反目标。
