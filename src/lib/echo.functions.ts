@@ -735,7 +735,7 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-function buildLinks(p: PlaceCandidate, city: string, country: string) {
+function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = false) {
   const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
   const qName = encodeURIComponent(p.name);
@@ -747,12 +747,12 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
   if (isCN) {
     // 大众点评 H5 搜索深链（手机会拉起 App）
     links.push({
-      label: "大众点评",
+      label: isEn ? "Dianping" : "大众点评",
       url: `https://m.dianping.com/searchshop?keyword=${qName}&regionname=${qCity}`,
     });
     // 小红书搜索（用户口碑）
     links.push({
-      label: "小红书",
+      label: isEn ? "Xiaohongshu" : "小红书",
       url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
     });
   }
@@ -768,7 +768,9 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
   if (p.websiteUri) {
     const isDianpingShop = /dianping\.com\/shop\//i.test(p.websiteUri);
     links.push({
-      label: isDianpingShop ? "大众点评店铺页" : "官网",
+      label: isDianpingShop
+        ? isEn ? "Dianping page" : "大众点评店铺页"
+        : isEn ? "Website" : "官网",
       url: p.websiteUri,
     });
   }
@@ -785,7 +787,7 @@ function buildLinks(p: PlaceCandidate, city: string, country: string) {
     });
   }
 
-  links.push({ label: "Google 搜索", url: `https://www.google.com/search?q=${q}` });
+  links.push({ label: isEn ? "Google Search" : "Google 搜索", url: `https://www.google.com/search?q=${q}` });
   return links.slice(0, 6);
 }
 
