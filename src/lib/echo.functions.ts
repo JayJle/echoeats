@@ -1380,7 +1380,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
         : `- 「${group.cuisine}」：（无额外扩展）`;
 
-      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**精挑 3-5 家最匹配的店（硬上限 5 家，宁缺毋滥；只有当候选明显都不合适时才返回少于 3 家）**，并给出打分和理由。${langDirective}
+      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**目标返回 5 家最匹配的店（硬上限 5 家）**。如果候选里实在凑不出 5 家像样的店，可以返回少于 5 家——剩下的会由系统从其它候选自动补齐。${langDirective}
 
 用户需求：
 - 城市：${data.city}
@@ -1654,12 +1654,91 @@ ${JSON.stringify(group.candidates, null, 2)}
           .filter((b) => b.bucket === "ok")
           .sort(sortByScore)
           .map((b) => b.restaurant)
-          .slice(0, 15);
+          .slice(0, 5);
         const partialRestaurants = built
           .filter((b) => b.bucket === "partial")
           .sort(sortByScore)
           .map((b) => b.restaurant)
-          .slice(0, 15);
+          .slice(0, 5);
+
+        // 兜底补足：保证每个 cuisine 最多展示 5 家。如果 AI 精挑结果 < 5，
+        // 从同 cuisine 的剩余 Google 候选里按 (rating × log(reviewCount)) 排序补齐，
+        // 并明确标注「已放宽匹配条件以补足 5 个推荐」。
+        const TARGET_TOTAL = 5;
+        let currentTotal = restaurants.length + partialRestaurants.length;
+        if (currentTotal < TARGET_TOTAL) {
+          const usedIds = new Set<string>(
+            [...restaurants, ...partialRestaurants]
+              .map((r) => placeByRestaurantId.get(r.id)?.placeId ?? "")
+              .filter(Boolean),
+          );
+          const poolEntry = placeResults.find((r) => r.cuisine === cuisine);
+          const pool = (poolEntry?.places ?? [])
+            .filter((p) => p.placeId && !usedIds.has(p.placeId))
+            .slice()
+            .sort((a, b) => {
+              const sa = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
+              const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
+              return sb - sa;
+            });
+
+          const relaxedNote = isEn
+            ? "Relaxed match — added to reach 5 recommendations"
+            : "已放宽匹配条件以补足 5 个推荐";
+
+          for (let i = 0; i < pool.length && currentTotal < TARGET_TOTAL; i++) {
+            const p = pool[i];
+            const review = reviewById.get(p.placeId) ?? null;
+            const tabelogInfo = tabelogById.get(p.placeId) ?? null;
+            const idx = restaurants.length + partialRestaurants.length;
+            const score =
+              p.rating != null ? Math.max(40, Math.round(p.rating * 14)) : 50;
+            const relaxedRestaurant = {
+              id: `${cuisine}-relaxed-${idx}-${p.placeId}`
+                .replace(/[^a-zA-Z0-9_-]+/g, "-")
+                .slice(0, 80),
+              name: p.name,
+              localName: p.name,
+              cuisine,
+              address: p.address,
+              googleMapsUri: p.googleMapsUri,
+              websiteUri: p.websiteUri,
+              primaryType: p.primaryType,
+              matchScore: score,
+              matchTier: "partial" as const,
+              openNow: p.openNow ?? true,
+              reservable: false,
+              needsReview: true,
+              ratings: candidateRatings(p, review, tabelogInfo, isEn, country),
+              aiSummary: isEn
+                ? `${p.name} — added based on Google data to complete your list of 5 recommendations. Match against your specific conditions has not been verified.`
+                : `${p.name} — 基于 Google 数据自动补充，用于凑齐 5 个推荐，未逐条核对你的具体条件。`,
+              matchDetails: [
+                { label: relaxedNote, status: "warn" as const },
+                ...(p.rating != null
+                  ? [
+                      {
+                        label: isEn
+                          ? `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
+                          : `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? `（${p.userRatingCount} 条）` : ""}`,
+                        status: "ok" as const,
+                      },
+                    ]
+                  : []),
+              ],
+              pros: [],
+              cons: [],
+              links: buildLinks(p, data.city, country, isEn),
+              photoUrls: [] as string[],
+              tabelog: tabelogInfo,
+              weekdayDescriptions: p.weekdayDescriptions ?? null,
+              visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
+            };
+            placeByRestaurantId.set(relaxedRestaurant.id, p);
+            partialRestaurants.push(relaxedRestaurant);
+            currentTotal++;
+          }
+        }
 
         if (!restaurants.length && !partialRestaurants.length) return null;
         return {
