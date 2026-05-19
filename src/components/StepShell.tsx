@@ -1,5 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { ReactNode } from "react";
+import { useT } from "@/lib/i18n/context";
+import { LanguageToggle } from "@/components/LanguageToggle";
 
 type Props = {
   step: number;
@@ -11,14 +13,18 @@ type Props = {
 };
 
 export function StepShell({ step, total = 4, title, hint, children, footer }: Props) {
+  const { t } = useT();
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <header className="px-6 py-5 flex items-center justify-between border-b border-border/60">
         <Link to="/" className="font-semibold tracking-tight text-foreground">
           Echo <span className="text-primary">Eats</span>
         </Link>
-        <div className="text-xs text-muted-foreground">
-          Step {step} / {total}
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-muted-foreground">
+            {t("common.step", { n: step, total })}
+          </div>
+          <LanguageToggle />
         </div>
       </header>
 

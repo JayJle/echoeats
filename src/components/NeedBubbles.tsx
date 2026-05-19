@@ -1,47 +1,10 @@
 import { useState } from "react";
-
-const POOL = [
-  // 价位
-  "人均 200 元以内",
-  "高端",
-  "性价比高",
-  // 评分/口碑
-  "谷歌评分 4.0 以上",
-  "必比登推荐",
-  "米其林",
-  "本地人爱去",
-  "不要游客店",
-  // 氛围
-  "适合约会",
-  "安静能聊天",
-  "氛围有格调",
-  "适合商务",
-  "适合带小孩",
-  "适合多人聚餐",
-  // 位置
-  "靠近地铁",
-  "在商场里",
-  "步行可达",
-  "有停车位",
-  // 体验
-  "有包间",
-  "可以预约",
-  "不用排队",
-  "有英文菜单",
-  "有中文菜单",
-  "室外座位",
-  // 食材/出品
-  "食材新鲜",
-  "现做现卖",
-  "分量足",
-  "摆盘精致",
-  "有素食选项",
-  // 菜品偏好
-  "招牌菜必点",
-  "适合拍照",
-];
+import { useT } from "@/lib/i18n/context";
+import { NEED_BUBBLES } from "@/lib/i18n/dict";
 
 export function NeedBubbles({ onPick }: { onPick: (text: string) => void }) {
+  const { lang, t } = useT();
+  const pool = NEED_BUBBLES.map((b) => b[lang]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [popping, setPopping] = useState<string | null>(null);
 
@@ -60,7 +23,7 @@ export function NeedBubbles({ onPick }: { onPick: (text: string) => void }) {
   };
 
   // duplicate the pool so the marquee loops seamlessly
-  const track = [...POOL, ...POOL];
+  const track = [...pool, ...pool];
 
   return (
     <div
@@ -71,7 +34,7 @@ export function NeedBubbles({ onPick }: { onPick: (text: string) => void }) {
         WebkitMaskImage:
           "linear-gradient(to right, transparent, black 6%, black 94%, transparent)",
       }}
-      aria-label="需求灵感"
+      aria-label={t("needs.aria")}
     >
       <div
         className="flex gap-2 w-max group-hover:[animation-play-state:paused] focus-within:[animation-play-state:paused]"
