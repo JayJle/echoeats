@@ -1352,7 +1352,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       })
       .join("\n");
 
-    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。
+    const langDirective = isEn
+      ? `\n## OUTPUT LANGUAGE (MANDATORY)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English**. Do not use Chinese characters in any of those fields, even if the source review snippets are Chinese (translate/paraphrase them into concise English). Keep \`placeId\` and any enum/status values exactly as specified.\n`
+      : `\n## 输出语言（强制）\n你产出的所有人类可读字符串字段（aiSummary、pros、cons、matchDetails[].label、hardFilterChecks[].note）必须用**简体中文**撰写。\n`;
+
+    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。${langDirective}
 
 用户需求：
 - 城市：${data.city}
