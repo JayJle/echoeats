@@ -1600,7 +1600,9 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         type: "result",
         payload: {
           groups: [],
-          error: "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
+          error: isEn
+            ? "AI did not pick any matching restaurants from the real candidates. Please loosen your conditions or try a different cuisine."
+            : "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
           suggestions: FALLBACK_SUGGESTIONS,
         },
       };
