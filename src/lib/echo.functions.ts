@@ -110,7 +110,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 日期：${data.date || "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）"}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
-请把需求结构化为 JSON。所有内容用简体中文。如果用户没提到某类，返回空数组。
+请把需求结构化为 JSON。**所有自由文本字段（hardFilters/softPreferences/negativeFilters/dishPreferences/cuisineLevelConstraints/searchStrategy/cuisines/dateTime/visitTime.raw/visitTime.evidence 中所有人类可读内容）必须用 ${data.uiLanguage === "en" ? "English（英文）" : "简体中文"} 撰写**。注意：\`language\` 字段（BCP47 搜索目标语言，用于 Google Maps）按城市本地语言填写，不受此影响；\`visitTime.evidence\` 必须是用户原文片段，保持原文不翻译。如果用户没提到某类，返回空数组。
 
 ## 字段说明
 
