@@ -1131,7 +1131,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             : isEn
               ? `Google Places call failed: ${placesError}`
               : `Google Places 调用失败：${placesError}`,
-          suggestions: FALLBACK_SUGGESTIONS,
+          suggestions: fallbackSuggestions(uiLang),
         },
       };
       return;
@@ -1150,7 +1150,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             : isEn
               ? `Google Places found no matching candidates in "${data.city}"`
               : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
-          suggestions: FALLBACK_SUGGESTIONS,
+          suggestions: fallbackSuggestions(uiLang),
         },
       };
       return;
@@ -1464,7 +1464,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             error: isEn
               ? `AI ranking failed: the model output was truncated or returned non-JSON. Please retry or narrow your request (${msg.slice(0, 120)})`
               : `AI 排序失败：模型输出被截断或返回非 JSON，请再试一次或缩小需求（${msg.slice(0, 120)}）`,
-            suggestions: FALLBACK_SUGGESTIONS,
+            suggestions: fallbackSuggestions(uiLang),
           },
         };
         return;
@@ -1611,7 +1611,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           error: isEn
             ? "AI did not pick any matching restaurants from the real candidates. Please loosen your conditions or try a different cuisine."
             : "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
-          suggestions: FALLBACK_SUGGESTIONS,
+          suggestions: fallbackSuggestions(uiLang),
         },
       };
       return;
@@ -1648,7 +1648,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
             ? `No reliable candidates found for "${missing.join(", ")}"`
             : `没有找到「${missing.join("、")}」的可靠候选`
           : null,
-        suggestions: missing.length ? FALLBACK_SUGGESTIONS : [],
+        suggestions: missing.length ? fallbackSuggestions(uiLang) : [],
       },
     };
   });
