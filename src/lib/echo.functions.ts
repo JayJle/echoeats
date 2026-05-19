@@ -10,6 +10,7 @@ const ParseInput = z.object({
   cuisines: z.array(z.string()).default([]),
   date: z.string().default(""),
   freeText: z.string().default(""),
+  uiLanguage: z.enum(["zh", "en"]).default("zh"),
 });
 
 // 宽松的 weight：接受字符串/越界数字/缺失，归一到 [0.1, 1.0]
@@ -72,6 +73,7 @@ const ParsedSchema = z.object({
   language: z.string().default(""), // BCP 47
   mode: z.enum(["quick", "deep"]).catch("deep").default("deep"),
   visitTime: VisitTimeSchema,
+  uiLanguage: z.enum(["zh", "en"]).catch("zh").default("zh"),
 });
 
 export const parseRequirements = createServerFn({ method: "POST" })
@@ -108,7 +110,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 日期：${data.date || "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）"}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
-请把需求结构化为 JSON。所有内容用简体中文。如果用户没提到某类，返回空数组。
+请把需求结构化为 JSON。**所有自由文本字段（hardFilters/softPreferences/negativeFilters/dishPreferences/cuisineLevelConstraints/searchStrategy/cuisines/dateTime/visitTime.raw/visitTime.evidence 中所有人类可读内容）必须用 ${data.uiLanguage === "en" ? "English（英文）" : "简体中文"} 撰写**。注意：\`language\` 字段（BCP47 搜索目标语言，用于 Google Maps）按城市本地语言填写，不受此影响；\`visitTime.evidence\` 必须是用户原文片段，保持原文不翻译。如果用户没提到某类，返回空数组。
 
 ## 字段说明
 
@@ -257,12 +259,14 @@ export const parseRequirements = createServerFn({ method: "POST" })
         }),
       });
       const parsed = ParsedSchema.parse(output);
+      parsed.uiLanguage = data.uiLanguage;
       // 用户未选 cuisines 且 AI 推断出了非兜底品类 → 标注为 AI 识别
       const userProvidedCuisines = data.cuisines.length > 0;
+      const fallbackWord = data.uiLanguage === "en" ? "Restaurants" : "餐厅";
       parsed.cuisinesInferred =
         !userProvidedCuisines &&
         parsed.cuisines.length > 0 &&
-        !(parsed.cuisines.length === 1 && parsed.cuisines[0] === "餐厅");
+        !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
       return parsed;
     };
 
@@ -301,11 +305,14 @@ export const parseRequirements = createServerFn({ method: "POST" })
       console.warn("[parseRequirements] AI 解析失败，使用兜底结构：", msg);
       return ParsedSchema.parse({
         city: data.city,
-        cuisines: data.cuisines.length ? data.cuisines : ["餐厅"],
-        dateTime: data.date || "未指定",
+        cuisines: data.cuisines.length
+          ? data.cuisines
+          : [data.uiLanguage === "en" ? "Restaurants" : "餐厅"],
+        dateTime: data.date || (data.uiLanguage === "en" ? "Unspecified" : "未指定"),
         country: "",
         language: "",
         visitTime: null,
+        uiLanguage: data.uiLanguage,
       });
     }
   });
@@ -888,12 +895,20 @@ export async function consumeSearchStream(
   return final;
 }
 
-const FALLBACK_SUGGESTIONS = [
+const FALLBACK_SUGGESTIONS_ZH = [
   "尝试更具体的料理类型（如把「日料」换成「寿司」或「居酒屋」）",
   "扩大或更换城市（用城市核心区域名）",
   "在「其它需求」里加上具体菜品或预算，让 AI 更聚焦",
   "减少同时搜索的料理类型数量",
 ];
+const FALLBACK_SUGGESTIONS_EN = [
+  "Try a more specific cuisine (e.g. swap \"Japanese\" for \"Sushi\" or \"Izakaya\")",
+  "Widen the city or use a central district name",
+  "Add a specific dish or budget in \"Other requirements\" to focus the AI",
+  "Reduce the number of cuisines searched at once",
+];
+const fallbackSuggestions = (lang: "zh" | "en") =>
+  lang === "en" ? FALLBACK_SUGGESTIONS_EN : FALLBACK_SUGGESTIONS_ZH;
 
 // 判断某个店在指定周几+时间是否营业。
 // periods 缺失 → unknown（保留）；命中区间 → open；都不命中 → closed。
@@ -927,9 +942,18 @@ function isOpenAt(
 export const searchRestaurants = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParsedSchema.parse(input))
   .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
+    const uiLang: "zh" | "en" = data.uiLanguage ?? "zh";
+    const isEn = uiLang === "en";
     const aiKey = process.env.LOVABLE_API_KEY;
     if (!aiKey) {
-      yield { type: "result", payload: { groups: [], error: "服务未配置 AI 凭据", suggestions: [] } };
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: isEn ? "AI credentials are not configured" : "服务未配置 AI 凭据",
+          suggestions: [],
+        },
+      };
       return;
     }
     // country/language 优先取 AI parse 结果，正则只做 fallback
@@ -960,7 +984,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         type: "result",
         payload: {
           groups: [],
-          error: "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
+          error: isEn
+            ? "Google Places API key (GOOGLE_PLACES_API_KEY) is not configured"
+            : "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
           suggestions: [],
         },
       };
@@ -971,14 +997,20 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         type: "result",
         payload: {
           groups: [],
-          error: "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
+          error: isEn
+            ? "Mainland China cities require a Perplexity API key to fetch Dianping data, but none is configured"
+            : "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
           suggestions: [],
         },
       };
       return;
     }
 
-    yield { type: "stage", stage: "places", message: `搜索 ${data.city} 候选餐厅…` };
+    yield {
+      type: "stage",
+      stage: "places",
+      message: isEn ? `Searching candidates in ${data.city}…` : `搜索 ${data.city} 候选餐厅…`,
+    };
 
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
@@ -1019,7 +1051,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             return {
               cuisine,
               places,
-              error: places.length ? null : "大众点评未返回候选",
+              error: places.length ? null : isEn ? "Dianping returned no candidates" : "大众点评未返回候选",
             };
           } catch (e) {
             return {
@@ -1093,9 +1125,13 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         payload: {
           groups: [],
           error: useDianping
-            ? `大众点评检索失败：${placesError}`
-            : `Google Places 调用失败：${placesError}`,
-          suggestions: FALLBACK_SUGGESTIONS,
+            ? isEn
+              ? `Dianping lookup failed: ${placesError}`
+              : `大众点评检索失败：${placesError}`
+            : isEn
+              ? `Google Places call failed: ${placesError}`
+              : `Google Places 调用失败：${placesError}`,
+          suggestions: fallbackSuggestions(uiLang),
         },
       };
       return;
@@ -1108,9 +1144,13 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         payload: {
           groups: [],
           error: useDianping
-            ? `大众点评在「${data.city}」没找到符合的餐厅候选`
-            : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
-          suggestions: FALLBACK_SUGGESTIONS,
+            ? isEn
+              ? `Dianping found no matching candidates in "${data.city}"`
+              : `大众点评在「${data.city}」没找到符合的餐厅候选`
+            : isEn
+              ? `Google Places found no matching candidates in "${data.city}"`
+              : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
+          suggestions: fallbackSuggestions(uiLang),
         },
       };
       return;
@@ -1312,7 +1352,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       })
       .join("\n");
 
-    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。
+    const langDirective = isEn
+      ? `\n## OUTPUT LANGUAGE (MANDATORY)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English**. Do not use Chinese characters in any of those fields, even if the source review snippets are Chinese (translate/paraphrase them into concise English). Keep \`placeId\` and any enum/status values exactly as specified.\n`
+      : `\n## 输出语言（强制）\n你产出的所有人类可读字符串字段（aiSummary、pros、cons、matchDetails[].label、hardFilterChecks[].note）必须用**简体中文**撰写。\n`;
+
+    const prompt = `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅，按料理分组。请根据用户需求，**尽可能多挑出符合的店（每组最多 15 家，不要刻意压缩数量；只要没有任何高权重硬条件被证伪，都应纳入）**，并给出打分和理由。${langDirective}
 
 用户需求：
 - 城市：${data.city}
@@ -1356,7 +1400,7 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
 - **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度，而不是只看 Google 评分；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
 - **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字、提炼具体菜名/服务点，但不得新增事实）。**如果 realWorldReviews 为 null，或 reviewHighlights 与 commonComplaints 都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据（rating、primaryType、editorialSummary、address），不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
 - **pros/cons 必须取真实素材**：当 reviewHighlights 非空时，pros 至少 2 条（不超过可用条数）来自 reviewHighlights 的真实文本浓缩；当 commonComplaints 非空时，cons 至少 1 条来自 commonComplaints（为空则 cons 留空，不要瞎编）。禁止"环境不错""值得一试"等空话。Google Reviews 来源的 highlights 是顾客原文整句，必须提炼成短句（如"出品稳定、服务热情"而不是照抄一整段）。
-- aiSummary: 2-3 句中文，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示"网友提到…"。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，如「（综合大众点评、小红书等网友评价）」，只列实际出现在 sources 里的平台。
+- aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加一个轻提示括号，${isEn ? '如 "(based on Dianping / Xiaohongshu user reviews)"' : '如「（综合大众点评、小红书等网友评价）」'}，只列实际出现在 sources 里的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : ""}
 - **Tabelog 信号（仅日本店铺可能有）**：candidate.tabelog 是来自 Tabelog（食べログ）的独立信号。**仅 tabelog.priceJPY 参与硬过滤**（见上方"价格判断"）；tabelog.rating / reviewCount / summary **不参与硬过滤、不参与匹配度评分**，只作为附加信息展示给用户，仅可在 aiSummary 里轻量提及（"Tabelog 评分 X.XX"），且必须忠实于原文。Tabelog 普遍偏低，3.5+ 已是优质店；不要把 Tabelog 评分和 Google 评分相加平均。tabelog 为 null 时不影响判断，不要因此扣分。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
 - matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**，禁止写 "unknown" / "fail" / "pending" 等其它值；信息不足或轻微不达标的条目一律标 warn。**不要在这里重复 hardFilterChecks 的内容**（系统会自动合并），只写硬条件之外的亮点/注意事项。**严格限定范围**：只能围绕用户实际提到的需求（hardFilters / softPreferences / negativeFilters / dishPreferences）来写。**绝对禁止**对用户没有提到的维度发出 warn 或提醒——例如用户没提预算/价格，就不准出现"价格偏高""人均较贵""超出预算"之类的条目；用户没提氛围，就不准提"氛围一般"；用户没提服务，就不准提"服务慢"。如果某维度用户没提，哪怕网评有相关吐槽，也只能放进 cons，不能进 matchDetails。
@@ -1421,8 +1465,10 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
           type: "result",
           payload: {
             groups: [],
-            error: `AI 排序失败：模型输出被截断或返回非 JSON，请再试一次或缩小需求（${msg.slice(0, 120)}）`,
-            suggestions: FALLBACK_SUGGESTIONS,
+            error: isEn
+              ? `AI ranking failed: the model output was truncated or returned non-JSON. Please retry or narrow your request (${msg.slice(0, 120)})`
+              : `AI 排序失败：模型输出被截断或返回非 JSON，请再试一次或缩小需求（${msg.slice(0, 120)}）`,
+            suggestions: fallbackSuggestions(uiLang),
           },
         };
         return;
@@ -1566,8 +1612,10 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
         type: "result",
         payload: {
           groups: [],
-          error: "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
-          suggestions: FALLBACK_SUGGESTIONS,
+          error: isEn
+            ? "AI did not pick any matching restaurants from the real candidates. Please loosen your conditions or try a different cuisine."
+            : "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
+          suggestions: fallbackSuggestions(uiLang),
         },
       };
       return;
@@ -1599,8 +1647,12 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       type: "result",
       payload: {
         groups: ResultsSchema.parse({ groups }).groups,
-        error: missing.length ? `没有找到「${missing.join("、")}」的可靠候选` : null,
-        suggestions: missing.length ? FALLBACK_SUGGESTIONS : [],
+        error: missing.length
+          ? isEn
+            ? `No reliable candidates found for "${missing.join(", ")}"`
+            : `没有找到「${missing.join("、")}」的可靠候选`
+          : null,
+        suggestions: missing.length ? fallbackSuggestions(uiLang) : [],
       },
     };
   });
