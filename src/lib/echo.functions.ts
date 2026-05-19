@@ -1635,7 +1635,11 @@ ${JSON.stringify(candidatesForPrompt, null, 2)}
       type: "result",
       payload: {
         groups: ResultsSchema.parse({ groups }).groups,
-        error: missing.length ? `没有找到「${missing.join("、")}」的可靠候选` : null,
+        error: missing.length
+          ? isEn
+            ? `No reliable candidates found for "${missing.join(", ")}"`
+            : `没有找到「${missing.join("、")}」的可靠候选`
+          : null,
         suggestions: missing.length ? FALLBACK_SUGGESTIONS : [],
       },
     };
