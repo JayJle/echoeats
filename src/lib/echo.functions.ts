@@ -934,9 +934,18 @@ function isOpenAt(
 export const searchRestaurants = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParsedSchema.parse(input))
   .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
+    const uiLang: "zh" | "en" = data.uiLanguage ?? "zh";
+    const isEn = uiLang === "en";
     const aiKey = process.env.LOVABLE_API_KEY;
     if (!aiKey) {
-      yield { type: "result", payload: { groups: [], error: "服务未配置 AI 凭据", suggestions: [] } };
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: isEn ? "AI credentials are not configured" : "服务未配置 AI 凭据",
+          suggestions: [],
+        },
+      };
       return;
     }
     // country/language 优先取 AI parse 结果，正则只做 fallback
