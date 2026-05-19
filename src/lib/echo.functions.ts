@@ -1459,7 +1459,7 @@ ${JSON.stringify(group.candidates, null, 2)}
             prompt:
               prompt +
               `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-            maxOutputTokens: 16000,
+            maxOutputTokens: 6000,
           });
           const finishReason = (fb as { finishReason?: string }).finishReason;
           if (finishReason === "length" || finishReason === "max-tokens") {
