@@ -1633,7 +1633,7 @@ ${JSON.stringify(group.candidates, null, 2)}
               matchDetails,
               pros: pick.pros,
               cons: pick.cons,
-              links: buildLinks(p, data.city, country),
+              links: buildLinks(p, data.city, country, isEn),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
               weekdayDescriptions: p.weekdayDescriptions ?? null,
