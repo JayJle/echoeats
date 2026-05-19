@@ -1631,7 +1631,7 @@ ${JSON.stringify(group.candidates, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null || visitMatchById.get(p.placeId) === "unknown",
-              ratings: candidateRatings(p, review, tabelogInfo, isEn),
+              ratings: candidateRatings(p, review, tabelogInfo, isEn, country),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
