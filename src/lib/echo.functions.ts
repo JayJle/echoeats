@@ -1043,7 +1043,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             return {
               cuisine,
               places,
-              error: places.length ? null : "大众点评未返回候选",
+              error: places.length ? null : isEn ? "Dianping returned no candidates" : "大众点评未返回候选",
             };
           } catch (e) {
             return {
