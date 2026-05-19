@@ -895,12 +895,20 @@ export async function consumeSearchStream(
   return final;
 }
 
-const FALLBACK_SUGGESTIONS = [
+const FALLBACK_SUGGESTIONS_ZH = [
   "尝试更具体的料理类型（如把「日料」换成「寿司」或「居酒屋」）",
   "扩大或更换城市（用城市核心区域名）",
   "在「其它需求」里加上具体菜品或预算，让 AI 更聚焦",
   "减少同时搜索的料理类型数量",
 ];
+const FALLBACK_SUGGESTIONS_EN = [
+  "Try a more specific cuisine (e.g. swap \"Japanese\" for \"Sushi\" or \"Izakaya\")",
+  "Widen the city or use a central district name",
+  "Add a specific dish or budget in \"Other requirements\" to focus the AI",
+  "Reduce the number of cuisines searched at once",
+];
+const fallbackSuggestions = (lang: "zh" | "en") =>
+  lang === "en" ? FALLBACK_SUGGESTIONS_EN : FALLBACK_SUGGESTIONS_ZH;
 
 // 判断某个店在指定周几+时间是否营业。
 // periods 缺失 → unknown（保留）；命中区间 → open；都不命中 → closed。
