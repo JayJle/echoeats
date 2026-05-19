@@ -260,6 +260,12 @@ export const parseRequirements = createServerFn({ method: "POST" })
       });
       const parsed = ParsedSchema.parse(output);
       parsed.uiLanguage = data.uiLanguage;
+      // 一致性兜底：weight >= 0.8 的 soft 一律提升为 hard
+      const promoted = parsed.softPreferences.filter((s) => s.weight >= 0.8);
+      if (promoted.length) {
+        parsed.hardFilters = [...parsed.hardFilters, ...promoted];
+        parsed.softPreferences = parsed.softPreferences.filter((s) => s.weight < 0.8);
+      }
       // 用户未选 cuisines 且 AI 推断出了非兜底品类 → 标注为 AI 识别
       const userProvidedCuisines = data.cuisines.length > 0;
       const fallbackWord = data.uiLanguage === "en" ? "Restaurants" : "餐厅";
