@@ -40,6 +40,8 @@ function StepRequirements() {
   const { lang, t } = useT();
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
+  const autoInferCuisines = useQueryStore((s) => s.autoInferCuisines);
+
   const freeText = useQueryStore((s) => s.freeText);
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
@@ -101,7 +103,7 @@ function StepRequirements() {
     try {
       setCurrentStage("parse");
       const parsed = await parseFn({
-        data: { city, cuisines, date: "", freeText: text, uiLanguage: lang },
+        data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
         signal: ac.signal,
       } as Parameters<typeof parseFn>[0]);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
