@@ -168,10 +168,68 @@ function StepRequirements() {
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [level, setLevel] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  const stopAnalyser = () => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    try { sourceRef.current?.disconnect(); } catch { /* noop */ }
+    try { analyserRef.current?.disconnect(); } catch { /* noop */ }
+    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+      audioCtxRef.current.close().catch(() => { /* noop */ });
+    }
+    sourceRef.current = null;
+    analyserRef.current = null;
+    audioCtxRef.current = null;
+    setLevel(0);
+  };
+
+  const startAnalyser = (stream: MediaStream) => {
+    try {
+      const Ctx: typeof AudioContext =
+        (window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.7;
+      source.connect(analyser);
+      audioCtxRef.current = ctx;
+      sourceRef.current = source;
+      analyserRef.current = analyser;
+      const buf = new Uint8Array(analyser.fftSize);
+      let lastTs = 0;
+      const loop = (ts: number) => {
+        rafRef.current = requestAnimationFrame(loop);
+        if (ts - lastTs < 33) return;
+        lastTs = ts;
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        // amplify and clamp to 0..1
+        setLevel(Math.min(1, rms * 3));
+      };
+      rafRef.current = requestAnimationFrame(loop);
+    } catch (err) {
+      console.warn("[mic] analyser init failed", err);
+    }
+  };
 
   const appendText = (text: string) => {
     const trimmed = text.trim();
