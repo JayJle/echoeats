@@ -15,6 +15,7 @@ import { Route as RequirementsRouteImport } from './routes/requirements'
 import { Route as CuisinesRouteImport } from './routes/cuisines'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
+import { Route as AdminFeedbackRouteImport } from './routes/admin.feedback'
 
 const Char91indexChar93Route = Char91indexChar93RouteImport.update({
   id: '/index',
@@ -46,6 +47,11 @@ const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
   path: '/api/transcribe',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminFeedbackRoute = AdminFeedbackRouteImport.update({
+  id: '/admin/feedback',
+  path: '/admin/feedback',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -53,6 +59,7 @@ export interface FileRoutesByFullPath {
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
+  '/admin/feedback': typeof AdminFeedbackRoute
   '/api/transcribe': typeof ApiTranscribeRoute
 }
 export interface FileRoutesByTo {
@@ -61,6 +68,7 @@ export interface FileRoutesByTo {
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
+  '/admin/feedback': typeof AdminFeedbackRoute
   '/api/transcribe': typeof ApiTranscribeRoute
 }
 export interface FileRoutesById {
@@ -70,6 +78,7 @@ export interface FileRoutesById {
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
+  '/admin/feedback': typeof AdminFeedbackRoute
   '/api/transcribe': typeof ApiTranscribeRoute
 }
 export interface FileRouteTypes {
@@ -80,6 +89,7 @@ export interface FileRouteTypes {
     | '/index'
     | '/requirements'
     | '/results'
+    | '/admin/feedback'
     | '/api/transcribe'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -88,6 +98,7 @@ export interface FileRouteTypes {
     | '/index'
     | '/requirements'
     | '/results'
+    | '/admin/feedback'
     | '/api/transcribe'
   id:
     | '__root__'
@@ -96,6 +107,7 @@ export interface FileRouteTypes {
     | '/index'
     | '/requirements'
     | '/results'
+    | '/admin/feedback'
     | '/api/transcribe'
   fileRoutesById: FileRoutesById
 }
@@ -105,6 +117,7 @@ export interface RootRouteChildren {
   Char91indexChar93Route: typeof Char91indexChar93Route
   RequirementsRoute: typeof RequirementsRoute
   ResultsRoute: typeof ResultsRoute
+  AdminFeedbackRoute: typeof AdminFeedbackRoute
   ApiTranscribeRoute: typeof ApiTranscribeRoute
 }
 
@@ -152,6 +165,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTranscribeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/feedback': {
+      id: '/admin/feedback'
+      path: '/admin/feedback'
+      fullPath: '/admin/feedback'
+      preLoaderRoute: typeof AdminFeedbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -161,8 +181,19 @@ const rootRouteChildren: RootRouteChildren = {
   Char91indexChar93Route: Char91indexChar93Route,
   RequirementsRoute: RequirementsRoute,
   ResultsRoute: ResultsRoute,
+  AdminFeedbackRoute: AdminFeedbackRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
