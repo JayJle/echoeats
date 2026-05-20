@@ -42,8 +42,26 @@ export const Route = createFileRoute("/api/transcribe")({
           });
         }
 
+        const incomingName = (audio as File).name || "";
+        const incomingType = audio.type || "";
+        const ext = incomingName.includes(".")
+          ? incomingName.split(".").pop()!.toLowerCase()
+          : incomingType.includes("mp4") || incomingType.includes("aac") || incomingType.includes("m4a")
+            ? "mp4"
+            : incomingType.includes("ogg")
+              ? "ogg"
+              : incomingType.includes("wav")
+                ? "wav"
+                : incomingType.includes("mpeg") || incomingType.includes("mp3")
+                  ? "mp3"
+                  : "webm";
+        const filename = `audio.${ext}`;
+        const upstreamType = incomingType || (ext === "mp4" ? "audio/mp4" : ext === "ogg" ? "audio/ogg" : ext === "wav" ? "audio/wav" : ext === "mp3" ? "audio/mpeg" : "audio/webm");
+        console.log(`[transcribe] in size=${audio.size} type=${incomingType || "?"} name=${incomingName || "?"} -> filename=${filename} upstreamType=${upstreamType}`);
+
+        const audioBlob = audio.type === upstreamType ? audio : new Blob([await audio.arrayBuffer()], { type: upstreamType });
         const outForm = new FormData();
-        outForm.append("file", audio, "audio.webm");
+        outForm.append("file", audioBlob, filename);
         outForm.append("model_id", "scribe_v2");
         outForm.append("tag_audio_events", "false");
         outForm.append("diarize", "false");
@@ -56,6 +74,7 @@ export const Route = createFileRoute("/api/transcribe")({
 
         if (!upstream.ok) {
           const text = await upstream.text();
+          console.error(`[transcribe] upstream ${upstream.status}: ${text.slice(0, 500)}`);
           const status = upstream.status === 429 || upstream.status === 402
             ? upstream.status
             : 500;
