@@ -384,6 +384,9 @@ import {
   type CuisineExpansion,
 } from "./cuisine-expand.server";
 import { fetchTabelogInfo, type TabelogInfo } from "./tabelog.server";
+import { fetchYelpInfo, type YelpInfo } from "./yelp.server";
+
+const YELP_COUNTRIES = new Set(["US", "CA", "FR", "IT", "DE", "ES", "GB"]);
 
 // Perplexity 真实网评摘要
 type ReviewSummary = {
