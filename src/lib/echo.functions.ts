@@ -1605,7 +1605,7 @@ ${JSON.stringify(group.candidates, null, 2)}
                       {
                         label: isEn
                           ? `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
-                          : `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? `(${p.userRatingCount} 条)` : ""}`,
+                          : `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? `（${p.userRatingCount} 条）` : ""}`,
                         status: "ok" as const,
                       },
                     ]
