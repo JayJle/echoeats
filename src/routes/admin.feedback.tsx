@@ -83,9 +83,15 @@ function AdminFeedbackPage() {
 
   useEffect(() => {
     (async () => {
-      const r = await check();
-      setAuthed(r.authed);
-      setLoading(false);
+      try {
+        const r = await check();
+        setAuthed(r.authed);
+        if ("error" in r && r.error) setLoginErr(r.error);
+      } catch (e) {
+        setLoginErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [check]);
 
