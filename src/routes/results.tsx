@@ -494,7 +494,7 @@ function ResultsPage() {
   );
 }
 
-type SourceKey = "Google" | "Tabelog" | "大众点评" | "小红书" | "美团" | "Yelp";
+type SourceKey = "Google" | "Tabelog" | "大众点评" | "小红书" | "美团" | "Yelp" | "TripAdvisor";
 
 const SOURCE_BADGE_STYLE: Record<SourceKey, string> = {
   Google: "bg-blue-500/10 text-blue-600 border-blue-500/30 dark:text-blue-400",
@@ -503,6 +503,7 @@ const SOURCE_BADGE_STYLE: Record<SourceKey, string> = {
   "小红书": "bg-pink-500/10 text-pink-600 border-pink-500/30 dark:text-pink-400",
   "美团": "bg-yellow-500/10 text-yellow-700 border-yellow-500/30 dark:text-yellow-400",
   Yelp: "bg-rose-500/10 text-rose-600 border-rose-500/30 dark:text-rose-400",
+  TripAdvisor: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30 dark:text-emerald-400",
 };
 
 function getRestaurantSources(r: Restaurant): { key: SourceKey; url?: string }[] {
@@ -516,11 +517,32 @@ function getRestaurantSources(r: Restaurant): { key: SourceKey; url?: string }[]
     const platform = rt.platform as SourceKey;
     if (rt.score == null) continue;
     if (platform === "Google" || platform === "Tabelog") continue;
-    if (platform === "大众点评" || platform === "小红书" || platform === "美团" || platform === "Yelp") {
+    if (
+      platform === "大众点评" ||
+      platform === "小红书" ||
+      platform === "美团" ||
+      platform === "Yelp" ||
+      platform === "TripAdvisor"
+    ) {
       if (!sources.find((s) => s.key === platform)) sources.push({ key: platform });
     }
   }
-  // 从 links 补：xiaohongshu / dianping / meituan
+  // 从 pros/cons 的 source 字段反推平台来源（即使没在 ratings 出现）
+  for (const item of [...r.pros, ...r.cons]) {
+    const src = item.source as SourceKey | null | undefined;
+    if (!src) continue;
+    if (
+      src === "Yelp" ||
+      src === "TripAdvisor" ||
+      src === "Tabelog" ||
+      src === "大众点评" ||
+      src === "小红书" ||
+      src === "美团"
+    ) {
+      if (!sources.find((s) => s.key === src)) sources.push({ key: src });
+    }
+  }
+  // 从 links 补：xiaohongshu / dianping / meituan / yelp / tripadvisor
   for (const l of r.links) {
     const u = l.url.toLowerCase();
     const add = (key: SourceKey) => {
@@ -535,6 +557,8 @@ function getRestaurantSources(r: Restaurant): { key: SourceKey; url?: string }[]
     else if (u.includes("dianping.com")) add("大众点评");
     else if (u.includes("meituan.com")) add("美团");
     else if (u.includes("tabelog.com") && !sources.find((s) => s.key === "Tabelog")) add("Tabelog");
+    else if (u.includes("yelp.com")) add("Yelp");
+    else if (u.includes("tripadvisor.")) add("TripAdvisor");
   }
   return sources;
 }
