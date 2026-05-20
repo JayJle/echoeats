@@ -37,7 +37,7 @@ export function FeedbackPanel({
   restaurants,
   resultsSnapshot,
 }: Props) {
-  const { t } = useT();
+  const { lang, t } = useT();
   const create = useServerFn(createSearchSession);
   const submit = useServerFn(submitSearchFeedback);
 
@@ -49,12 +49,24 @@ export function FeedbackPanel({
     { key: "feedback.down.r5", text: t("feedback.down.r5") },
   ];
 
+  const CHOSEN_REASONS = [
+    { key: "feedback.chosen.r1", text: t("feedback.chosen.r1") },
+    { key: "feedback.chosen.r2", text: t("feedback.chosen.r2") },
+    { key: "feedback.chosen.r3", text: t("feedback.chosen.r3") },
+    { key: "feedback.chosen.r4", text: t("feedback.chosen.r4") },
+    { key: "feedback.chosen.r5", text: t("feedback.chosen.r5") },
+  ];
+
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
   const [externalName, setExternalName] = useState("");
   const [showExternal, setShowExternal] = useState(false);
-  const [overall, setOverall] = useState<"up" | "down" | null>(null);
+  const [rating, setRating] = useState<number>(0);
+  const [hoverRating, setHoverRating] = useState<number>(0);
   const [downReasons, setDownReasons] = useState<string[]>([]);
+  const [chosenReasons, setChosenReasons] = useState<string[]>([]);
+  const [wouldRecommend, setWouldRecommend] = useState<boolean | null>(null);
+  const [contact, setContact] = useState("");
   const [comment, setComment] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +75,7 @@ export function FeedbackPanel({
     let cancelled = false;
     (async () => {
       try {
+        const restaurantCount = restaurants.length;
         const res = await create({
           data: {
             anonId: getAnonId(),
@@ -70,6 +83,8 @@ export function FeedbackPanel({
             cuisines,
             parsed,
             results: resultsSnapshot,
+            lang,
+            resultCount: restaurantCount,
           },
         });
         if (!cancelled) setSessionId(res.sessionId);
@@ -98,11 +113,17 @@ export function FeedbackPanel({
     );
   }
 
-  const canSubmit = overall !== null && !!sessionId;
+  const canSubmit = rating > 0 && !!sessionId;
+  const showDownReasons = rating > 0 && rating <= 3;
+  const showChosenReasons = rating >= 4 && (chosenId || (showExternal && externalName.trim()));
 
   const handleSubmit = async () => {
     if (!canSubmit || !sessionId) return;
     setError(null);
+    if (contact.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.trim())) {
+      setError(t("feedback.contactInvalid"));
+      return;
+    }
     try {
       const res = await submit({
         data: {
@@ -110,8 +131,11 @@ export function FeedbackPanel({
           chosenFromResults: chosenId,
           chosenExternalName:
             showExternal && externalName.trim() ? externalName.trim() : null,
-          overall: overall!,
-          downReasons: overall === "down" ? downReasons : [],
+          rating,
+          downReasons: showDownReasons ? downReasons : [],
+          chosenReasons: rating >= 4 ? chosenReasons : [],
+          wouldRecommend,
+          contact: contact.trim() || null,
           comment: comment.trim() ? comment.trim() : null,
         },
       });
@@ -123,16 +147,59 @@ export function FeedbackPanel({
     }
   };
 
-  const toggleReason = (r: string) => {
+  const toggleDown = (r: string) => {
     setDownReasons((prev) =>
       prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r],
     );
   };
+  const toggleChosen = (r: string) => {
+    setChosenReasons((prev) =>
+      prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r],
+    );
+  };
+
+  const ratingLabels = [
+    "",
+    t("feedback.star.1"),
+    t("feedback.star.2"),
+    t("feedback.star.3"),
+    t("feedback.star.4"),
+    t("feedback.star.5"),
+  ];
 
   return (
     <section className="mt-10 bg-card border border-border rounded-2xl p-6">
       <h3 className="text-base font-semibold tracking-tight">{t("feedback.title")}</h3>
       <p className="mt-1 text-xs text-muted-foreground">{t("feedback.note")}</p>
+
+      <div className="mt-5">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+          {t("feedback.ratingLabel")}
+        </div>
+        <div className="flex items-center gap-1">
+          {[1, 2, 3, 4, 5].map((n) => {
+            const active = (hoverRating || rating) >= n;
+            return (
+              <button
+                key={n}
+                type="button"
+                onMouseEnter={() => setHoverRating(n)}
+                onMouseLeave={() => setHoverRating(0)}
+                onClick={() => setRating(n)}
+                className={`text-2xl leading-none transition ${
+                  active ? "text-amber-400" : "text-muted-foreground/30"
+                }`}
+                aria-label={`${n} star${n > 1 ? "s" : ""}`}
+              >
+                ★
+              </button>
+            );
+          })}
+          <span className="ml-2 text-xs text-muted-foreground">
+            {(hoverRating || rating) > 0 ? ratingLabels[hoverRating || rating] : ""}
+          </span>
+        </div>
+      </div>
 
       <div className="mt-5">
         <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
@@ -186,37 +253,7 @@ export function FeedbackPanel({
         )}
       </div>
 
-      <div className="mt-5">
-        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-          {t("feedback.qualityLabel")}
-        </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setOverall("up")}
-            className={`flex-1 py-2.5 text-sm rounded-lg border transition ${
-              overall === "up"
-                ? "bg-success/15 border-success text-success font-medium"
-                : "bg-background border-border hover:border-success"
-            }`}
-          >
-            {t("feedback.up")}
-          </button>
-          <button
-            type="button"
-            onClick={() => setOverall("down")}
-            className={`flex-1 py-2.5 text-sm rounded-lg border transition ${
-              overall === "down"
-                ? "bg-destructive/10 border-destructive text-destructive font-medium"
-                : "bg-background border-border hover:border-destructive"
-            }`}
-          >
-            {t("feedback.down")}
-          </button>
-        </div>
-      </div>
-
-      {overall === "down" && (
+      {showDownReasons && (
         <div className="mt-4">
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
             {t("feedback.downLabel")}
@@ -228,7 +265,7 @@ export function FeedbackPanel({
                 <button
                   key={r.key}
                   type="button"
-                  onClick={() => toggleReason(r.text)}
+                  onClick={() => toggleDown(r.text)}
                   className={`px-2.5 py-1 text-xs rounded-full border transition ${
                     active
                       ? "bg-destructive/10 text-destructive border-destructive"
@@ -244,7 +281,67 @@ export function FeedbackPanel({
         </div>
       )}
 
-      {overall !== null && (
+      {showChosenReasons && (
+        <div className="mt-4">
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+            {t("feedback.chosenReasonLabel")}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {CHOSEN_REASONS.map((r) => {
+              const active = chosenReasons.includes(r.text);
+              return (
+                <button
+                  key={r.key}
+                  type="button"
+                  onClick={() => toggleChosen(r.text)}
+                  className={`px-2.5 py-1 text-xs rounded-full border transition ${
+                    active
+                      ? "bg-success/15 text-success border-success"
+                      : "bg-background border-border hover:border-success/50"
+                  }`}
+                >
+                  {active ? "✓ " : ""}
+                  {r.text}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {rating > 0 && (
+        <div className="mt-4">
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+            {t("feedback.recommendLabel")}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setWouldRecommend(wouldRecommend === true ? null : true)}
+              className={`px-3 py-1.5 text-xs rounded-full border transition ${
+                wouldRecommend === true
+                  ? "bg-success/15 border-success text-success"
+                  : "bg-background border-border hover:border-success"
+              }`}
+            >
+              {t("feedback.recommendYes")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setWouldRecommend(wouldRecommend === false ? null : false)}
+              className={`px-3 py-1.5 text-xs rounded-full border transition ${
+                wouldRecommend === false
+                  ? "bg-destructive/10 border-destructive text-destructive"
+                  : "bg-background border-border hover:border-destructive"
+              }`}
+            >
+              {t("feedback.recommendNo")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {rating > 0 && (
         <div className="mt-4">
           <textarea
             value={comment}
@@ -252,6 +349,13 @@ export function FeedbackPanel({
             placeholder={t("feedback.commentPlaceholder")}
             rows={2}
             className="w-full px-3 py-2 text-sm rounded-lg bg-background border border-border focus:outline-none focus:border-primary resize-none"
+          />
+          <input
+            type="email"
+            value={contact}
+            onChange={(e) => setContact(e.target.value.slice(0, 200))}
+            placeholder={t("feedback.contactPlaceholder")}
+            className="mt-2 w-full px-3 py-2 text-sm rounded-lg bg-background border border-border focus:outline-none focus:border-primary"
           />
         </div>
       )}
