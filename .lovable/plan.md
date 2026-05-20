@@ -1,61 +1,87 @@
-## 目标
+## 发现的问题
 
-在 `/admin/feedback` 页面：
-1. 每条记录支持**单条删除**（用于清掉自己的测试数据）。
-2. 顶部加一个**一键清空**按钮（清空全部反馈 + 全部搜索会话）。
-3. 删除/清空后，列表与顶部统计卡片**自动刷新**。
+上一轮查询其实已经发起了 Yelp / TripAdvisor 平台查询，但日志显示大部分被丢弃：
 
-## 改动范围
+- Yelp 多数返回 `no whitelisted citations (got 0 raw)`，也就是 API 没给出可校验引用，所以当前安全校验把它丢掉。
+- TripAdvisor 有些返回 `empty highlights & complaints`，即平台页可能查到但没提取出可用评价摘要。
+- 即使查到了，最终 AI 排序提示里的 `pros/cons.source` 允许来源只包含 Google / Tabelog / 中文平台 / 综合，不包含 Yelp / TripAdvisor，因此展示层也容易看起来“只有 Google”。
+- 前端来源条目前只支持 Yelp，不支持 TripAdvisor badge；评分区也不会显示“已使用 Yelp/TripAdvisor 口碑”。
 
-- `src/lib/admin.functions.ts`：新增 3 个 server fn。
-- `src/routes/admin.feedback.tsx`：每行加删除按钮、顶部加"一键清空"按钮、删除后重拉数据。
-- 不动数据库 schema。`search_feedback` / `search_sessions` 的 RLS 是 deny-all，删除全部走 `supabaseAdmin`（服务端），安全闭环。
+## 修改方案
 
-## 技术方案
+### 1. 放宽“必须有 citation 才使用”的策略，但保留安全边界
 
-### 1. 新 server fn（`src/lib/admin.functions.ts`）
+对 Yelp / TripAdvisor 平台查询改成两档结果：
 
-- `adminDeleteFeedback({ feedbackId })`：删除指定的 `search_feedback` 行。同时把该行关联的 `session_id` 一起删（删 `search_sessions` 对应行）—— 这样一条"测试反馈 + 对应搜索会话"一次清干净。
-- `adminDeleteSession({ sessionId })`：直接按 session 删除会话；同时删掉该 session 下所有 `search_feedback`（外键无约束，手动两步 delete）。
-- `adminClearAll({ confirm: "CLEAR_ALL" })`：先 delete `search_feedback`，再 delete `search_sessions`。要求传字面量 `"CLEAR_ALL"` 作为二次确认，防止误调用。
-- 三个 fn 全部 `await requireAdmin()` 守卫。
+- **强证据**：有白名单 citation，继续按现在逻辑使用。
+- **平台限定弱证据**：API 没返回 citation，但本次请求已经通过 `search_domain_filter` 强制只查该平台域名；如果 JSON 明确返回该平台来源、且有非空评价摘要，则允许作为该平台补充口碑使用。
 
-返回 `{ ok: true, deleted: { feedback: n, sessions: m } }` 便于前端 toast。
+同时会保留以下防幻觉限制：
 
-### 2. UI（`src/routes/admin.feedback.tsx`）
+- 每个平台仍单独锁域查询。
+- 店名 + 城市 + 地址必须精确匹配。
+- 摘要为空继续丢弃。
+- 不允许把 Google 内容伪装成 Yelp/TripAdvisor。
+- 增加日志区分 `verified citation` 和 `domain-filter fallback`，方便后续排查。
 
-- 每条 `FeedbackCard` 右上角加一个小垃圾桶按钮 → 弹 `AlertDialog` 二次确认 → 调 `adminDeleteFeedback` → 成功后从本地 state 移除该项 + 重新拉 `adminGetStats`。
-- 顶部统计卡片旁边加一个 **"清空所有数据"** 按钮（红色 destructive variant）→ 弹 `AlertDialog`（文案：「确认清空全部反馈和搜索会话？此操作不可撤销」） → 调 `adminClearAll({ confirm: "CLEAR_ALL" })` → 成功后清空本地 items + 重拉 stats，toast 显示删除条数。
-- 删除过程中按钮 disable + loading 状态。
+### 2. 让最终 AI 排序真正允许 Yelp / TripAdvisor 来源
 
-### 3. 没有破坏性影响
+更新排序 prompt 中的来源规则：
 
-- 不动既有 query/list 行为。
-- `chosen_from_results` / `chosen_external_name` 这些字段被一起删，因为反馈本来就是依附会话存在的。
+- `pros/cons.source` 允许：Google / Yelp / TripAdvisor / Tabelog / 大众点评 / 小红书 / 美团 / 综合。
+- 要求 source 必须来自 `realWorldReviews.sources`，避免凭空标来源。
+- `aiSummary` 如果使用了 Yelp / TripAdvisor / Tabelog，也要能自然说明“综合 Yelp / TripAdvisor 等网友评价”。
 
----
+### 3. 让前端能显示 TripAdvisor，并更清楚显示平台来源
 
-## 技术小白版描述
+更新结果页来源条和评分区：
 
-现在的 admin 后台只能"看"反馈和搜索记录，不能"删"。这次加两个东西：
-- **每条记录右上角加一个垃圾桶按钮**：点了再确认一次就能删掉，专门用来清你自己测试时产生的脏数据。
-- **顶部加一个"清空所有数据"按钮**：一次性把所有反馈 + 搜索记录全部清掉（会要求二次确认，防止手抖）。
-- 删完之后页面会自动刷新，数字和列表立刻更新，不用手动 F5。
+- `DataSourcesStrip` 增加 TripAdvisor badge。
+- 识别 TripAdvisor 链接并显示可点击来源。
+- `candidateRatings` 对海外结果增加“Yelp / TripAdvisor 口碑”行：没有平台分数时不伪造评分，只显示“已纳入口碑”或类似文案，表示该平台评价被用于摘要/匹配。
+- Yelp / TripAdvisor 搜索链接继续保留，便于用户手动核验。
 
-## 用户视角的效果
+### 4. 不改变永不超时结构
 
-- 看到自己测试时留下的反馈/搜索记录，点垃圾桶 → 确认 → 这条立刻消失，上方的"近 7 天"统计也同步更新。
-- 想从零开始统计真实数据时，点"清空所有数据" → 输入确认 → 整个表都干净了。
-- 普通终端用户完全感受不到变化（admin 页面只有你自己能进）。
+保持现有结构：
+
+- 每个平台查询独立 20 秒 abort。
+- Yelp / TripAdvisor / Tabelog 并行执行。
+- 外层仍按完成顺序持续 `yield review-progress`。
+- 单个平台失败不会阻塞其它平台，也不会阻塞整次搜索。
+
+## 技术小白版
+
+现在不是“完全没查别的平台”，而是系统查了 Yelp / TripAdvisor，但因为它们没有给出足够标准的“引用凭证”，我们的安全门槛把它们很多都扔掉了；并且最后展示结果的地方也没完整支持 TripAdvisor，所以用户看到就像只有 Google。
+
+我会把规则改成：
+
+- 能拿到明确引用时，当然优先用。
+- 如果没有引用，但这次查询本身已经被限制在 Yelp 或 TripAdvisor 网站里，并且确实拿到了评价摘要，也允许作为补充参考。
+- 最后页面上会明确标出 Yelp / TripAdvisor，避免明明用了但用户看不出来。
+
+## 预期效果
+
+- 同样的海外搜索，结果中更容易出现 Yelp / TripAdvisor 的高频好评、差评和来源标记。
+- Google 有结果时，也会继续并行查更多平台。
+- 如果 Yelp/TripAdvisor 对某家店确实没数据，则不会硬编。
+- 用户会更明显看到“这是综合 Google + Yelp/TripAdvisor 得出的结果”。
+
+## 用户视角中的效果
+
+- 搜索结果卡片里，`高频好评 / 高频差评` 后面的来源可能出现 `Yelp`、`TripAdvisor`。
+- 来源条里除了 Google，还会看到 Yelp / TripAdvisor 的标识或链接。
+- 推荐理由会更像“综合多平台口碑”，而不是只基于 Google。
 
 ## 可能存在的负面效果
 
-- **不可撤销**：删了就没了。一键清空尤其要小心 —— 用 `AlertDialog` 二次确认 + 要求传魔法字符串 `"CLEAR_ALL"` 来防误触，但**没有回收站**。如果以后需要"软删除"可以再加 `deleted_at` 列，本次不做以保持简单。
-- 删除是按 feedback / session 整体删，不支持"只删反馈、保留会话"这种细粒度（如果有需要可以再加）。
-- 若两张表后续接入其它分析视图（目前没有），清空后那些视图也会归零。
+- 因为允许“平台限定但无 citation”的弱证据，理论上可信度比“有明确引用链接”的强证据低一点。
+- 某些小店在 Yelp/TripAdvisor 内容很少，可能仍然只显示 Google。
+- Yelp/TripAdvisor 搜索结果有时会匹配到同名不同店，所以仍需严格保留店名/地址匹配要求，宁可少用，不乱用。
 
-## 成本
+## 成本变化
 
-- 新增 3 个 server fn，零新增依赖、零新增表、零外部 API 调用。
-- 删除是 Supabase 直连 SQL，单次成本可忽略不计。
-- 不影响 Perplexity / Google Places / Lovable AI 用量。
+- 外部 API 调用次数不增加：仍然是当前的 Yelp + TripAdvisor 并行查询策略。
+- 金钱成本基本不变。
+- 展示和合并逻辑会略微复杂，但可维护性仍可控。
+- 查询耗时不会显著增加；仍保持并行和独立超时。

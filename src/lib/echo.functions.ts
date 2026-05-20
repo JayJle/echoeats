@@ -577,13 +577,6 @@ async function fetchPlatformReview(
       citationMatchesAllowed(u, allowedDomains),
     );
 
-    if (validCitations.length === 0) {
-      console.warn(
-        `[Perplexity:${platform}] ${name}: no whitelisted citations (got ${allCitationUrls.length} raw) → discard`,
-      );
-      return null;
-    }
-
     const parsed = JSON.parse(content);
     const highlights = Array.isArray(parsed.reviewHighlights)
       ? (parsed.reviewHighlights as unknown[])
@@ -601,13 +594,47 @@ async function fetchPlatformReview(
       return null;
     }
 
+    // 模型自报的 sourceCount（声称引用了多少条平台页）。
+    const claimedCount =
+      typeof parsed.sourceCount === "number" && parsed.sourceCount > 0
+        ? Math.floor(parsed.sourceCount)
+        : 0;
+    const claimsPlatform =
+      Array.isArray(parsed.sources) &&
+      (parsed.sources as unknown[]).some(
+        (s) => typeof s === "string" && s === meta.sourceName,
+      );
+
+    // 双档证据：
+    //  - 强证据 = 有白名单 citation；
+    //  - 平台限定弱证据 = 没 citation，但本次 search_domain_filter 已经强制锁域，
+    //    且模型自报命中该平台并给出非空摘要 → 仍然采纳为该平台补充口碑。
+    if (validCitations.length === 0) {
+      if (!claimsPlatform || claimedCount === 0) {
+        console.warn(
+          `[Perplexity:${platform}] ${name}: no whitelisted citations and no platform self-claim → discard`,
+        );
+        return null;
+      }
+      console.log(
+        `[Perplexity:${platform}] ${name}: domain-filter fallback (no citations, model claims ${claimedCount}) → accept`,
+      );
+    } else {
+      console.log(
+        `[Perplexity:${platform}] ${name}: verified citations=${validCitations.length} → accept`,
+      );
+    }
+
+    const effectiveSourceCount =
+      validCitations.length > 0 ? validCitations.length : Math.max(1, claimedCount);
+
     return {
       reviewHighlights: highlights as string[],
       commonComplaints: complaints as string[],
       sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment)
         ? parsed.sentiment
         : "unknown",
-      sourceCount: validCitations.length,
+      sourceCount: effectiveSourceCount,
       sources: [meta.sourceName],
       dianpingRating: null,
       dianpingRatingSource: "unknown",
@@ -867,6 +894,15 @@ function candidateRatings(
   ];
   if (isJP) rows.push({ platform: "Tabelog", score: tabelogScore });
   if (isCN) rows.push({ platform: isEn ? "Dianping" : "大众点评", score: dpScore });
+  // 海外（含日本）：若 Perplexity 已采纳 Yelp / TripAdvisor 评论，显式列出来源，避免“看起来只有 Google”
+  if (!isCN && review?.sources?.length) {
+    if (review.sources.includes("Yelp")) {
+      rows.push({ platform: "Yelp", score: isEn ? "reviews used" : "已纳入网评" });
+    }
+    if (review.sources.includes("TripAdvisor")) {
+      rows.push({ platform: "TripAdvisor", score: isEn ? "reviews used" : "已纳入网评" });
+    }
+  }
   rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
   return rows;
 }
@@ -1457,8 +1493,8 @@ ${JSON.stringify(group.candidates, null, 2)}
 - **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
 - **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字，不得新增事实）。**如果 realWorldReviews 为 null，或两个数组都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据，不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
 - **pros/cons 必须取真实素材**：reviewHighlights 非空时 pros 至少 2 条来自其浓缩；commonComplaints 非空时 cons 至少 1 条来自其浓缩。禁止"环境不错""值得一试"等空话。
-- **pros/cons 输出格式必须是 { text, source } 对象**（不是字符串）。source 取值范围："Google" / "大众点评" / "Tabelog" / "小红书" / "美团" / "综合"（多平台一致时）。source 必须能在 realWorldReviews.sources 中找到对应来源，禁止编造；无法归因时填 "综合"。
-- aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加${isEn ? '"(based on Dianping / Xiaohongshu user reviews)"' : '「（综合大众点评、小红书等网友评价）」'}，只列实际出现的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : ""}
+- **pros/cons 输出格式必须是 { text, source } 对象**（不是字符串）。source 取值范围："Google" / "Yelp" / "TripAdvisor" / "Tabelog" / "大众点评" / "小红书" / "美团" / "综合"（多平台一致时）。source 必须能在 realWorldReviews.sources 中找到对应来源（"Google Reviews" 归为 "Google"），禁止编造；无法归因时填 "综合"。
+- aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**当 realWorldReviews.sources 含 Yelp / TripAdvisor / Tabelog / 大众点评 / 小红书 中任一非 Google 平台时**，在 aiSummary 末尾追加${isEn ? '"(based on user reviews from <平台逗号列表>)"' : '「（综合 <平台顿号列表> 等网友评价）」'}，只列实际出现的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : "若 realWorldReviews 为空，则改为「（暂无可信网评，仅基于 Google 数据）」。"}
 - **Tabelog 信号（仅日本店铺可能有）**：仅 tabelog.priceJPY 参与硬过滤；其它字段只作展示，不参与评分。tabelog 为 null 时不要因此扣分。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
 - matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**。不要重复 hardFilterChecks 的内容。**严格限定范围**：只能围绕用户实际提到的需求来写，用户没提的维度禁止出现在 matchDetails 里（哪怕网评有相关吐槽，也只能放进 cons）。
