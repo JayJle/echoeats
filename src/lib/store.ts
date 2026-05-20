@@ -55,6 +55,13 @@ export type Restaurant = {
     priceRange: string | null;
     summary: string | null;
   } | null;
+  yelp?: {
+    rating: string | null;
+    reviewCount: number | null;
+    url: string | null;
+    priceLevel: string | null;
+    summary: string | null;
+  } | null;
   weekdayDescriptions?: string[] | null;
   visitTimeMatch?: "open" | "unknown" | null;
 };
