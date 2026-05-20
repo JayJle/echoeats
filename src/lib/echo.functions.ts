@@ -729,6 +729,7 @@ export type SearchStreamChunk =
   | { type: "stage"; stage: string; message?: string; count?: number; total?: number }
   | { type: "review-progress"; done: number; total: number }
   | { type: "tabelog-progress"; done: number; total: number }
+  | { type: "yelp-progress"; done: number; total: number }
   | { type: "heartbeat"; stage: string }
   | { type: "result"; payload: SearchResponse };
 
