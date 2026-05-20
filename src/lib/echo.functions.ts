@@ -681,8 +681,14 @@ const AiPickSchema = z.object({
   matchScore: z.number().min(0).max(100),
   matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
   aiSummary: z.string(),
-  pros: z.array(z.object({ text: z.string(), source: z.string().nullable().optional() })).default([]),
-  cons: z.array(z.object({ text: z.string(), source: z.string().nullable().optional() })).default([]),
+  pros: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
+  cons: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
   matchDetails: z
     .array(
       z.object({
