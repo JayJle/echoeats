@@ -894,7 +894,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       );
       placeResults = settled;
     } else {
-      // 海外城市：Google Places + Perplexity 网评（原流程）
+      // 海外城市：Google Places + Google 一手 reviews（基线）
       const language = data.language || guessLanguageCode(data.city);
       const region = country || guessRegionCode(data.city);
 
