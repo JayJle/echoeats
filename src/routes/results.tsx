@@ -745,7 +745,14 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               {t("results.yelp.title")}
             </h4>
-            <span className="text-[10px] text-muted-foreground">Yelp</span>
+            <div className="flex items-center gap-2">
+              {r.yelp.confidence === "low" && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border">
+                  {t("results.yelp.unverified")}
+                </span>
+              )}
+              <span className="text-[10px] text-muted-foreground">Yelp</span>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm mb-2">
             {r.yelp.rating != null && (
