@@ -357,6 +357,7 @@ function StepRequirements() {
 
     recorder.onstop = async () => {
       console.log("[mic] onstop chunks=", chunksRef.current.length, "mime=", usedMime);
+      stopAnalyser();
       stream.getTracks().forEach((tr) => tr.stop());
       setRecording(false);
       setElapsed(0);
