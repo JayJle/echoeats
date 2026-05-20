@@ -513,6 +513,7 @@ const RestaurantSchema = z.object({
       url: z.string().nullable(),
       priceLevel: z.string().nullable(),
       summary: z.string().nullable(),
+      confidence: z.enum(["high", "medium", "low"]).optional().default("high"),
     })
     .nullable()
     .optional()

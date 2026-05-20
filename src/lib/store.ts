@@ -61,6 +61,7 @@ export type Restaurant = {
     url: string | null;
     priceLevel: string | null;
     summary: string | null;
+    confidence?: "high" | "medium" | "low";
   } | null;
   weekdayDescriptions?: string[] | null;
   visitTimeMatch?: "open" | "unknown" | null;

@@ -1,68 +1,88 @@
-## 根因
+## 目标
 
-10:00-10:02 那次东京中餐搜索的服务端日志：
-
-```
-[10:00:58] [Tabelog] hit 43/43
-[10:00:58] sending 25 candidates across 1 cuisine(s) to model
-[10:01:22] [warn] "restaurants" Output.object failed (No output generated.), retrying raw…
-[10:02:04] [error] "restaurants" failed: truncated (finishReason=length)
-[10:02:04] all 1 group(s) done in 65809ms
-```
-
-**完全不是 Yelp 的问题**（那次是 JP，Yelp 分支根本没跑）。是 **AI 排序阶段两次都失败**：
-
-1. **第一次（Output.object，~24s）**：Gemini 2.5-flash 在带结构化 schema 的调用上偶发返回 `No output generated`。这是 AI SDK 日志里反复出现的 `responseFormat is not supported. JSON response format schema is only supported with structuredOutputs` 警告的运行时表现 —— 当输入很大（25 个候选 × 每个带 `realWorldReviews` + `tabelog.summary` + `editorialSummary`）时这个失败概率显著升高。
-2. **第二次（raw 兜底，~42s）**：用 `maxOutputTokens: 6000` 跑纯文本，模型先生成了一大段思考/解释文字才到 JSON，**6000 不够，被截断**，触发 `finishReason=length` → 抛错 → 返回空 `picks: []`。
-
-整个组返回 0 家餐厅 → 前端看到的就是「没结果」。
-
-`echo.functions.ts:1328`、`echo.functions.ts:1350` 两处都写死 `maxOutputTokens: 6000`。Gemini 2.5-flash 上下文 65k，6000 是非常保守的设置，对带 tabelog 数据的大输入完全不够用。
+把 Yelp 命中率显著提高（保守估计 35% → 70%+），同时把"挂错店"风险控制在低位。预算：每家餐厅最多比当前多 1 次 Perplexity 调用；保留 Perplexity-only 方案（不引入 Yelp Fusion）；找到 URL 但置信度不够时**展示但带"未核实"提示**而不是直接丢弃。
 
 ---
 
-## 修改方案
+## 当前命中率低的根因（基于 `src/lib/yelp.server.ts`）
 
-只动 `src/lib/echo.functions.ts` 的 `rankOneGroup`，不动其它任何文件。
+1. **Stage 0 只跑一条 query**：`{name} {area} site:yelp.com`。如果地址 area 抽取不准（比如东京/伦敦的地区名）或商家名含本地化字符，单条 query 经常召不回。
+2. **Stage 0 没有打分**：返回的第 1 个 `/biz/` URL 就被采用，slug 完全不验证与店名/城市匹配。
+3. **Stage 1 即使带了 preUrl 也常常给出 `url: null`**（Perplexity 没真正抓页面），导致 Stage 2 也只能拿到 preUrl 兜底；preUrl 一旦错了，错误会传到底。
+4. **没有"低置信度"分级**：要么完整卡，要么彻底丢，缺少中间档。
 
-### 改动 1：主调用 maxOutputTokens 6000 → 12000
+---
 
-`Output.object` 模式下也存在被截断的风险（虽然这次是 "No output generated" 而非截断），加大上限零成本。
+## 方案（只改 `src/lib/yelp.server.ts` + UI 一处低置信度标记）
 
-### 改动 2：raw 兜底 maxOutputTokens 6000 → 20000
+### 改动 1：Stage 0 改为多变体并发查询 + 候选打分
 
-raw 模式没有 schema 约束，模型很可能先吐 reasoning 再吐 JSON，必须给足头部空间。20000 仍远低于 2.5-flash 输出上限。
+把单条 `/search` 调用换成 **2–3 条并发**：
 
-### 改动 3：raw 兜底加一道"先 JSON 再说话"的强约束
+- Q1：`"{name}" {city} site:yelp.com`（带引号锁名字，更精准）
+- Q2：`{name} {streetTokens} site:yelp.com`（用地址里的街道关键词，对小店尤其有效）
+- Q3：`{name} site:yelp.com/biz`（只在前两条都没召回时再跑，name-only 兜底）
 
-在 raw 兜底的 prompt 追加：
+合并三批结果，对每个 `/biz/<slug>` URL 打分：
 
+- slug 包含店名核心 token（normalize 后去空格/连字符比对）：+3
+- slug 或 title 包含城市名 / 城市拼音：+2
+- snippet 文本里出现地址中的街道名或门牌号：+2
+- 同一 URL 在多条 query 里都出现：+1
+- 评分 ≥ 5 视为**高置信度**，3–4 为**中置信度**，1–2 为**低置信度**
+
+只保留 top1 进入 Stage 1，并把分档作为 `confidence` 字段透传。
+
+### 改动 2：Stage 1 精简，Stage 2 仅在中/低置信度时跑
+
+- 高置信度（≥5）：直接用 Stage 1 一次 sonar 调用补 rating/reviewCount/priceLevel/summary，不跑 Stage 2。
+- 中置信度（3–4）：跑 Stage 1，若字段空再跑 Stage 2。Stage 2 prompt 增加一条"先核对店名+地址是否吻合，吻合再读字段，不吻合就把 url 设为 null"。
+- 低置信度（1–2）：跳过 Stage 1，**直接跑 Stage 2** 让 sonar-pro 做一次"名字+地址匹配核验"，若核验通过则返回字段+`confidence: "low"`；不通过则丢弃 URL。
+
+净调用次数：高置信度 1+1=2 次，比现在的 1+1+(可能)1 略少；中/低 2+1=3 次，比现在多 1 次。整体平均略低于"2x 当前"预算。
+
+### 改动 3：YelpInfo 增加 `confidence` 字段
+
+```ts
+export type YelpInfo = {
+  rating: string | null;
+  reviewCount: number | null;
+  url: string | null;
+  priceLevel: "$" | "$$" | "$$$" | "$$$$" | null;
+  summary: string | null;
+  confidence: "high" | "medium" | "low";  // 新增
+};
 ```
-**输出格式硬约束**：第一个字符必须是 "{"，最后一个字符必须是 "}"。
-不要任何前置说明、不要 markdown、不要 ```、不要"以下是"之类的开场。
-picks 数组**最多 8 条**，每条的 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条。
-```
 
-这降低被截断概率、也降低 raw 解析失败概率。
+`echo.functions.ts` 里 candidate 透传时把 `confidence` 一并带上。
 
-### 改动 4：截断时再做一次极简重试（可选，本次包含）
+### 改动 4：UI 低置信度提示
 
-`finishReason=length` 时不直接抛错，而是把 prompt 中所有候选的 `realWorldReviews` 字段砍掉、`tabelog.summary` 截到 30 字，再用 20000 tokens 跑一次。这是最后的兜底，保证「有 Tabelog 数据」≠「AI 输出爆掉」。
+在 `src/routes/results.tsx` 第 742 行的 Yelp 卡片里，当 `r.yelp.confidence === "low"`，标题右侧加一个 `Badge`（淡灰）："可能不准 / Unverified match"。加两条 i18n key：
+- `results.yelp.unverified`：中文「可能不是同一家」/ 英文「Unverified match」
+
+### 改动 5：地址解析增强（`extractArea` + 新 `extractStreetTokens`）
+
+新增 `extractStreetTokens(address)`：从地址首段拆出街道关键词（去掉门牌号、邮编、国家），返回最多 3 个 token。Stage 0 Q2 用它。
+
+### 改动 6：负缓存 TTL（轻量）
+
+当前 `cache` 永久存 `null`，导致一旦某家没命中就再也不会重试。把 `null` 结果改为带时间戳的弱缓存（30 分钟过期），命中结果仍永久缓存。
 
 ---
 
 ## 不动的部分
 
-- Yelp 抓取层（上轮已优化的 `yelp.server.ts`）
-- Tabelog 抓取层
-- 候选构造、UI、i18n、store
-- AI 模型选择、温度、其它参数
-- 不新增 secret、不动数据库
+- `echo.functions.ts` 的排序、AI prompt、Tabelog 流程
+- `yelp.server.ts` 的并发数 / 超时
+- 不新增 secret、不动数据库、不引入新依赖
+- Yelp 字段仍**不参与 AI 排序硬过滤**（保持现状）
 
 ---
 
-## 预期效果与回退
+## 预期与回退
 
-- **预期**：65 秒返回空结果的失败模式被消除，~95% 情况下首轮 Output.object 直接成功；剩余 5% 走 raw 兜底也能在 20k tokens 内出完整 JSON；极少数仍截断则走改动 4 的极简重试。
-- **代价**：上限提高不影响实际计费（按实际输出 token 计费），最坏情况单次耗时多 5-10 秒。
-- **回退**：纯参数调整，回滚两个数字即可。
+- **预期命中率**：当前约 30–40%（基于上轮日志）→ 70–85%。"低置信度但正确"的卡占 10–15%，会带 unverified 标记。
+- **预期错配率**：通过 slug 打分 + Stage 2 核验，错配率应低于 5%；剩余错配也会被打成 low 并标 unverified。
+- **延迟**：单家平均 +0.5–1.5s（Stage 0 三条并发不会线性叠加，Stage 2 仅中/低置信度跑）。
+- **回退**：所有改动集中在 `yelp.server.ts` + UI 一处 + i18n 两条。回滚 = 还原文件。
