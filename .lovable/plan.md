@@ -1,84 +1,124 @@
-# 跨平台证据感强化方案
-
 ## 目标
-让用户在每张餐厅卡片上**一眼看出**：
-1. 这条结论来自哪几个平台（覆盖广度）
-2. 每条 pros / cons 是哪个平台的网友说的（可溯源 / 证据感）
 
-**约束**：不新增独立区块，不让卡片变高。复用现有 `pros` / `cons` / 头部区域。
+让你（产品 owner）能真实看到用户反馈，并能用反馈驱动迭代。当前后端已经在收集 `search_sessions` + `search_feedback`（已有 227 次搜索 / 6 条反馈），但**没有任何查看入口**——数据在数据库里，你看不到。
 
 ---
 
-## UI 改动（仅 results.tsx，纯前端展示层 + 一个 schema 字段）
+## 一、反馈数据模型：补齐缺口
 
-### 1. 卡片头部加一行"数据来源徽章带"
-位置：在 `#index` 那一行的右边、或紧贴店名下方的一行小徽章。
-内容：一组迷你 chip，按本次实际命中的平台动态显示：
-```
-来源： [G Google] [点 大众点评] [食 Tabelog] [小 小红书]
-```
-- 每个 chip ~20px 高，单行显示，整行约 24px，不显著增高
-- 命中（有评论或评分）才显示，不命中灰掉或隐藏
-- chip 可点击 → 跳转该平台对应链接（Tabelog 用 `tabelog.url`，Google 用 `googleMapsUri`，点评用 `links` 里的对应项）
+现状已有：搜索上下文（city/cuisines/parsed/results_snapshot）+ 用户评价（up/down/原因/评论/选了哪家 or 站外）。
 
-### 2. 每条 pros / cons 末尾加来源小标签
-现状：
-```
-+ 食材新鲜，性价比高
-```
-改为：
-```
-+ 食材新鲜，性价比高  · 大众点评
-− 上菜慢            · Google
-```
-- 来源标签用 `text-[10px] text-muted-foreground` 同行尾部，不另起一行 → 零增高
-- hover/tap 可显示原句（如果有），用 `title` 属性即可，最低成本
+补充以下字段，让每条反馈"自带上下文"，无需我额外解读：
 
-### 3. AI Summary 区块加一行轻量"综合自"行
-现状底部 AI 总结已经在 prompt 里要求追加"（综合大众点评、小红书等网友评价）"，但是塞在正文里不显眼。
-改：从 `aiSummary` 字符串里把这段提取出来（或单独从新字段读），渲染成总结下方一行 11px 灰字 `综合自：Google · 大众点评 · Tabelog`。
+**`search_sessions` 加：**
+- `user_agent text` — 区分移动/桌面
+- `lang text` — 中/英用户行为差异
+- `result_count int` — 当时返回了几家
+- `had_error bool` + `error_stage text` — 流程中是否报错（Google/点评/Tabelog/AI）
+
+**`search_feedback` 加：**
+- `nps int (1–5)` — 一个数字代替模糊的 up/down，能算趋势
+- `chosen_reason text[]` — 用户为什么选这家（味道/位置/评分/AI 总结说服力）
+- `would_recommend bool` — 是否愿推荐 Echo Eats
+- `contact text` — 可选邮箱，用户希望被回访
+
+**新增 `feedback_events` 表（事件级，可选轻量）：**
+记录关键交互（点开某家、点击外链、复制地址、切平台），用于补足"用户没填表但行为已经说明问题"。
 
 ---
 
-## 后端改动（src/lib/echo.functions.ts，最小侵入）
+## 二、查看入口：管理后台 `/admin/feedback`
 
-### Schema 扩展
-给 `pros` / `cons` 增加可选 `source` 字段，但**保持向后兼容**（字符串数组也能解析）：
-```ts
-const ProConItem = z.union([
-  z.string(),                                       // 旧格式
-  z.object({ text: z.string(), source: z.string().optional() }) // 新格式
-]);
-pros: z.array(ProConItem).default([]),
-cons: z.array(ProConItem).default([]),
+一个受保护的页面（密码保护，不接入完整 auth），三个核心视图：
+
+### 1. Dashboard（顶部概览）
+- 7/30 天搜索量、反馈率、👍/👎 比、平均 NPS
+- Top 5 高频 down reasons
+- "选了站外"占比（衡量我们推荐 vs 用户实际想吃的差距）
+- 错误率分平台
+
+### 2. Feedback Feed（核心）
+每条反馈卡片展示：
 ```
-前端归一化后渲染。
+[👎] 东京 · 拉面 · 中文 · 移动端 · 2分钟前
+原始需求："不要太油，最好排队不久"
+返回结果：一蘭、Afuri、Ichiran Roppongi（共 3 家）
+用户选择：站外 "面屋武藏"
+原因：① 推荐的不够地道  ② 没考虑排队
+评论："这几家都太游客了"
+[查看完整 session JSON ▾]
+```
+按 down / 选站外 / 有评论筛选，按时间倒序。
 
-### Prompt 调整（echo.functions.ts 约 1433 行附近）
-在描述 pros/cons 输出格式时追加一句：
-> 每条 pros/cons 必须以 `{ text, source }` 对象输出，`source` 取值范围：`"Google"` / `"大众点评"` / `"Tabelog"` / `"小红书"` / `"综合"`（多平台一致时）。来源必须可在 `realWorldReviews` 中找到对应依据，禁止编造。
-
-### 顶部"来源命中"判定
-不需要 AI 输出，前端基于现有数据直接算：
-- Google: `r.ratings` 里 Google 分数非 null **或** `realWorldReviews` 含 Google
-- 大众点评: `r.ratings` 里点评分数非 null **或** `links` 含 dianping.com
-- Tabelog: `r.tabelog != null`
-- 小红书: `links` 含 xiaohongshu.com 或 aiSummary 文本提到
+### 3. Session Explorer
+点开一条 → 看到当时 parsed 后的查询、完整 results_snapshot、用户最终选择。能"复现现场"才有诊断价值。
 
 ---
 
-## 不做的事
-- ❌ 不给每个平台像 Tabelog 那样开独立大区块（会过度冗长，且 Google/点评没有完整摘要内容支撑）
-- ❌ 不改进度条 / 检索阶段 UI
-- ❌ 不动 ratings 现有的两列网格（它本身就是跨平台展示，只是太静态）
+## 三、让反馈"主动找到你"
 
-## 范围
-- `src/routes/results.tsx`：头部徽章带、pros/cons 渲染、AI summary 下方加一行
-- `src/lib/echo.functions.ts`：`pros`/`cons` schema + prompt 一段话
-- `src/lib/store.ts`：`Restaurant` 类型 `pros`/`cons` 改为 `(string | { text; source })[]`
-- i18n：`results.dataSources` 等 3-4 个新 key
+光有后台你不会每天看。加两个推送：
 
-## 预期效果
-- 卡片纵向增高约 24px（仅顶部徽章带），其余改动均为同行内补充
-- 用户一眼看到顶部"来源：G 点 食"三个徽章 → 感知覆盖广
-- 看 pros/cons 时每条尾部有"· 大众点评"→ 感知有据可查
+1. **每日邮件摘要**（用 Resend / 你已有的 ElevenLabs 同等级 connector）：
+   昨日 N 次搜索、M 条反馈、负面原因 top 3、有评论的逐条列出。
+
+2. **负面反馈即时通知**：用户提交 👎 或留下评论时，触发邮件到你。
+
+实现方式：TanStack server function + cron（pg_cron 调用 `/api/public/daily-digest`，带签名校验）。
+
+---
+
+## 四、提升填写率（当前 227 搜索 / 6 反馈 ≈ 2.6%）
+
+产品改动，不在此 plan 实施，仅列出建议供后续：
+- 用户点击某家餐厅外链时，1 秒后浮出"这家如何？👍👎"轻量条
+- 24h 后如果同一 anon_id 又来搜了，弹"上次去 XX 了吗？"
+- 主动反馈按钮挪到结果卡片内联（"这家不合适？"）
+
+---
+
+## 五、实施范围（本轮要做的）
+
+**数据库迁移：**
+1. `search_sessions` 加 `user_agent / lang / result_count / had_error / error_stage`
+2. `search_feedback` 加 `nps / chosen_reason / would_recommend / contact`
+3. 两个表加 RLS：仅 service role 可读写（前端通过 server fn 写入；admin 后台通过 server fn + 密码读）
+4. 创建 admin 用 view，预 join session+feedback
+
+**前端：**
+1. 修改 `FeedbackPanel`：加 1–5 星 NPS + chosen_reason chip + 可选邮箱
+2. `createSearchSession` / `submitSearchFeedback` 接收新字段
+3. 新增 `/admin/feedback` 路由（密码 gate，密码存 secret `ADMIN_PASSWORD`）
+   - Dashboard 概览
+   - Feedback Feed（带筛选）
+   - Session Explorer 详情抽屉
+
+**服务端：**
+1. 新增 `admin.functions.ts`：`getFeedbackStats` / `listFeedback` / `getSession`（全部校验 `ADMIN_PASSWORD`）
+2. 新增 `/api/public/daily-digest` 路由，pg_cron 每日 09:00 调用，发送邮件摘要
+3. （可选第二步）负面反馈即时通知：在 `submitSearchFeedback` 里，若 overall=down，触发邮件
+
+**Secrets 需要你提供：**
+- `ADMIN_PASSWORD`（你自己设一个）
+- 邮件服务：建议接 **Resend** connector（如果你同意，我会在实施时通过 connector 流程引导）
+- 你希望接收摘要的邮箱地址
+
+---
+
+## 技术细节
+
+- 管理后台密码用 HttpOnly cookie + server fn 校验，不在 localStorage 存
+- 邮件 digest endpoint 用 HMAC 签名防滥用
+- view 命名 `feedback_with_session`，admin 后台只查 view，避免暴露原表结构
+- 所有 admin server fn 用 `supabaseAdmin`（不走 RLS），但入口层强制密码
+
+---
+
+## 需要你确认
+
+1. **管理后台访问方式**：单密码 gate（最简）/ Magic link / 接入 Lovable Cloud auth 并把你的邮箱加白名单？
+2. **邮件服务**：接 Resend？还是你已有偏好（SendGrid / 不要邮件，只要后台）？
+3. **NPS 替代 up/down**：愿意吗？（更可量化，但用户填写阻力略升）
+4. **接收摘要的邮箱**
+
+确认后我开始实施。
