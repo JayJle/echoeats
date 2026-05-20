@@ -1574,6 +1574,7 @@ ${JSON.stringify(group.candidates, null, 2)}
             const p = pool[i];
             const review = reviewById.get(p.placeId) ?? null;
             const tabelogInfo = tabelogById.get(p.placeId) ?? null;
+            const yelpInfo = yelpById.get(p.placeId) ?? null;
             const idx = restaurants.length + partialRestaurants.length;
             const score =
               p.rating != null ? Math.max(40, Math.round(p.rating * 14)) : 50;
@@ -1593,7 +1594,7 @@ ${JSON.stringify(group.candidates, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: true,
-              ratings: candidateRatings(p, review, tabelogInfo, isEn, country),
+              ratings: candidateRatings(p, review, tabelogInfo, isEn, country, yelpInfo),
               aiSummary: isEn
                 ? `${p.name} — added based on Google data to complete your list of 5 recommendations. Match against your specific conditions has not been verified.`
                 : `${p.name} — 基于 Google 数据自动补充，用于凑齐 5 个推荐，未逐条核对你的具体条件。`,
@@ -1604,7 +1605,7 @@ ${JSON.stringify(group.candidates, null, 2)}
                       {
                         label: isEn
                           ? `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
-                          : `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? `（${p.userRatingCount} 条）` : ""}`,
+                          : `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? `(${p.userRatingCount} 条)` : ""}`,
                         status: "ok" as const,
                       },
                     ]
@@ -1612,9 +1613,10 @@ ${JSON.stringify(group.candidates, null, 2)}
               ],
               pros: [],
               cons: [],
-              links: buildLinks(p, data.city, country, isEn),
+              links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
+              yelp: yelpInfo,
               weekdayDescriptions: p.weekdayDescriptions ?? null,
               visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
             };
