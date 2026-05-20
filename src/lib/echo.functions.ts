@@ -645,15 +645,6 @@ function candidateRatings(
   ];
   if (isJP) rows.push({ platform: "Tabelog", score: tabelogScore });
   if (isCN) rows.push({ platform: isEn ? "Dianping" : "大众点评", score: dpScore });
-  // 海外（含日本）：若 Perplexity 已采纳 Yelp / TripAdvisor 评论，显式列出来源，避免“看起来只有 Google”
-  if (!isCN && review?.sources?.length) {
-    if (review.sources.includes("Yelp")) {
-      rows.push({ platform: "Yelp", score: isEn ? "reviews used" : "已纳入网评" });
-    }
-    if (review.sources.includes("TripAdvisor")) {
-      rows.push({ platform: "TripAdvisor", score: isEn ? "reviews used" : "已纳入网评" });
-    }
-  }
   rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
   return rows;
 }
