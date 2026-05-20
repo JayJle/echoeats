@@ -1499,6 +1499,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 
             const review = reviewById.get(p.placeId) ?? null;
             const tabelogInfo = tabelogById.get(p.placeId) ?? null;
+            const yelpInfo = yelpById.get(p.placeId) ?? null;
             const restaurant = {
               id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
               name: p.name,
@@ -1513,15 +1514,16 @@ ${JSON.stringify(group.candidates, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null || visitMatchById.get(p.placeId) === "unknown",
-              ratings: candidateRatings(p, review, tabelogInfo, isEn, country),
+              ratings: candidateRatings(p, review, tabelogInfo, isEn, country, yelpInfo),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
               pros: pick.pros,
               cons: pick.cons,
-              links: buildLinks(p, data.city, country, isEn),
+              links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
+              yelp: yelpInfo,
               weekdayDescriptions: p.weekdayDescriptions ?? null,
               visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
             };
