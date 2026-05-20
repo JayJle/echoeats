@@ -39,32 +39,44 @@ export type Database = {
         Row: {
           chosen_external_name: string | null
           chosen_from_results: string | null
+          chosen_reasons: string[] | null
           comment: string | null
+          contact: string | null
           created_at: string
           down_reasons: string[]
           id: string
           overall: string
+          rating: number | null
           session_id: string
+          would_recommend: boolean | null
         }
         Insert: {
           chosen_external_name?: string | null
           chosen_from_results?: string | null
+          chosen_reasons?: string[] | null
           comment?: string | null
+          contact?: string | null
           created_at?: string
           down_reasons?: string[]
           id?: string
           overall: string
+          rating?: number | null
           session_id: string
+          would_recommend?: boolean | null
         }
         Update: {
           chosen_external_name?: string | null
           chosen_from_results?: string | null
+          chosen_reasons?: string[] | null
           comment?: string | null
+          contact?: string | null
           created_at?: string
           down_reasons?: string[]
           id?: string
           overall?: string
+          rating?: number | null
           session_id?: string
+          would_recommend?: boolean | null
         }
         Relationships: [
           {
@@ -82,27 +94,42 @@ export type Database = {
           city: string
           created_at: string
           cuisines: string[]
+          error_stage: string | null
+          had_error: boolean | null
           id: string
+          lang: string | null
           parsed_json: Json | null
+          result_count: number | null
           results_snapshot: Json | null
+          user_agent: string | null
         }
         Insert: {
           anon_id: string
           city: string
           created_at?: string
           cuisines?: string[]
+          error_stage?: string | null
+          had_error?: boolean | null
           id?: string
+          lang?: string | null
           parsed_json?: Json | null
+          result_count?: number | null
           results_snapshot?: Json | null
+          user_agent?: string | null
         }
         Update: {
           anon_id?: string
           city?: string
           created_at?: string
           cuisines?: string[]
+          error_stage?: string | null
+          had_error?: boolean | null
           id?: string
+          lang?: string | null
           parsed_json?: Json | null
+          result_count?: number | null
           results_snapshot?: Json | null
+          user_agent?: string | null
         }
         Relationships: []
       }
