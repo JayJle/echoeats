@@ -235,3 +235,93 @@ export const adminGetSession = createServerFn({ method: "POST" })
       },
     };
   });
+
+export const adminDeleteFeedback = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z.object({ feedbackId: z.string().uuid() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    await requireAdmin();
+
+    // 取出关联 session_id，再连同反馈一起删
+    const { data: row, error: getErr } = await supabaseAdmin
+      .from("search_feedback")
+      .select("session_id")
+      .eq("id", data.feedbackId)
+      .maybeSingle();
+    if (getErr) return { ok: false as const, error: getErr.message };
+
+    const sessionId = row?.session_id ?? null;
+
+    const { error: delFbErr } = await supabaseAdmin
+      .from("search_feedback")
+      .delete()
+      .eq("id", data.feedbackId);
+    if (delFbErr) return { ok: false as const, error: delFbErr.message };
+
+    let sessionsDeleted = 0;
+    if (sessionId) {
+      const { error: delSessErr, count } = await supabaseAdmin
+        .from("search_sessions")
+        .delete({ count: "exact" })
+        .eq("id", sessionId);
+      if (delSessErr) {
+        console.warn("[admin] deleteFeedback: session delete failed:", delSessErr.message);
+      } else {
+        sessionsDeleted = count ?? 0;
+      }
+    }
+
+    return { ok: true as const, deleted: { feedback: 1, sessions: sessionsDeleted } };
+  });
+
+export const adminDeleteSession = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z.object({ sessionId: z.string().uuid() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    await requireAdmin();
+
+    const { error: delFbErr, count: fbCount } = await supabaseAdmin
+      .from("search_feedback")
+      .delete({ count: "exact" })
+      .eq("session_id", data.sessionId);
+    if (delFbErr) return { ok: false as const, error: delFbErr.message };
+
+    const { error: delSessErr, count: sessCount } = await supabaseAdmin
+      .from("search_sessions")
+      .delete({ count: "exact" })
+      .eq("id", data.sessionId);
+    if (delSessErr) return { ok: false as const, error: delSessErr.message };
+
+    return {
+      ok: true as const,
+      deleted: { feedback: fbCount ?? 0, sessions: sessCount ?? 0 },
+    };
+  });
+
+export const adminClearAll = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z.object({ confirm: z.literal("CLEAR_ALL") }).parse(input),
+  )
+  .handler(async () => {
+    await requireAdmin();
+
+    // 先删反馈，再删会话；用恒真条件让 supabase 接受无 filter 的 delete
+    const { error: delFbErr, count: fbCount } = await supabaseAdmin
+      .from("search_feedback")
+      .delete({ count: "exact" })
+      .not("id", "is", null);
+    if (delFbErr) return { ok: false as const, error: delFbErr.message };
+
+    const { error: delSessErr, count: sessCount } = await supabaseAdmin
+      .from("search_sessions")
+      .delete({ count: "exact" })
+      .not("id", "is", null);
+    if (delSessErr) return { ok: false as const, error: delSessErr.message };
+
+    return {
+      ok: true as const,
+      deleted: { feedback: fbCount ?? 0, sessions: sessCount ?? 0 },
+    };
+  });
