@@ -372,33 +372,6 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 
 const SOURCE_ENUM = ["大众点评", "Tabelog", "Google Reviews", "Yelp", "TripAdvisor", "其它"] as const;
 
-// 海外评论域白名单已下沉到 PLATFORM_META，每个平台子查询各自锁域。
-
-// citation URL host 白名单匹配（用于校验 Perplexity 真的去了白名单域）
-function citationMatchesAllowed(url: string, allowed: string[]): boolean {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.toLowerCase();
-    const pathHost = `${host}${u.pathname}`.toLowerCase();
-    return allowed.some((d) => host === d || host.endsWith(`.${d}`) || pathHost.startsWith(d));
-  } catch {
-    return false;
-  }
-}
-
-// 从 citation URL 反推命中的 source 名称
-function sourceFromCitation(url: string): string | null {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    if (host.includes("yelp.com")) return "Yelp";
-    if (host.includes("tripadvisor.")) return "TripAdvisor";
-    if (host.includes("google.") || host.includes("goo.gl")) return "Google Reviews";
-    if (host.includes("tabelog.com")) return "Tabelog";
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
 
 // 把 Google Places 一手 reviews 转成 ReviewSummary（零幻觉，第一手数据）
 function googleReviewsToSummary(p: PlaceCandidate): ReviewSummary | null {
