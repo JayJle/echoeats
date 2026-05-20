@@ -603,7 +603,7 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = false) {
+function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = false, yelpUrl: string | null = null) {
   const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
   const qName = encodeURIComponent(p.name);
