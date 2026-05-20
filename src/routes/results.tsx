@@ -676,7 +676,10 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
               {r.pros.map((p, i) => (
                 <li key={i} className="text-foreground">
                   <span className="text-success mr-1">+</span>
-                  {p}
+                  {p.text}
+                  {p.source && (
+                    <span className="ml-1.5 text-[10px] text-muted-foreground/80">· {p.source}</span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -693,7 +696,10 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
               {r.cons.map((c, i) => (
                 <li key={i} className="text-foreground">
                   <span className="text-destructive mr-1">−</span>
-                  {c}
+                  {c.text}
+                  {c.source && (
+                    <span className="ml-1.5 text-[10px] text-muted-foreground/80">· {c.source}</span>
+                  )}
                 </li>
               ))}
             </ul>
