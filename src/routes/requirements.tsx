@@ -103,7 +103,7 @@ function StepRequirements() {
     try {
       setCurrentStage("parse");
       const parsed = await parseFn({
-        data: { city, cuisines, date: "", freeText: text, uiLanguage: lang },
+        data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
         signal: ac.signal,
       } as Parameters<typeof parseFn>[0]);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
