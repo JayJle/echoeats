@@ -577,13 +577,6 @@ async function fetchPlatformReview(
       citationMatchesAllowed(u, allowedDomains),
     );
 
-    if (validCitations.length === 0) {
-      console.warn(
-        `[Perplexity:${platform}] ${name}: no whitelisted citations (got ${allCitationUrls.length} raw) → discard`,
-      );
-      return null;
-    }
-
     const parsed = JSON.parse(content);
     const highlights = Array.isArray(parsed.reviewHighlights)
       ? (parsed.reviewHighlights as unknown[])
@@ -601,13 +594,47 @@ async function fetchPlatformReview(
       return null;
     }
 
+    // 模型自报的 sourceCount（声称引用了多少条平台页）。
+    const claimedCount =
+      typeof parsed.sourceCount === "number" && parsed.sourceCount > 0
+        ? Math.floor(parsed.sourceCount)
+        : 0;
+    const claimsPlatform =
+      Array.isArray(parsed.sources) &&
+      (parsed.sources as unknown[]).some(
+        (s) => typeof s === "string" && s === meta.sourceName,
+      );
+
+    // 双档证据：
+    //  - 强证据 = 有白名单 citation；
+    //  - 平台限定弱证据 = 没 citation，但本次 search_domain_filter 已经强制锁域，
+    //    且模型自报命中该平台并给出非空摘要 → 仍然采纳为该平台补充口碑。
+    if (validCitations.length === 0) {
+      if (!claimsPlatform || claimedCount === 0) {
+        console.warn(
+          `[Perplexity:${platform}] ${name}: no whitelisted citations and no platform self-claim → discard`,
+        );
+        return null;
+      }
+      console.log(
+        `[Perplexity:${platform}] ${name}: domain-filter fallback (no citations, model claims ${claimedCount}) → accept`,
+      );
+    } else {
+      console.log(
+        `[Perplexity:${platform}] ${name}: verified citations=${validCitations.length} → accept`,
+      );
+    }
+
+    const effectiveSourceCount =
+      validCitations.length > 0 ? validCitations.length : Math.max(1, claimedCount);
+
     return {
       reviewHighlights: highlights as string[],
       commonComplaints: complaints as string[],
       sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment)
         ? parsed.sentiment
         : "unknown",
-      sourceCount: validCitations.length,
+      sourceCount: effectiveSourceCount,
       sources: [meta.sourceName],
       dianpingRating: null,
       dianpingRatingSource: "unknown",
