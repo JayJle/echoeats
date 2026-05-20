@@ -56,8 +56,14 @@ export const adminLogout = createServerFn({ method: "POST" }).handler(async () =
 });
 
 export const adminCheckAuth = createServerFn({ method: "GET" }).handler(async () => {
-  const session = await useSession<AdminSession>(sessionConfig());
-  return { authed: !!session.data?.authed };
+  try {
+    const session = await useSession<AdminSession>(sessionConfig());
+    return { authed: !!session.data?.authed, error: null as string | null };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[admin] checkAuth failed:", msg);
+    return { authed: false, error: msg };
+  }
 });
 
 export const adminGetStats = createServerFn({ method: "GET" }).handler(async () => {
