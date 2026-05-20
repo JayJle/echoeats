@@ -292,10 +292,12 @@ function StepRequirements() {
     mediaRecorderRef.current = recorder;
 
     recorder.ondataavailable = (e) => {
+      console.log("[mic] dataavailable size=", e.data?.size ?? 0);
       if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
     };
 
     recorder.onstop = async () => {
+      console.log("[mic] onstop chunks=", chunksRef.current.length, "mime=", usedMime);
       stream.getTracks().forEach((tr) => tr.stop());
       setRecording(false);
       setElapsed(0);
@@ -303,6 +305,7 @@ function StepRequirements() {
       const blob = new Blob(chunksRef.current, { type: usedMime });
       chunksRef.current = [];
       if (blob.size === 0) {
+        console.warn("[mic] empty blob after stop");
         toast.error(t("err.mic.empty"));
         return;
       }
@@ -316,8 +319,10 @@ function StepRequirements() {
             ? "ogg"
             : "webm";
         fd.append("audio", blob, `audio.${ext}`);
+        console.log("[mic] uploading", blob.size, "bytes as audio." + ext, "mime=", usedMime);
         const res = await fetch("/api/transcribe", { method: "POST", body: fd });
         const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+        console.log("[mic] response", res.status, data);
         if (!res.ok) {
           if (res.status === 429) toast.error(t("err.transcribe.busy"));
           else if (res.status === 402) toast.error(t("err.transcribe.elevenQuota"));
@@ -329,14 +334,23 @@ function StepRequirements() {
         } else {
           toast.error(t("err.transcribe.noContent"));
         }
-      } catch {
+      } catch (err) {
+        console.error("[mic] transcribe failed", err);
         toast.error(t("err.transcribe.network"));
       } finally {
         setTranscribing(false);
       }
     };
 
-    recorder.start();
+    try {
+      recorder.start(500);
+    } catch (err) {
+      console.error("[mic] recorder.start failed", err);
+      stream.getTracks().forEach((tr) => tr.stop());
+      toast.error(t("err.mic.initFail"));
+      return;
+    }
+    console.log("[mic] recording started mime=", usedMime);
     setRecording(true);
     setElapsed(0);
     const startedAt = Date.now();
