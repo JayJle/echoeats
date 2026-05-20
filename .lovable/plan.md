@@ -1,89 +1,68 @@
-## 目标
+## 根因
 
-把 Yelp 命中率从当前的 ~3%（1/30）拉到 ≥ 50%，让 Yelp 卡片在 US/CA/西欧搜索里真实出现。代码管线、UI、i18n 完全不动，只改 `src/lib/yelp.server.ts` 的抓取策略。
+10:00-10:02 那次东京中餐搜索的服务端日志：
+
+```
+[10:00:58] [Tabelog] hit 43/43
+[10:00:58] sending 25 candidates across 1 cuisine(s) to model
+[10:01:22] [warn] "restaurants" Output.object failed (No output generated.), retrying raw…
+[10:02:04] [error] "restaurants" failed: truncated (finishReason=length)
+[10:02:04] all 1 group(s) done in 65809ms
+```
+
+**完全不是 Yelp 的问题**（那次是 JP，Yelp 分支根本没跑）。是 **AI 排序阶段两次都失败**：
+
+1. **第一次（Output.object，~24s）**：Gemini 2.5-flash 在带结构化 schema 的调用上偶发返回 `No output generated`。这是 AI SDK 日志里反复出现的 `responseFormat is not supported. JSON response format schema is only supported with structuredOutputs` 警告的运行时表现 —— 当输入很大（25 个候选 × 每个带 `realWorldReviews` + `tabelog.summary` + `editorialSummary`）时这个失败概率显著升高。
+2. **第二次（raw 兜底，~42s）**：用 `maxOutputTokens: 6000` 跑纯文本，模型先生成了一大段思考/解释文字才到 JSON，**6000 不够，被截断**，触发 `finishReason=length` → 抛错 → 返回空 `picks: []`。
+
+整个组返回 0 家餐厅 → 前端看到的就是「没结果」。
+
+`echo.functions.ts:1328`、`echo.functions.ts:1350` 两处都写死 `maxOutputTokens: 6000`。Gemini 2.5-flash 上下文 65k，6000 是非常保守的设置，对带 tabelog 数据的大输入完全不够用。
 
 ---
 
-## 根因分析（基于线上日志）
+## 修改方案
 
-观察样本：圣路易斯日料搜索，30 家店：
-- Stage1（sonar + search_domain_filter）：**0/30** 命中
-- Stage2（sonar-pro）：**1/30** 命中（Mizu Sushi Bar）
-- 失败原因 100% 是 `no shop-page url in JSON or citations`
+只动 `src/lib/echo.functions.ts` 的 `rankOneGroup`，不动其它任何文件。
 
-对比 Tabelog 的高命中率，三个关键差异：
+### 改动 1：主调用 maxOutputTokens 6000 → 12000
 
-1. **`search_domain_filter` 传了 7 个域名**（yelp.com / yelp.fr / .it / .de / .es / .co.uk / .ca）。Perplexity 对多域名过滤的召回会显著退化；Tabelog 只传 1 个域名。实际上 **yelp.com 已经覆盖了全球绝大多数 Yelp 店铺页**（包括西欧店），地区域名是冗余的。
-2. **Stage1 prompt 过于严苛**：要求 "绝对不要返回搜索/列表/分类页"、"同名不同店一律返回 null"，叠加 strict json_schema 后，模型倾向于**全字段返回 null** 而不是冒险给一个不完美的 URL。
-3. **Stage2 没有去掉 `search_domain_filter`**（虽然代码里只有 Stage1 加了，但 Stage2 的 prompt 仍然死扣 yelp.com 详情页）。当 Perplexity 本身没在索引里找到该店时，无论怎么提示 sonar-pro 都给不出 URL。缺少一条**绕过 Perplexity、直接用搜索 API 拿候选 URL** 的兜底。
+`Output.object` 模式下也存在被截断的风险（虽然这次是 "No output generated" 而非截断），加大上限零成本。
 
----
+### 改动 2：raw 兜底 maxOutputTokens 6000 → 20000
 
-## 修改方案（只动 `src/lib/yelp.server.ts`）
+raw 模式没有 schema 约束，模型很可能先吐 reasoning 再吐 JSON，必须给足头部空间。20000 仍远低于 2.5-flash 输出上限。
 
-### 改动 1：精简 `search_domain_filter`
+### 改动 3：raw 兜底加一道"先 JSON 再说话"的强约束
 
-```ts
-const YELP_DOMAINS = ["yelp.com"]; // 单域名召回最稳，已覆盖国际店
-```
-
-保留 `YELP_SHOP_URL_RE` 仍兼容多 TLD（万一 Perplexity 自己冒出 yelp.fr URL，照样接受）。
-
-### 改动 2：放宽 Stage1 prompt
-
-把 Stage1 从"严格匹配，否则 null"改为"先把 yelp.com 上最像的那家店的详情页 URL 给我，找不到再 null"。重点：
-
-- 删掉"宁可全部返回 null"这种诱导模型偷懒的措辞
-- 明确说："url 优先级最高；rating/reviewCount/priceLevel/summary 是次要字段，单独 null 不影响 url 返回"
-- 给出**正反例**（few-shot 短例）：`✓ https://www.yelp.com/biz/mizu-sushi-bar-saint-louis` / `✗ https://www.yelp.com/search?...`
-
-### 改动 3：新增 Stage 0 ——「Perplexity Search API」直接拿 URL
-
-新增一段在 Stage1 之前的轻量调用：
-
-```ts
-POST https://api.perplexity.ai/search
-{ query: `${name} ${city} site:yelp.com` }
-```
-
-从返回结果里用 `YELP_SHOP_URL_RE` 直接抽第一条命中 URL。如果拿到 URL，就把 URL 喂给后续 Stage1/Stage2 当作 hint：
+在 raw 兜底的 prompt 追加：
 
 ```
-已确认 Yelp 详情页为 ${preUrl}，请直接读这个页面的 rating / reviewCount / priceLevel / summary。
+**输出格式硬约束**：第一个字符必须是 "{"，最后一个字符必须是 "}"。
+不要任何前置说明、不要 markdown、不要 ```、不要"以下是"之类的开场。
+picks 数组**最多 8 条**，每条的 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条。
 ```
 
-这样 Stage1 不需要再"搜索＋读取"两件事一起做，命中率会大幅提升。即使 Stage1/2 都读不出 rating，我们至少能返回 `{ url: preUrl, 其它字段全 null }`，前端就能展示一个 "在 Yelp 查看 →" 链接卡片（仍然有价值）。
+这降低被截断概率、也降低 raw 解析失败概率。
 
-### 改动 4：Stage2 去掉对 yelp.com 详情页的死扣
+### 改动 4：截断时再做一次极简重试（可选，本次包含）
 
-当 Stage 0 没拿到 preUrl 时，Stage2 改成更宽松：
-
-- 用 `sonar-pro`、**不传** `search_domain_filter`
-- prompt 改为"在 Yelp 上找这家店，若 Yelp 上没有就返回 null url"
-- 仍然要求 URL 必须匹配 `YELP_SHOP_URL_RE`（在解析层兜底）
-
-### 改动 5：解析层放宽
-
-`parseStage` 当前要求 JSON content 必须存在；若 content 为空但 citation 里有 yelp shop URL，就返回 url-only。**扩展**：当 JSON 解析出 url 但 rating 为 null 时，照常返回（已经是这个行为，确认即可）。
-
-无新增字段、无类型变化，`Restaurant.yelp` 形状不变，前端零改动。
+`finishReason=length` 时不直接抛错，而是把 prompt 中所有候选的 `realWorldReviews` 字段砍掉、`tabelog.summary` 截到 30 字，再用 20000 tokens 跑一次。这是最后的兜底，保证「有 Tabelog 数据」≠「AI 输出爆掉」。
 
 ---
 
 ## 不动的部分
 
-- `src/lib/echo.functions.ts` 的 Yelp 分支接入、并发、心跳、prompt 中 "仅展示不参与硬过滤" 说明
-- `src/routes/results.tsx` 的 Yelp 卡片渲染
-- `src/lib/i18n/dict.ts` 的 i18n
-- `src/lib/store.ts` 的 `Restaurant.yelp` 类型
-- Tabelog 全部代码（这次只优化 Yelp）
-- 不新增 secret，不动数据库
+- Yelp 抓取层（上轮已优化的 `yelp.server.ts`）
+- Tabelog 抓取层
+- 候选构造、UI、i18n、store
+- AI 模型选择、温度、其它参数
+- 不新增 secret、不动数据库
 
 ---
 
 ## 预期效果与回退
 
-- **预期命中率**：Stage 0 单独就能给 60-75% 的店一个 URL；Stage1/2 在 URL hint 下再补齐 rating/summary，最终 ~70% 店显示 Yelp 卡片，~40% 店带评分。
-- **额外延迟**：Stage 0 是单次 `/search` 调用（200-500ms），并发 8 下整体 stage 时间几乎不变。
-- **回退**：若 Stage 0 报错或限流，直接跳过、走原有 Stage1/2 流程，最坏退化到当前 1/30。
-- **风险**：`/search` endpoint 的额度与 `/chat/completions` 共享同一个 `PERPLEXITY_API_KEY`，无需新 secret，但要注意每店多 1 次调用 → 30 家店总额度从 60 次涨到 90 次。可接受。
+- **预期**：65 秒返回空结果的失败模式被消除，~95% 情况下首轮 Output.object 直接成功；剩余 5% 走 raw 兜底也能在 20k tokens 内出完整 JSON；极少数仍截断则走改动 4 的极简重试。
+- **代价**：上限提高不影响实际计费（按实际输出 token 计费），最坏情况单次耗时多 5-10 秒。
+- **回退**：纯参数调整，回滚两个数字即可。
