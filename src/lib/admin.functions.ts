@@ -161,7 +161,7 @@ export const adminListFeedback = createServerFn({ method: "POST" })
       user_agent: string | null;
       result_count: number | null;
       created_at: string;
-      parsed_json: unknown;
+      parsed_json: Record<string, unknown> | null;
     }>();
 
     if (sessionIds.length > 0) {
