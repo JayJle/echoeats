@@ -1,12 +1,13 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Check, HelpCircle, Loader2, Mic, Square } from "lucide-react";
+import { Check, HelpCircle, Loader2, Mic, Sparkles, Square } from "lucide-react";
 import { toast } from "sonner";
 import { NeedBubbles } from "@/components/NeedBubbles";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useQueryStore } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
@@ -167,10 +168,68 @@ function StepRequirements() {
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [level, setLevel] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  const stopAnalyser = () => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    try { sourceRef.current?.disconnect(); } catch { /* noop */ }
+    try { analyserRef.current?.disconnect(); } catch { /* noop */ }
+    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+      audioCtxRef.current.close().catch(() => { /* noop */ });
+    }
+    sourceRef.current = null;
+    analyserRef.current = null;
+    audioCtxRef.current = null;
+    setLevel(0);
+  };
+
+  const startAnalyser = (stream: MediaStream) => {
+    try {
+      const Ctx: typeof AudioContext =
+        (window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.7;
+      source.connect(analyser);
+      audioCtxRef.current = ctx;
+      sourceRef.current = source;
+      analyserRef.current = analyser;
+      const buf = new Uint8Array(analyser.fftSize);
+      let lastTs = 0;
+      const loop = (ts: number) => {
+        rafRef.current = requestAnimationFrame(loop);
+        if (ts - lastTs < 33) return;
+        lastTs = ts;
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        // amplify and clamp to 0..1
+        setLevel(Math.min(1, rms * 3));
+      };
+      rafRef.current = requestAnimationFrame(loop);
+    } catch (err) {
+      console.warn("[mic] analyser init failed", err);
+    }
+  };
 
   const appendText = (text: string) => {
     const trimmed = text.trim();
@@ -298,6 +357,7 @@ function StepRequirements() {
 
     recorder.onstop = async () => {
       console.log("[mic] onstop chunks=", chunksRef.current.length, "mime=", usedMime);
+      stopAnalyser();
       stream.getTracks().forEach((tr) => tr.stop());
       setRecording(false);
       setElapsed(0);
@@ -351,6 +411,7 @@ function StepRequirements() {
       return;
     }
     console.log("[mic] recording started mime=", usedMime);
+    startAnalyser(stream);
     setRecording(true);
     setElapsed(0);
     const startedAt = Date.now();
@@ -360,12 +421,33 @@ function StepRequirements() {
     autoStopTimerRef.current = setTimeout(() => stopRecordingInternal(), 60_000);
   };
 
+  // First-visit nudge to highlight voice input
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (!localStorage.getItem("ee_voice_tip_seen")) {
+        const id = setTimeout(() => {
+          toast(t("step3.voice.firstTip"), { duration: 5000 });
+          localStorage.setItem("ee_voice_tip_seen", "1");
+        }, 600);
+        return () => clearTimeout(id);
+      }
+    } catch { /* noop */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => () => {
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== "inactive") mr.stop();
+    stopAnalyser();
   }, []);
+
+  const micBusy = transcribing || loading;
+  const ringScale = 1 + level * 0.7;
+  const ringOpacity = 0.18 + level * 0.55;
+  const bars = [0.45, 0.75, 1, 0.75, 0.45];
 
   return (
     <StepShell step={3} total={3} title={t("step3.title")}>
@@ -378,40 +460,112 @@ function StepRequirements() {
       >
         <NeedBubbles onPick={appendBubble} />
 
-        <div className="relative">
-          <Textarea
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            className="min-h-[120px] text-base resize-none pr-20"
-            maxLength={1000}
-            disabled={loading}
-          />
-          <div className="absolute bottom-3 right-3 flex flex-col items-center gap-1">
-            <button
-              type="button"
-              onClick={() => void toggleRecording()}
-              disabled={transcribing || loading}
-              aria-label={recording ? t("step3.mic.stop") : t("step3.mic.start")}
-              className={`flex h-14 w-14 items-center justify-center rounded-full text-primary-foreground shadow-md transition-colors disabled:opacity-60 ${
-                recording
-                  ? "bg-destructive hover:bg-destructive/90"
-                  : "bg-primary hover:bg-primary/90"
-              }`}
-              style={recording ? { animation: "mic-ring 1.4s ease-out infinite" } : undefined}
-            >
-              {transcribing ? (
-                <Loader2 className="h-5 w-5 animate-spin" />
-              ) : recording ? (
-                <Square className="h-5 w-5" fill="currentColor" />
-              ) : (
-                <Mic className="h-6 w-6" />
+        {/* Prominent voice input card */}
+        <div
+          className={`relative overflow-hidden rounded-2xl border p-5 transition-colors ${
+            recording
+              ? "border-destructive/40 bg-destructive/5"
+              : "border-primary/30 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="gap-1">
+                  <Sparkles className="h-3 w-3" />
+                  {t("step3.voice.badge")}
+                </Badge>
+              </div>
+              <p className="mt-2 text-base font-semibold text-foreground">
+                {recording ? t("step3.voice.listening") : t("step3.voice.cta")}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {transcribing
+                  ? t("step3.mic.transcribing")
+                  : recording
+                    ? t("step3.mic.recording", { s: elapsed })
+                    : t("step3.voice.sub")}
+              </p>
+            </div>
+
+            <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
+              {/* reactive outer ring */}
+              {recording && (
+                <span
+                  aria-hidden
+                  className="absolute inset-0 rounded-full bg-destructive/30 transition-transform"
+                  style={{
+                    transform: `scale(${ringScale})`,
+                    opacity: ringOpacity,
+                    transitionDuration: "80ms",
+                  }}
+                />
               )}
-            </button>
-            <span className="text-[10px] text-muted-foreground">
-              {transcribing ? t("step3.mic.transcribing") : recording ? t("step3.mic.recording", { s: elapsed }) : t("step3.mic.tip")}
-            </span>
+              {/* idle halo */}
+              {!recording && !transcribing && (
+                <span
+                  aria-hidden
+                  className="absolute inset-1 rounded-full bg-primary/20 animate-pulse"
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => void toggleRecording()}
+                disabled={micBusy}
+                aria-label={recording ? t("step3.mic.stop") : t("step3.mic.start")}
+                className={`relative flex h-16 w-16 items-center justify-center rounded-full text-primary-foreground shadow-lg transition-colors disabled:opacity-60 ${
+                  recording
+                    ? "bg-destructive hover:bg-destructive/90"
+                    : "bg-primary hover:bg-primary/90"
+                }`}
+              >
+                {transcribing ? (
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                ) : recording ? (
+                  <Square className="h-5 w-5" fill="currentColor" />
+                ) : (
+                  <Mic className="h-7 w-7" />
+                )}
+              </button>
+            </div>
           </div>
+
+          {/* live equalizer bars */}
+          {recording && (
+            <div
+              aria-hidden
+              className="mt-4 flex h-8 items-end justify-center gap-1.5"
+            >
+              {bars.map((weight, i) => {
+                const h = Math.max(4, Math.min(32, level * weight * 56));
+                return (
+                  <span
+                    key={i}
+                    className="w-1.5 rounded-full bg-destructive transition-[height] duration-75"
+                    style={{ height: `${h}px` }}
+                  />
+                );
+              })}
+            </div>
+          )}
         </div>
+
+        <div className="relative flex items-center">
+          <div className="h-px flex-1 bg-border" />
+          <span className="px-3 text-[11px] uppercase tracking-wide text-muted-foreground">
+            {t("step3.voice.orType")}
+          </span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
+
+        <Textarea
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="min-h-[120px] text-base resize-none"
+          maxLength={1000}
+          disabled={loading}
+        />
+
 
         {loading && currentStage && (
           <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-4">
