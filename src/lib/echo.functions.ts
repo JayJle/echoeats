@@ -1321,11 +1321,45 @@ ${JSON.stringify(group.candidates, null, 2)}
     ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
       const prompt = buildPromptForGroup(group);
       const startedAt = Date.now();
+
+      const RAW_FORMAT_HARD_RULES = `\n\n**输出格式硬约束**：
+- 第一个字符必须是 "{"，最后一个字符必须是 "}"。
+- 不要任何前置说明、不要 markdown、不要 \`\`\`json 包裹、不要"以下是"之类的开场。
+- picks 数组**最多 8 条**；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
+
+      const extractJson = (text: string): string => {
+        const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (fenced) return fenced[1].trim();
+        const m = text.match(/\{[\s\S]*\}/);
+        return m ? m[0] : text;
+      };
+
+      // 极简兜底：砍掉占 token 大头的 realWorldReviews + 截短 tabelog/yelp summary。
+      const buildSlimPrompt = (): string => {
+        const slim: GroupForPrompt = {
+          cuisine: group.cuisine,
+          candidates: group.candidates.map((c) => ({
+            ...c,
+            realWorldReviews: null,
+            editorialSummary: typeof c.editorialSummary === "string"
+              ? c.editorialSummary.slice(0, 60)
+              : c.editorialSummary,
+            tabelog: c.tabelog
+              ? { ...c.tabelog, summary: c.tabelog.summary ? c.tabelog.summary.slice(0, 30) : null }
+              : c.tabelog,
+            yelp: c.yelp
+              ? { ...c.yelp, summary: c.yelp.summary ? c.yelp.summary.slice(0, 30) : null }
+              : c.yelp,
+          })),
+        } as GroupForPrompt;
+        return buildPromptForGroup(slim) + RAW_FORMAT_HARD_RULES;
+      };
+
       try {
         const result = await generateText({
           model,
           prompt,
-          maxOutputTokens: 6000,
+          maxOutputTokens: 12000,
           output: Output.object({
             schema: AiPickGroupSchema,
             name: "echo_eats_picks",
@@ -1346,29 +1380,45 @@ ${JSON.stringify(group.candidates, null, 2)}
             model,
             prompt:
               prompt +
-              `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-            maxOutputTokens: 6000,
+              `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。` +
+              RAW_FORMAT_HARD_RULES,
+            maxOutputTokens: 20000,
           });
           const finishReason = (fb as { finishReason?: string }).finishReason;
           if (finishReason === "length" || finishReason === "max-tokens") {
             throw new Error(`truncated (finishReason=${finishReason})`);
           }
-          const text = fb.text || "";
-          const jsonText = (() => {
-            const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-            if (fenced) return fenced[1].trim();
-            const m = text.match(/\{[\s\S]*\}/);
-            return m ? m[0] : text;
-          })();
-          const parsed = AiPickGroupSchema.parse(JSON.parse(jsonText));
+          const parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
           console.log(
             `[Echo/AI-rank] "${group.cuisine}" fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
           );
           return { cuisine: group.cuisine, picks: parsed.picks };
         } catch (e2) {
           const m2 = e2 instanceof Error ? e2.message : String(e2);
-          console.error(`[Echo/AI-rank] "${group.cuisine}" failed: ${m2}`);
-          return { cuisine: group.cuisine, picks: [] };
+          console.warn(
+            `[Echo/AI-rank] "${group.cuisine}" raw fallback failed (${m2}), retrying slim…`,
+          );
+          // 最后兜底：剥光大字段再跑一次，给足 token，避免空 picks 害死整组。
+          try {
+            const slimFb = await generateText({
+              model,
+              prompt: buildSlimPrompt(),
+              maxOutputTokens: 20000,
+            });
+            const slimFinish = (slimFb as { finishReason?: string }).finishReason;
+            if (slimFinish === "length" || slimFinish === "max-tokens") {
+              throw new Error(`slim truncated (finishReason=${slimFinish})`);
+            }
+            const parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(slimFb.text || "")));
+            console.log(
+              `[Echo/AI-rank] "${group.cuisine}" slim fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
+            );
+            return { cuisine: group.cuisine, picks: parsed.picks };
+          } catch (e3) {
+            const m3 = e3 instanceof Error ? e3.message : String(e3);
+            console.error(`[Echo/AI-rank] "${group.cuisine}" failed: ${m3}`);
+            return { cuisine: group.cuisine, picks: [] };
+          }
         }
       }
     };
