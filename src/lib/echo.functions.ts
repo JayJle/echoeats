@@ -644,10 +644,11 @@ function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = fal
   }
 
   if (!isCN) {
-    // 海外（含日本）：加 Yelp + TripAdvisor 搜索链接，方便用户核验口碑来源
+    // 海外（含日本）：加 Yelp + TripAdvisor 链接，方便用户核验口碑来源
+    // 若已有 Yelp 详情页 URL（来自 fetchYelpInfo），直接深链；否则回退到搜索
     links.push({
       label: "Yelp",
-      url: `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
+      url: yelpUrl ?? `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
     });
     links.push({
       label: "TripAdvisor",
