@@ -512,6 +512,8 @@ function getRestaurantSources(r: Restaurant): { key: SourceKey; url?: string }[]
   sources.push({ key: "Google", url: r.googleMapsUri });
   // Tabelog
   if (r.tabelog) sources.push({ key: "Tabelog", url: r.tabelog.url ?? undefined });
+  // Yelp
+  if (r.yelp) sources.push({ key: "Yelp", url: r.yelp.url ?? undefined });
   // 从 ratings 找其他平台（仅当 score 非 null）
   for (const rt of r.ratings) {
     const platform = rt.platform as SourceKey;
