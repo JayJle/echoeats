@@ -411,6 +411,7 @@ function StepRequirements() {
       return;
     }
     console.log("[mic] recording started mime=", usedMime);
+    startAnalyser(stream);
     setRecording(true);
     setElapsed(0);
     const startedAt = Date.now();
@@ -419,6 +420,21 @@ function StepRequirements() {
     }, 250);
     autoStopTimerRef.current = setTimeout(() => stopRecordingInternal(), 60_000);
   };
+
+  // First-visit nudge to highlight voice input
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (!localStorage.getItem("ee_voice_tip_seen")) {
+        const id = setTimeout(() => {
+          toast(t("step3.voice.firstTip"), { duration: 5000 });
+          localStorage.setItem("ee_voice_tip_seen", "1");
+        }, 600);
+        return () => clearTimeout(id);
+      }
+    } catch { /* noop */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => () => {
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
