@@ -506,6 +506,17 @@ const RestaurantSchema = z.object({
       summary: z.string().nullable(),
     })
     .nullable(),
+  yelp: z
+    .object({
+      rating: z.string().nullable(),
+      reviewCount: z.number().nullable(),
+      url: z.string().nullable(),
+      priceLevel: z.string().nullable(),
+      summary: z.string().nullable(),
+    })
+    .nullable()
+    .optional()
+    .default(null),
   weekdayDescriptions: z.array(z.string()).nullable().optional().default(null),
   visitTimeMatch: z.enum(["open", "unknown"]).nullable().optional().default(null),
 });
