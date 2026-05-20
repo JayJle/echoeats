@@ -1,41 +1,29 @@
 // Yelp 信息抓取层（US / CA / 西欧分支用）
-// 架构完全复用 tabelog.server.ts：不直接爬 yelp（ToS + 反爬），用 Perplexity 代读 yelp.com
-// 两阶段策略：
-//   1) sonar + search_domain_filter=[yelp.com, yelp.fr, yelp.it, ...]
-//   2) 兜底 sonar-pro + 显式 site:yelp.com 提示
+// 三阶段策略：
+//   Stage 0: Perplexity /search 直接拿候选 Yelp 详情页 URL（命中率高、便宜）
+//   Stage 1: sonar + 单域名过滤 yelp.com，带上 Stage0 的 URL hint
+//   Stage 2: sonar-pro 兜底（不带 domain filter），URL hint 优先
 
 export type YelpInfo = {
-  rating: string | null; // 例 "4.3"
-  reviewCount: number | null; // 例 1234
-  url: string | null; // yelp.<tld>/biz/<slug>
+  rating: string | null;
+  reviewCount: number | null;
+  url: string | null;
   priceLevel: "$" | "$$" | "$$$" | "$$$$" | null;
-  summary: string | null; // 1-2 句摘要（中文或英文，由 isEn 决定）
+  summary: string | null;
 };
 
 const cache = new Map<string, YelpInfo | null>();
 
 // yelp 店铺详情页 URL：yelp.<tld>/biz/<slug>
-// 兼容地区域名：yelp.com / yelp.fr / yelp.it / yelp.de / yelp.es / yelp.co.uk / yelp.ca
 const YELP_SHOP_URL_RE = /https?:\/\/(?:www\.)?yelp\.[a-z.]{2,8}\/biz\/[a-z0-9\-_%]+/i;
 
-const YELP_DOMAINS = [
-  "yelp.com",
-  "yelp.fr",
-  "yelp.it",
-  "yelp.de",
-  "yelp.es",
-  "yelp.co.uk",
-  "yelp.ca",
-];
+// 单域名召回最稳，yelp.com 已覆盖全球绝大多数店铺
+const YELP_DOMAINS = ["yelp.com"];
 
-// 从英文地址抽 city + state/region 提示
-// 形如 "123 Main St, San Francisco, CA 94103, USA" → "San Francisco, CA"
-// "12 Rue de Rivoli, 75001 Paris, France" → "Paris"
 function extractArea(address: string, city: string): string {
   if (!address) return city;
   const parts = address.split(",").map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) return city;
-  // 找含 city 的片段及其后一片段（通常是 state/region）
   const lower = city.toLowerCase();
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].toLowerCase().includes(lower)) {
@@ -44,6 +32,50 @@ function extractArea(address: string, city: string): string {
     }
   }
   return city;
+}
+
+// Stage 0：调用 Perplexity /search 直接获取 yelp 详情页 URL
+async function preSearchYelpUrl(opts: {
+  apiKey: string;
+  name: string;
+  city: string;
+  area: string;
+}): Promise<string | null> {
+  const { apiKey, name, city, area } = opts;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const query = `${name} ${area || city} site:yelp.com`;
+    const res = await fetch("https://api.perplexity.ai/search", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({ query, max_results: 5 }),
+    });
+    if (!res.ok) {
+      console.warn(`[Yelp/search] ${name}: HTTP ${res.status}`);
+      return null;
+    }
+    const json = (await res.json()) as Record<string, unknown>;
+    // Perplexity /search 返回结构：{ results: [{ url, title, snippet }, ...] }
+    const results = (json.results ?? json.data ?? []) as Array<Record<string, unknown>>;
+    for (const r of results) {
+      const u = typeof r.url === "string" ? r.url : null;
+      if (u && YELP_SHOP_URL_RE.test(u)) {
+        console.log(`[Yelp/search] ${name}: pre-url ${u}`);
+        return u;
+      }
+    }
+    return null;
+  } catch (e) {
+    console.warn(`[Yelp/search] ${name}:`, e instanceof Error ? e.message : e);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 type Stage = "sonar" | "sonar-pro";
@@ -56,8 +88,9 @@ async function callPerplexity(opts: {
   city: string;
   area: string;
   isEn: boolean;
+  preUrl: string | null;
 }): Promise<{ json: unknown; ok: boolean; status: number } | null> {
-  const { apiKey, stage, name, address, city, area, isEn } = opts;
+  const { apiKey, stage, name, address, city, area, isEn, preUrl } = opts;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
   try {
@@ -66,39 +99,44 @@ async function callPerplexity(opts: {
       ? "1-2 sentences in English summarizing Yelp reviews (specific dishes/service/atmosphere), <= 80 chars. Unreadable -> null."
       : "1-2 句简体中文，归纳 Yelp 评论口碑（具体菜品/服务/氛围），≤ 60 字。读不到 → null。";
 
+    const hintLine = preUrl
+      ? `\n已知该店的 Yelp 详情页 URL 是：${preUrl}\n请**直接读取**这个页面的 rating / reviewCount / priceLevel / summary，并把 url 字段原样返回这个 URL。\n`
+      : "";
+
     const userPrompt = isFirst
       ? `查找 Yelp 上的店铺：
 - 店名：${name}
 - 地址：${address}
 - 城市：${city}
 - 地区提示：${area}
-
-要求：
-- 必须是 yelp.com / yelp.<地区域名> 上**真实存在**的店铺**详情页**（URL 形如 https://www.yelp.com/biz/<slug>）。**绝对不要返回搜索/列表/分类/排行榜页**。
-- 店名和地址必须能合理对应；同名不同店一律算找不到，宁可全部返回 null。
-- url: 找到即返回；即使评分/评论数/价位/摘要暂时读取不到，也照常返回 url。
-- rating: Yelp 综合评分（数字字符串如 "4.3"，范围 0-5）。读不到 → null。
+${hintLine}
+要求（按优先级）：
+- **url 是最重要的字段**：只要 Yelp 上有这家店的详情页（形如 https://www.yelp.com/biz/<slug>），就返回 URL，**哪怕评分等其它字段读不到也要返回 URL**。
+- ✓ 正例：https://www.yelp.com/biz/mizu-sushi-bar-saint-louis
+- ✗ 反例：https://www.yelp.com/search?find_desc=...（搜索页禁止）
+- 同名店：选地址/城市最匹配的那家，不要返回 null。
+- rating: Yelp 综合评分（数字字符串如 "4.3"，范围 0-5）。读不到 → null（不影响 url 返回）。
 - reviewCount: 评论数（整数）。读不到 → null。
-- priceLevel: "$" / "$$" / "$$$" / "$$$$" 之一（Yelp 页面 Price 字段，美元符号）。读不到 → null。
+- priceLevel: "$" / "$$" / "$$$" / "$$$$" 之一。读不到 → null。
 - summary: ${summaryRule}
 
-只输出 JSON。找不到任何匹配店铺时，所有字段返回 null。`
-      : `请用 Google 搜索 \`site:yelp.com "${name}" "${area || city}"\` 找到该店在 Yelp 的店铺详情页，然后读取评分/评论数/价位/摘要。
+只输出 JSON。确实 Yelp 上没有这家店时，所有字段才返回 null。`
+      : `请在 Yelp 上找到这家店的详情页，读取评分/评论数/价位/摘要。
 
 店铺信息：
 - 店名：${name}
 - 地址：${address}
 - 城市：${city}
 - 期望地区：${area || city}
-
-严格要求：
-- 必须返回**店铺详情页** URL（形如 https://www.yelp.com/biz/<slug>）。**禁止返回搜索/列表/排行榜页**。
-- 该店铺页的地址必须落在「${area || city}」附近；落在其它城市的同名店一律视为不匹配。
-- 即便没有评分/价位也要返回 url；只在确认 Yelp 上没有这家店时全部返回 null。
-- rating / reviewCount / priceLevel / summary 同第一轮规则；读不到原样返回 null，禁止编造。
+${hintLine}
+要求：
+- url 优先级最高：找到 Yelp 详情页（形如 https://www.yelp.com/biz/<slug> 或 yelp.<tld>/biz/<slug>）就返回；**其它字段为 null 不影响 url 返回**。
+- ✗ 禁止返回搜索/列表/排行榜页 URL。
+- 同名不同店：选地址最匹配该城市的那家。
+- rating / reviewCount / priceLevel / summary：读到就给，读不到 null，禁止编造。
 - summary: ${summaryRule}
 
-只输出 JSON。`;
+只输出 JSON。Yelp 上确实没有这家店时所有字段才返回 null。`;
 
     const body: Record<string, unknown> = {
       model: isFirst ? "sonar" : "sonar-pro",
@@ -106,7 +144,7 @@ async function callPerplexity(opts: {
         {
           role: "system",
           content:
-            "你是 Yelp 查询助手。只参考 yelp.* 真实页面，找到与给定店名+地址最匹配的店铺**详情页**，输出结构化 JSON。找不到必须返回 null 字段，禁止编造。",
+            "你是 Yelp 查询助手。优先返回真实存在的 Yelp 店铺详情页 URL，再读取页面字段。url 字段优先级最高，其它字段读不到时返回 null，禁止编造。",
         },
         { role: "user", content: userPrompt },
       ],
@@ -130,6 +168,7 @@ async function callPerplexity(opts: {
         },
       },
     };
+    // 仅 Stage1 用单域名过滤；Stage2 解开过滤以提高召回
     if (isFirst) {
       body.search_domain_filter = YELP_DOMAINS;
     }
@@ -164,9 +203,14 @@ function normalizePriceLevel(raw: unknown): YelpInfo["priceLevel"] {
   return null;
 }
 
-function parseStage(name: string, stage: Stage, raw: unknown): YelpInfo | null {
+function parseStage(
+  name: string,
+  stage: Stage | "search",
+  raw: unknown,
+  preUrl: string | null,
+): YelpInfo | null {
   const json = raw as Record<string, unknown> | null;
-  if (!json) return null;
+  if (!json) return preUrl ? { rating: null, reviewCount: null, url: preUrl, priceLevel: null, summary: null } : null;
   const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
   const content = choices?.[0]?.message?.content;
   const citations: string[] = Array.isArray(json.citations)
@@ -176,15 +220,10 @@ function parseStage(name: string, stage: Stage, raw: unknown): YelpInfo | null {
   const yelpCitation = citations.find((c) => YELP_SHOP_URL_RE.test(c)) ?? null;
 
   if (!content) {
-    if (yelpCitation) {
-      console.log(`[Yelp/${stage}] ${name}: empty content but citation hit → url-only`);
-      return {
-        rating: null,
-        reviewCount: null,
-        url: yelpCitation,
-        priceLevel: null,
-        summary: null,
-      };
+    const url = preUrl ?? yelpCitation;
+    if (url) {
+      console.log(`[Yelp/${stage}] ${name}: empty content → url-only (${url})`);
+      return { rating: null, reviewCount: null, url, priceLevel: null, summary: null };
     }
     console.warn(`[Yelp/${stage}] ${name}: empty content & no shop-page citation`);
     return null;
@@ -195,12 +234,13 @@ function parseStage(name: string, stage: Stage, raw: unknown): YelpInfo | null {
     parsed = JSON.parse(content);
   } catch {
     console.warn(`[Yelp/${stage}] ${name}: parse_error`);
-    return null;
+    const url = preUrl ?? yelpCitation;
+    return url ? { rating: null, reviewCount: null, url, priceLevel: null, summary: null } : null;
   }
 
   const rawUrl = typeof parsed.url === "string" ? parsed.url.trim() : null;
   const urlFromJson = rawUrl && YELP_SHOP_URL_RE.test(rawUrl) ? rawUrl : null;
-  const url = urlFromJson ?? yelpCitation;
+  const url = urlFromJson ?? preUrl ?? yelpCitation;
 
   if (!url) {
     console.warn(`[Yelp/${stage}] ${name}: no shop-page url in JSON or citations`);
@@ -231,6 +271,11 @@ function parseStage(name: string, stage: Stage, raw: unknown): YelpInfo | null {
   return { rating, reviewCount, url, priceLevel, summary };
 }
 
+function hasUsefulFields(info: YelpInfo | null): boolean {
+  if (!info) return false;
+  return info.rating != null || info.reviewCount != null || info.summary != null || info.priceLevel != null;
+}
+
 export async function fetchYelpInfo(
   name: string,
   address: string,
@@ -245,12 +290,24 @@ export async function fetchYelpInfo(
 
   const area = extractArea(address, city);
 
-  // Stage 1
-  const r1 = await callPerplexity({ apiKey, stage: "sonar", name, address, city, area, isEn });
-  let info = r1?.ok ? parseStage(name, "sonar", r1.json) : null;
+  // Stage 0: 用 /search 直接拿 URL（最便宜、命中最高）
+  const preUrl = await preSearchYelpUrl({ apiKey, name, city, area });
 
-  // Stage 2 fallback
-  if (!info) {
+  // Stage 1: sonar + 单域名过滤，带 URL hint
+  const r1 = await callPerplexity({
+    apiKey,
+    stage: "sonar",
+    name,
+    address,
+    city,
+    area,
+    isEn,
+    preUrl,
+  });
+  let info = r1?.ok ? parseStage(name, "sonar", r1.json, preUrl) : null;
+
+  // Stage 2: 仅当 Stage1 完全失败、或拿到 url 但所有字段都空时才跑（用 sonar-pro 补字段）
+  if (!info || !hasUsefulFields(info)) {
     const r2 = await callPerplexity({
       apiKey,
       stage: "sonar-pro",
@@ -259,8 +316,17 @@ export async function fetchYelpInfo(
       city,
       area,
       isEn,
+      preUrl: info?.url ?? preUrl,
     });
-    info = r2?.ok ? parseStage(name, "sonar-pro", r2.json) : null;
+    const info2 = r2?.ok ? parseStage(name, "sonar-pro", r2.json, info?.url ?? preUrl) : null;
+    if (info2 && (hasUsefulFields(info2) || !info)) {
+      info = info2;
+    }
+  }
+
+  // 最后兜底：只有 preUrl 也比什么都没有强
+  if (!info && preUrl) {
+    info = { rating: null, reviewCount: null, url: preUrl, priceLevel: null, summary: null };
   }
 
   cache.set(cacheKey, info);
