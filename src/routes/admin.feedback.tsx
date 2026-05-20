@@ -1,7 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
+import { toast } from "sonner";
+import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   adminCheckAuth,
   adminLogin,
@@ -9,6 +22,8 @@ import {
   adminGetStats,
   adminListFeedback,
   adminGetSession,
+  adminDeleteFeedback,
+  adminClearAll,
 } from "@/lib/admin.functions";
 
 export const Route = createFileRoute("/admin/feedback")({
@@ -69,6 +84,8 @@ function AdminFeedbackPage() {
   const getStats = useServerFn(adminGetStats);
   const listFeedback = useServerFn(adminListFeedback);
   const getSession = useServerFn(adminGetSession);
+  const deleteFeedback = useServerFn(adminDeleteFeedback);
+  const clearAll = useServerFn(adminClearAll);
 
   const [loading, setLoading] = useState(true);
   const [authed, setAuthed] = useState(false);
@@ -80,6 +97,17 @@ function AdminFeedbackPage() {
   const [filter, setFilter] = useState<"all" | "negative" | "positive" | "external" | "withComment">("all");
   const [openSession, setOpenSession] = useState<string | null>(null);
   const [sessionDetail, setSessionDetail] = useState<Awaited<ReturnType<typeof adminGetSession>>["session"] | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const [s, l] = await Promise.all([
+      getStats(),
+      listFeedback({ data: { filter, limit: 50, offset: 0 } }),
+    ]);
+    setStats(s);
+    setItems((l.items as FeedbackItem[]) ?? []);
+  }, [getStats, listFeedback, filter]);
 
   useEffect(() => {
     (async () => {
@@ -97,15 +125,8 @@ function AdminFeedbackPage() {
 
   useEffect(() => {
     if (!authed) return;
-    (async () => {
-      const [s, l] = await Promise.all([
-        getStats(),
-        listFeedback({ data: { filter, limit: 50, offset: 0 } }),
-      ]);
-      setStats(s);
-      setItems((l.items as FeedbackItem[]) ?? []);
-    })();
-  }, [authed, filter, getStats, listFeedback]);
+    void refresh();
+  }, [authed, refresh]);
 
   useEffect(() => {
     if (!openSession) {
@@ -137,6 +158,42 @@ function AdminFeedbackPage() {
     setItems([]);
   };
 
+  const handleDelete = async (feedbackId: string) => {
+    setDeletingId(feedbackId);
+    try {
+      const r = await deleteFeedback({ data: { feedbackId } });
+      if (!r.ok) {
+        toast.error(`删除失败：${r.error}`);
+        return;
+      }
+      setItems((prev) => prev.filter((x) => x.id !== feedbackId));
+      toast.success(`已删除 ${r.deleted.feedback} 条反馈、${r.deleted.sessions} 条会话`);
+      // 后台拉新的 stats，无需等列表（已本地移除）
+      void getStats().then(setStats);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "删除失败");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleClearAll = async () => {
+    setClearing(true);
+    try {
+      const r = await clearAll({ data: { confirm: "CLEAR_ALL" } });
+      if (!r.ok) {
+        toast.error(`清空失败：${r.error}`);
+        return;
+      }
+      toast.success(`已清空 ${r.deleted.feedback} 条反馈、${r.deleted.sessions} 条会话`);
+      await refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "清空失败");
+    } finally {
+      setClearing(false);
+    }
+  };
+
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-muted-foreground">加载中…</div>;
   }
@@ -165,9 +222,35 @@ function AdminFeedbackPage() {
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-6 gap-2 flex-wrap">
           <h1 className="text-xl font-semibold tracking-tight">反馈后台</h1>
-          <Button variant="outline" size="sm" onClick={handleLogout}>登出</Button>
+          <div className="flex items-center gap-2">
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm" disabled={clearing}>
+                  {clearing ? "清空中…" : "清空所有数据"}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>确认清空全部数据？</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    将永久删除所有「反馈」和「搜索会话」记录。此操作不可撤销。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleClearAll}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    确认清空
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <Button variant="outline" size="sm" onClick={handleLogout}>登出</Button>
+          </div>
         </div>
 
         {stats && (
@@ -219,7 +302,13 @@ function AdminFeedbackPage() {
             <div className="text-center text-sm text-muted-foreground py-12">暂无反馈</div>
           )}
           {items.map((it) => (
-            <FeedbackCard key={it.id} item={it} onOpenSession={() => setOpenSession(it.session_id)} />
+            <FeedbackCard
+              key={it.id}
+              item={it}
+              onOpenSession={() => setOpenSession(it.session_id)}
+              onDelete={() => handleDelete(it.id)}
+              deleting={deletingId === it.id}
+            />
           ))}
         </div>
       </div>
@@ -280,7 +369,17 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
   );
 }
 
-function FeedbackCard({ item, onOpenSession }: { item: FeedbackItem; onOpenSession: () => void }) {
+function FeedbackCard({
+  item,
+  onOpenSession,
+  onDelete,
+  deleting,
+}: {
+  item: FeedbackItem;
+  onOpenSession: () => void;
+  onDelete: () => void;
+  deleting: boolean;
+}) {
   const rating = item.rating ?? 0;
   const chosenLabel = item.chosen_external_name
     ? `站外 · ${item.chosen_external_name}`
@@ -289,8 +388,37 @@ function FeedbackCard({ item, onOpenSession }: { item: FeedbackItem; onOpenSessi
     : "未选";
   const isMobile = (item.session?.user_agent ?? "").toLowerCase().includes("mobi");
   return (
-    <div className="bg-card border border-border rounded-xl p-4">
-      <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground mb-2">
+    <div className="bg-card border border-border rounded-xl p-4 relative">
+      <AlertDialog>
+        <AlertDialogTrigger asChild>
+          <button
+            disabled={deleting}
+            aria-label="删除此条反馈"
+            className="absolute top-3 right-3 p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition disabled:opacity-50"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除这条反馈？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将同时删除关联的搜索会话。此操作不可撤销。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={onDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground mb-2 pr-8">
         <span className="text-amber-400 text-sm">{"★".repeat(rating)}<span className="text-muted-foreground/30">{"★".repeat(5 - rating)}</span></span>
         <span>·</span>
         <span>{item.session?.city ?? "?"}</span>
