@@ -1307,6 +1307,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 - **pros/cons 输出格式必须是 { text, source } 对象**（不是字符串）。source 取值范围："Google" / "Yelp" / "TripAdvisor" / "Tabelog" / "大众点评" / "小红书" / "美团" / "综合"（多平台一致时）。source 必须能在 realWorldReviews.sources 中找到对应来源（"Google Reviews" 归为 "Google"），禁止编造；无法归因时填 "综合"。
 - aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**当 realWorldReviews.sources 含 Yelp / TripAdvisor / Tabelog / 大众点评 / 小红书 中任一非 Google 平台时**，在 aiSummary 末尾追加${isEn ? '"(based on user reviews from <平台逗号列表>)"' : '「（综合 <平台顿号列表> 等网友评价）」'}，只列实际出现的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : "若 realWorldReviews 为空，则改为「（暂无可信网评，仅基于 Google 数据）」。"}
 - **Tabelog 信号（仅日本店铺可能有）**：仅 tabelog.priceJPY 参与硬过滤；其它字段只作展示，不参与评分。tabelog 为 null 时不要因此扣分。
+- **Yelp 信号（仅 US/CA/西欧店铺可能有）**：candidate.yelp 的所有字段（rating/reviewCount/priceLevel/summary）**仅作展示，绝不参与硬过滤、绝不参与评分**。yelp 为 null 时不要因此扣分。若 yelp.summary 与用户偏好高度吻合，可在 aiSummary 中引用（须按 source 归因到 "Yelp"）。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
 - matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**。不要重复 hardFilterChecks 的内容。**严格限定范围**：只能围绕用户实际提到的需求来写，用户没提的维度禁止出现在 matchDetails 里（哪怕网评有相关吐槽，也只能放进 cons）。
 
