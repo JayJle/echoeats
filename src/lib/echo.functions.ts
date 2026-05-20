@@ -8,10 +8,12 @@ const PLATFORMS = ["Google Maps", "Tabelog", "Yelp", "大众点评", "美团"];
 const ParseInput = z.object({
   city: z.string().min(1),
   cuisines: z.array(z.string()).default([]),
+  autoInferCuisines: z.boolean().default(true),
   date: z.string().default(""),
   freeText: z.string().default(""),
   uiLanguage: z.enum(["zh", "en"]).default("zh"),
 });
+
 
 // 宽松的 weight：接受字符串/越界数字/缺失，归一到 [0.1, 1.0]
 const WeightCoerced = z.preprocess((v) => {
