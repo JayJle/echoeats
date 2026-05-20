@@ -235,6 +235,12 @@ export const dict: Record<Lang, Dict> = {
     "step2.title": "What cuisine are you in the mood for?",
     "step2.hint": "Enter one or more, separated by commas or spaces. Not sure? Skip and let AI suggest based on the rest.",
     "step2.placeholder": "steak, izakaya, crab",
+    "cuisines.skipDialog.title": "Skip cuisine selection?",
+    "cuisines.skipDialog.body": "Let the system auto-detect cuisines from your other requirements? Choose \"No\" to search across all cuisines.",
+    "cuisines.skipDialog.auto": "Yes, auto-detect",
+    "cuisines.skipDialog.all": "No, search all",
+
+
 
     "step3.title": "Any other requirements?",
     "step3.quickBtn": "⚡ Quick search",
