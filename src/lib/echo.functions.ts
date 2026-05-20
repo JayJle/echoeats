@@ -1177,6 +1177,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           candidates: ranked.slice(0, PER_CUISINE_CAP).map((p) => {
             const review = reviewById.get(p.placeId) ?? null;
             const tabelog = tabelogById.get(p.placeId) ?? null;
+            const yelp = yelpById.get(p.placeId) ?? null;
             return {
               placeId: p.placeId,
               name: p.name,
@@ -1203,6 +1204,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
                     priceRange: tabelog.priceRange,
                     priceJPY: tabelog.priceJPY,
                     summary: tabelog.summary,
+                  }
+                : null,
+              yelp: yelp
+                ? {
+                    rating: yelp.rating,
+                    reviewCount: yelp.reviewCount,
+                    priceLevel: yelp.priceLevel,
+                    summary: yelp.summary,
                   }
                 : null,
             };
