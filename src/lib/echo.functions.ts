@@ -1026,8 +1026,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
     }
 
-    // 海外城市：先把 Google Places 一手 reviews 作为基线证据塞入（零幻觉），
-    // 再用 Perplexity 网评做补充合并；Perplexity 失败也不影响 pros/cons 显示。
+    // 海外城市：把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
     if (!useDianping) {
       for (const r of placeResults) {
         for (const p of r.places) {
@@ -1035,46 +1034,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           if (baseline) reviewById.set(p.placeId, baseline);
         }
       }
-      if (pplxKey && data.mode !== "quick") {
-        const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
-        for (const r of placeResults) {
-          const top = [...r.places]
-            .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-            .slice(0, 10);
-          for (const p of top) {
-            tasks.push(
-              fetchReviewSummary(p.name, data.city, pplxKey, {
-                country,
-                googleMapsUri: p.googleMapsUri,
-                address: p.address,
-              }).then((s) => ({
-                id: p.placeId,
-                summary: s,
-              })),
-            );
-          }
-        }
-        yield { type: "stage", stage: "reviews", total: tasks.length };
-        // 按完成顺序消费，每个任务结束都 yield 一次进度，持续 flush 字节流。
-        const settledTasks = tasks.map((t) =>
-          t
-            .then((v) => ({ status: "fulfilled" as const, value: v }))
-            .catch((reason) => ({ status: "rejected" as const, reason })),
-        );
-        let done = 0;
-        for await (const s of asCompleted(settledTasks)) {
-          done++;
-          if (s.status === "fulfilled" && s.value.summary) {
-            const existing = reviewById.get(s.value.id);
-            reviewById.set(
-              s.value.id,
-              existing ? mergeReviewSummaries(existing, s.value.summary) : s.value.summary,
-            );
-          }
-          yield { type: "review-progress", done, total: tasks.length };
-        }
-      }
     }
+
 
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
