@@ -60,6 +60,12 @@ export const dict: Record<Lang, Dict> = {
     "step3.mic.recording": "{s}s · 点击停止",
     "step3.cancel": "取消搜索",
     "step3.inferred": "✨ AI 推断了 {n} 个品类（{list}），正在并行搜索，可能稍慢",
+    "step3.voice.cta": "点按说出你的需求",
+    "step3.voice.sub": "比打字更快 — 说说预算、氛围、想吃什么…",
+    "step3.voice.badge": "推荐",
+    "step3.voice.listening": "正在聆听… 点击停止",
+    "step3.voice.orType": "或者手动输入",
+    "step3.voice.firstTip": "试试语音输入，比打字快很多 🎤",
 
     "stage.parse.label": "理解你的需求",
     "stage.parse.hint": "AI 在拆解预算、氛围、避雷点…",
