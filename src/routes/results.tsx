@@ -494,6 +494,74 @@ function ResultsPage() {
   );
 }
 
+type SourceKey = "Google" | "Tabelog" | "大众点评" | "小红书" | "美团" | "Yelp";
+
+const SOURCE_BADGE_STYLE: Record<SourceKey, string> = {
+  Google: "bg-blue-500/10 text-blue-600 border-blue-500/30 dark:text-blue-400",
+  Tabelog: "bg-orange-500/10 text-orange-600 border-orange-500/30 dark:text-orange-400",
+  "大众点评": "bg-red-500/10 text-red-600 border-red-500/30 dark:text-red-400",
+  "小红书": "bg-pink-500/10 text-pink-600 border-pink-500/30 dark:text-pink-400",
+  "美团": "bg-yellow-500/10 text-yellow-700 border-yellow-500/30 dark:text-yellow-400",
+  Yelp: "bg-rose-500/10 text-rose-600 border-rose-500/30 dark:text-rose-400",
+};
+
+function getRestaurantSources(r: Restaurant): { key: SourceKey; url?: string }[] {
+  const sources: { key: SourceKey; url?: string }[] = [];
+  // Google: always present via Google Maps
+  sources.push({ key: "Google", url: r.googleMapsUri });
+  // Tabelog
+  if (r.tabelog) sources.push({ key: "Tabelog", url: r.tabelog.url ?? undefined });
+  // 从 ratings 找其他平台（仅当 score 非 null）
+  for (const rt of r.ratings) {
+    const platform = rt.platform as SourceKey;
+    if (rt.score == null) continue;
+    if (platform === "Google" || platform === "Tabelog") continue;
+    if (platform === "大众点评" || platform === "小红书" || platform === "美团" || platform === "Yelp") {
+      if (!sources.find((s) => s.key === platform)) sources.push({ key: platform });
+    }
+  }
+  // 从 links 补：xiaohongshu / dianping / meituan
+  for (const l of r.links) {
+    const u = l.url.toLowerCase();
+    const add = (key: SourceKey) => {
+      const existing = sources.find((s) => s.key === key);
+      if (existing) {
+        if (!existing.url) existing.url = l.url;
+      } else {
+        sources.push({ key, url: l.url });
+      }
+    };
+    if (u.includes("xiaohongshu.com") || u.includes("xhslink")) add("小红书");
+    else if (u.includes("dianping.com")) add("大众点评");
+    else if (u.includes("meituan.com")) add("美团");
+    else if (u.includes("tabelog.com") && !sources.find((s) => s.key === "Tabelog")) add("Tabelog");
+  }
+  return sources;
+}
+
+function DataSourcesStrip({ r }: { r: Restaurant }) {
+  const { t } = useT();
+  const sources = getRestaurantSources(r);
+  if (sources.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+      <span className="text-muted-foreground/80 uppercase tracking-wider">
+        {t("results.sources")}
+      </span>
+      {sources.map((s) => {
+        const cls = `inline-flex items-center px-1.5 py-0.5 rounded-full border ${SOURCE_BADGE_STYLE[s.key]}`;
+        return s.url ? (
+          <a key={s.key} href={s.url} target="_blank" rel="noreferrer" className={`${cls} hover:opacity-80 transition`}>
+            {s.key}
+          </a>
+        ) : (
+          <span key={s.key} className={cls}>{s.key}</span>
+        );
+      })}
+    </div>
+  );
+}
+
 function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: Restaurant; tierLabel: Record<Restaurant["matchTier"], string>; tierClass: Record<Restaurant["matchTier"], string> }) {
   const { t } = useT();
   const visitTime = useQueryStore((s) => s.parsed?.visitTime ?? null);
@@ -522,6 +590,8 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
           >
             {t("results.todayHours", { label: todayHoursLabel(r.weekdayDescriptions, r.openNow, t) })}
           </p>
+          <DataSourcesStrip r={r} />
+
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             {showVisitBadge && r.visitTimeMatch === "open" && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
@@ -676,7 +746,10 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
               {r.pros.map((p, i) => (
                 <li key={i} className="text-foreground">
                   <span className="text-success mr-1">+</span>
-                  {p}
+                  {p.text}
+                  {p.source && (
+                    <span className="ml-1.5 text-[10px] text-muted-foreground/80">· {p.source}</span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -693,7 +766,10 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
               {r.cons.map((c, i) => (
                 <li key={i} className="text-foreground">
                   <span className="text-destructive mr-1">−</span>
-                  {c}
+                  {c.text}
+                  {c.source && (
+                    <span className="ml-1.5 text-[10px] text-muted-foreground/80">· {c.source}</span>
+                  )}
                 </li>
               ))}
             </ul>

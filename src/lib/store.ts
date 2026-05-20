@@ -44,8 +44,8 @@ export type Restaurant = {
   ratings: { platform: string; score: string | null }[];
   aiSummary: string;
   matchDetails: { label: string; status: "ok" | "warn" }[];
-  pros: string[];
-  cons: string[];
+  pros: { text: string; source?: string | null }[];
+  cons: { text: string; source?: string | null }[];
   links: { label: string; url: string }[];
   photoUrls: string[];
   tabelog: {

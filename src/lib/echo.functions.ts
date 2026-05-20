@@ -648,8 +648,8 @@ const RestaurantSchema = z.object({
   ratings: z.array(z.object({ platform: z.string(), score: z.string().nullable() })),
   aiSummary: z.string(),
   matchDetails: z.array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) })),
-  pros: z.array(z.string()),
-  cons: z.array(z.string()),
+  pros: z.array(z.object({ text: z.string(), source: z.string().nullable().optional() })),
+  cons: z.array(z.object({ text: z.string(), source: z.string().nullable().optional() })),
   links: z.array(z.object({ label: z.string(), url: z.string() })),
   photoUrls: z.array(z.string()),
   tabelog: z
@@ -681,8 +681,14 @@ const AiPickSchema = z.object({
   matchScore: z.number().min(0).max(100),
   matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
   aiSummary: z.string(),
-  pros: z.array(z.string()).default([]),
-  cons: z.array(z.string()).default([]),
+  pros: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
+  cons: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
   matchDetails: z
     .array(
       z.object({
@@ -1430,6 +1436,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 - **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
 - **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字，不得新增事实）。**如果 realWorldReviews 为 null，或两个数组都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据，不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
 - **pros/cons 必须取真实素材**：reviewHighlights 非空时 pros 至少 2 条来自其浓缩；commonComplaints 非空时 cons 至少 1 条来自其浓缩。禁止"环境不错""值得一试"等空话。
+- **pros/cons 输出格式必须是 { text, source } 对象**（不是字符串）。source 取值范围："Google" / "大众点评" / "Tabelog" / "小红书" / "美团" / "综合"（多平台一致时）。source 必须能在 realWorldReviews.sources 中找到对应来源，禁止编造；无法归因时填 "综合"。
 - aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**如果 realWorldReviews.sources 包含「大众点评」或「小红书」**，在 aiSummary 末尾追加${isEn ? '"(based on Dianping / Xiaohongshu user reviews)"' : '「（综合大众点评、小红书等网友评价）」'}，只列实际出现的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : ""}
 - **Tabelog 信号（仅日本店铺可能有）**：仅 tabelog.priceJPY 参与硬过滤；其它字段只作展示，不参与评分。tabelog 为 null 时不要因此扣分。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
