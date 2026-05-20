@@ -522,6 +522,8 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
           >
             {t("results.todayHours", { label: todayHoursLabel(r.weekdayDescriptions, r.openNow, t) })}
           </p>
+          <DataSourcesStrip r={r} />
+
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             {showVisitBadge && r.visitTimeMatch === "open" && (
               <span className="px-2 py-0.5 rounded-full bg-success/15 text-success">
