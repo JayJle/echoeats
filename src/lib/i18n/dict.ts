@@ -36,6 +36,12 @@ export const dict: Record<Lang, Dict> = {
     "step2.title": "想吃什么料理？",
     "step2.hint": "可输入多个，用逗号或空格分隔；不确定也可以跳过，由 AI 根据其它需求推荐",
     "step2.placeholder": "牛排,居酒屋,蟹料理",
+    "cuisines.skipDialog.title": "跳过料理选择？",
+    "cuisines.skipDialog.body": "让系统从你的「其它需求」自动识别品类？选「否」将按所有品类搜索。",
+    "cuisines.skipDialog.auto": "是，自动识别",
+    "cuisines.skipDialog.all": "否，搜全部品类",
+
+
 
     "step3.title": "还有什么要求吗？",
     "step3.quickBtn": "⚡ 快速搜索",
