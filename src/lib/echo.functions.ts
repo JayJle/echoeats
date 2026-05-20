@@ -1128,6 +1128,39 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
 
+    // US/CA/西欧 分支补充：用 Perplexity 代抓 Yelp 评分+评论数+价位+摘要，与 Tabelog 同构。
+    // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
+    const yelpById = new Map<string, YelpInfo>();
+    if (!useDianping && pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
+      const allTargets: PlaceCandidate[] = [];
+      for (const r of placeResults) {
+        for (const p of r.places) allTargets.push(p);
+      }
+      yield { type: "stage", stage: "yelp", total: allTargets.length };
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const runWorker = async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= allTargets.length) return;
+          const p = allTargets[i];
+          try {
+            const info = await fetchYelpInfo(p.name, p.address, data.city, isEn);
+            if (info) yelpById.set(p.placeId, info);
+          } catch (e) {
+            console.warn(`[Yelp] ${p.name} task error:`, e instanceof Error ? e.message : e);
+          }
+        }
+      };
+      yield* withHeartbeat(
+        Promise.all(
+          Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+        ),
+        "yelp",
+      );
+      console.log(`[Yelp] hit ${yelpById.size}/${allTargets.length}`);
+    }
+
     // 限制送给 AI 的候选数量：每个 cuisine 分组按 (rating × log(reviewCount)) 排序取前 25
     // AI 排序输出本来也只用 top N，输入侧超过 ~60 家纯属浪费 token、加大输出截断风险。
     const PER_CUISINE_CAP = 25;
