@@ -3,6 +3,16 @@ import { FormEvent, useState } from "react";
 import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useQueryStore } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { CUISINE_SUGGESTIONS } from "@/lib/i18n/dict";
@@ -17,14 +27,23 @@ export const Route = createFileRoute("/cuisines")({
   component: StepCuisines,
 });
 
+function fallbackWord(lang: string): string {
+  if (lang === "ja") return "レストラン";
+  if (lang === "ko") return "음식점";
+  if (lang === "zh") return "餐厅";
+  return "restaurants";
+}
+
 function StepCuisines() {
   const navigate = useNavigate();
   const cuisines = useQueryStore((s) => s.cuisines);
   const setCuisines = useQueryStore((s) => s.setCuisines);
+  const setAutoInferCuisines = useQueryStore((s) => s.setAutoInferCuisines);
   const { lang, t } = useT();
 
   const sep = lang === "zh" ? "，" : ", ";
   const [value, setValue] = useState(cuisines.join(sep));
+  const [skipDialogOpen, setSkipDialogOpen] = useState(false);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -34,6 +53,7 @@ function StepCuisines() {
       .filter(Boolean);
     if (!list.length) return;
     setCuisines(list);
+    setAutoInferCuisines(false);
     navigate({ to: "/requirements" });
   };
 
@@ -43,8 +63,17 @@ function StepCuisines() {
     setValue(current ? `${current}${sep}${s}` : s);
   };
 
-  const onSkip = () => {
+  const chooseAutoInfer = () => {
     setCuisines([]);
+    setAutoInferCuisines(true);
+    setSkipDialogOpen(false);
+    navigate({ to: "/requirements" });
+  };
+
+  const chooseSearchAll = () => {
+    setCuisines([fallbackWord(lang)]);
+    setAutoInferCuisines(false);
+    setSkipDialogOpen(false);
     navigate({ to: "/requirements" });
   };
 
@@ -85,7 +114,12 @@ function StepCuisines() {
             {t("common.back")}
           </Link>
           <div className="flex items-center gap-2">
-            <Button type="button" variant="ghost" onClick={onSkip} size="lg">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setSkipDialogOpen(true)}
+              size="lg"
+            >
               {t("common.skip")}
             </Button>
             <Button type="submit" disabled={!value.trim()} size="lg">
@@ -94,6 +128,25 @@ function StepCuisines() {
           </div>
         </div>
       </form>
+
+      <AlertDialog open={skipDialogOpen} onOpenChange={setSkipDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("cuisines.skipDialog.title")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("cuisines.skipDialog.body")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={chooseSearchAll}>
+              {t("cuisines.skipDialog.all")}
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={chooseAutoInfer}>
+              {t("cuisines.skipDialog.auto")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </StepShell>
   );
 }
