@@ -372,21 +372,7 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 
 const SOURCE_ENUM = ["大众点评", "Tabelog", "Google Reviews", "Yelp", "TripAdvisor", "其它"] as const;
 
-// 海外评论锁域白名单：只允许 Perplexity 从这些域抓取
-const OVERSEAS_REVIEW_DOMAINS = [
-  "yelp.com",
-  "google.com/maps",
-  "maps.google.com",
-  "goo.gl/maps",
-  "tripadvisor.com",
-  "tripadvisor.co.uk",
-  "tripadvisor.ca",
-  "tripadvisor.com.au",
-  "tripadvisor.com.sg",
-  "tripadvisor.com.hk",
-  "tripadvisor.jp",
-];
-const JP_EXTRA_REVIEW_DOMAINS = ["tabelog.com"];
+// 海外评论域白名单已下沉到 PLATFORM_META，每个平台子查询各自锁域。
 
 // citation URL host 白名单匹配（用于校验 Perplexity 真的去了白名单域）
 function citationMatchesAllowed(url: string, allowed: string[]): boolean {
