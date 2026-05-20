@@ -441,7 +441,13 @@ function StepRequirements() {
     if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== "inactive") mr.stop();
+    stopAnalyser();
   }, []);
+
+  const micBusy = transcribing || loading;
+  const ringScale = 1 + level * 0.7;
+  const ringOpacity = 0.18 + level * 0.55;
+  const bars = [0.45, 0.75, 1, 0.75, 0.45];
 
   return (
     <StepShell step={3} total={3} title={t("step3.title")}>
@@ -454,40 +460,112 @@ function StepRequirements() {
       >
         <NeedBubbles onPick={appendBubble} />
 
-        <div className="relative">
-          <Textarea
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            className="min-h-[120px] text-base resize-none pr-20"
-            maxLength={1000}
-            disabled={loading}
-          />
-          <div className="absolute bottom-3 right-3 flex flex-col items-center gap-1">
-            <button
-              type="button"
-              onClick={() => void toggleRecording()}
-              disabled={transcribing || loading}
-              aria-label={recording ? t("step3.mic.stop") : t("step3.mic.start")}
-              className={`flex h-14 w-14 items-center justify-center rounded-full text-primary-foreground shadow-md transition-colors disabled:opacity-60 ${
-                recording
-                  ? "bg-destructive hover:bg-destructive/90"
-                  : "bg-primary hover:bg-primary/90"
-              }`}
-              style={recording ? { animation: "mic-ring 1.4s ease-out infinite" } : undefined}
-            >
-              {transcribing ? (
-                <Loader2 className="h-5 w-5 animate-spin" />
-              ) : recording ? (
-                <Square className="h-5 w-5" fill="currentColor" />
-              ) : (
-                <Mic className="h-6 w-6" />
+        {/* Prominent voice input card */}
+        <div
+          className={`relative overflow-hidden rounded-2xl border p-5 transition-colors ${
+            recording
+              ? "border-destructive/40 bg-destructive/5"
+              : "border-primary/30 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="gap-1">
+                  <Sparkles className="h-3 w-3" />
+                  {t("step3.voice.badge")}
+                </Badge>
+              </div>
+              <p className="mt-2 text-base font-semibold text-foreground">
+                {recording ? t("step3.voice.listening") : t("step3.voice.cta")}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {transcribing
+                  ? t("step3.mic.transcribing")
+                  : recording
+                    ? t("step3.mic.recording", { s: elapsed })
+                    : t("step3.voice.sub")}
+              </p>
+            </div>
+
+            <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
+              {/* reactive outer ring */}
+              {recording && (
+                <span
+                  aria-hidden
+                  className="absolute inset-0 rounded-full bg-destructive/30 transition-transform"
+                  style={{
+                    transform: `scale(${ringScale})`,
+                    opacity: ringOpacity,
+                    transitionDuration: "80ms",
+                  }}
+                />
               )}
-            </button>
-            <span className="text-[10px] text-muted-foreground">
-              {transcribing ? t("step3.mic.transcribing") : recording ? t("step3.mic.recording", { s: elapsed }) : t("step3.mic.tip")}
-            </span>
+              {/* idle halo */}
+              {!recording && !transcribing && (
+                <span
+                  aria-hidden
+                  className="absolute inset-1 rounded-full bg-primary/20 animate-pulse"
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => void toggleRecording()}
+                disabled={micBusy}
+                aria-label={recording ? t("step3.mic.stop") : t("step3.mic.start")}
+                className={`relative flex h-16 w-16 items-center justify-center rounded-full text-primary-foreground shadow-lg transition-colors disabled:opacity-60 ${
+                  recording
+                    ? "bg-destructive hover:bg-destructive/90"
+                    : "bg-primary hover:bg-primary/90"
+                }`}
+              >
+                {transcribing ? (
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                ) : recording ? (
+                  <Square className="h-5 w-5" fill="currentColor" />
+                ) : (
+                  <Mic className="h-7 w-7" />
+                )}
+              </button>
+            </div>
           </div>
+
+          {/* live equalizer bars */}
+          {recording && (
+            <div
+              aria-hidden
+              className="mt-4 flex h-8 items-end justify-center gap-1.5"
+            >
+              {bars.map((weight, i) => {
+                const h = Math.max(4, Math.min(32, level * weight * 56));
+                return (
+                  <span
+                    key={i}
+                    className="w-1.5 rounded-full bg-destructive transition-[height] duration-75"
+                    style={{ height: `${h}px` }}
+                  />
+                );
+              })}
+            </div>
+          )}
         </div>
+
+        <div className="relative flex items-center">
+          <div className="h-px flex-1 bg-border" />
+          <span className="px-3 text-[11px] uppercase tracking-wide text-muted-foreground">
+            {t("step3.voice.orType")}
+          </span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
+
+        <Textarea
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="min-h-[120px] text-base resize-none"
+          maxLength={1000}
+          disabled={loading}
+        />
+
 
         {loading && currentStage && (
           <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-4">
