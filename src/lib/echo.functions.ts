@@ -648,8 +648,8 @@ const RestaurantSchema = z.object({
   ratings: z.array(z.object({ platform: z.string(), score: z.string().nullable() })),
   aiSummary: z.string(),
   matchDetails: z.array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) })),
-  pros: z.array(z.string()),
-  cons: z.array(z.string()),
+  pros: z.array(z.object({ text: z.string(), source: z.string().nullable().optional() })),
+  cons: z.array(z.object({ text: z.string(), source: z.string().nullable().optional() })),
   links: z.array(z.object({ label: z.string(), url: z.string() })),
   photoUrls: z.array(z.string()),
   tabelog: z
