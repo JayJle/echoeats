@@ -470,20 +470,38 @@ function mergeReviewSummaries(base: ReviewSummary, extra: ReviewSummary): Review
   };
 }
 
-async function fetchReviewSummary(
+type PlatformKey = "yelp" | "tripadvisor" | "tabelog";
+
+const PLATFORM_META: Record<
+  PlatformKey,
+  { label: string; sourceName: string; domains: string[] }
+> = {
+  yelp: { label: "Yelp", sourceName: "Yelp", domains: ["yelp.com"] },
+  tripadvisor: {
+    label: "TripAdvisor",
+    sourceName: "TripAdvisor",
+    domains: [
+      "tripadvisor.com",
+      "tripadvisor.co.uk",
+      "tripadvisor.ca",
+      "tripadvisor.com.au",
+      "tripadvisor.com.sg",
+      "tripadvisor.com.hk",
+      "tripadvisor.jp",
+    ],
+  },
+  tabelog: { label: "Tabelog", sourceName: "Tabelog", domains: ["tabelog.com"] },
+};
+
+async function fetchPlatformReview(
+  platform: PlatformKey,
   name: string,
   city: string,
   apiKey: string,
-  opts: { country: string; googleMapsUri: string; address: string },
+  opts: { googleMapsUri: string; address: string },
 ): Promise<ReviewSummary | null> {
-  const allowedDomains =
-    opts.country === "JP"
-      ? [...OVERSEAS_REVIEW_DOMAINS, ...JP_EXTRA_REVIEW_DOMAINS]
-      : OVERSEAS_REVIEW_DOMAINS;
-  const sourceList =
-    opts.country === "JP"
-      ? "Yelp、Google Maps、TripAdvisor、Tabelog"
-      : "Yelp、Google Maps、TripAdvisor";
+  const meta = PLATFORM_META[platform];
+  const allowedDomains = meta.domains;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
@@ -500,29 +518,27 @@ async function fetchReviewSummary(
         messages: [
           {
             role: "system",
-            content:
-              `你是餐厅口碑分析助手。**只允许参考 ${sourceList} 这些平台上的真实顾客评价**，禁止使用其它来源（如小红书、Reddit、个人博客）。只输出 JSON。`,
+            content: `你是餐厅口碑分析助手。**只允许参考 ${meta.label} 平台上的真实顾客评价**，禁止使用任何其它来源（包括 Google、其它点评站、小红书、Reddit、博客）。只输出 JSON。`,
           },
           {
             role: "user",
-            content: `查询这家餐厅的真实顾客评价：
+            content: `在 ${meta.label} 上查询这家餐厅的真实顾客评价：
 - 店名：${name}
 - 城市：${city}
 - 地址：${opts.address}
-- Google Maps 链接（含 place_id，请优先从这里读取 Google 评论）：${opts.googleMapsUri}
+- Google Maps 链接（仅用于地址辨认，不要从此处取评价）：${opts.googleMapsUri}
 
 **严格规则**：
-- 只从 ${sourceList} 上的页面读取评论；其它任何来源一律忽略。
-- 在 Yelp / TripAdvisor${opts.country === "JP" ? " / Tabelog" : ""} 上用「店名 + 城市/地址」匹配同一家店；同名不同店一律算找不到，宁可返回空。
+- 只允许从 ${meta.label} 的页面读取评论；任何其它来源（包括 Google）一律忽略。
+- 用「店名 + 城市/地址」精确匹配同一家店；同名不同店一律算找不到，宁可返回空。
+- 找不到该店在 ${meta.label} 上的页面 → 返回空数组、sourceCount=0、sentiment="unknown"。
 
 返回字段：
 - reviewHighlights: 3-5 条网友提到的真实优点（具体菜品/服务/氛围/性价比，简体中文，每条 ≤ 25 字）
-- commonComplaints: 0-3 条网友普遍提到的缺点/吐槽（如有）
+- commonComplaints: 0-3 条网友普遍提到的缺点/吐槽
 - sentiment: 整体口碑 positive / mixed / negative；信息不足返回 unknown
-- sourceCount: 实际引用的平台页面数（整数）
-- sources: 真正查到信息的平台数组，**只能**从 ["Google Reviews","Yelp","TripAdvisor"${opts.country === "JP" ? ',"Tabelog"' : ""}] 选；没真去过/没找到该店的平台绝不要列。
-
-找不到该店：所有数组为空、sourceCount=0、sources=[]、sentiment="unknown"。`,
+- sourceCount: 实际引用的 ${meta.label} 页面数（整数）
+- sources: 真正查到信息时填 ["${meta.sourceName}"]；没找到填 []`,
           },
         ],
         max_tokens: 600,
@@ -558,14 +574,13 @@ async function fetchReviewSummary(
       }),
     });
     if (!res.ok) {
-      console.warn(`[Perplexity] ${name}: HTTP ${res.status}`);
+      console.warn(`[Perplexity:${platform}] ${name}: HTTP ${res.status}`);
       return null;
     }
     const json = await res.json();
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return null;
 
-    // 反幻觉：citation 必须命中白名单域，并且至少有 1 条；否则整体丢弃。
     const rawCitations: unknown = json?.citations ?? json?.search_results ?? [];
     const allCitationUrls: string[] = Array.isArray(rawCitations)
       ? (rawCitations as unknown[])
@@ -578,7 +593,7 @@ async function fetchReviewSummary(
 
     if (validCitations.length === 0) {
       console.warn(
-        `[Perplexity] ${name}: no whitelisted citations (got ${allCitationUrls.length} raw) → discard`,
+        `[Perplexity:${platform}] ${name}: no whitelisted citations (got ${allCitationUrls.length} raw) → discard`,
       );
       return null;
     }
@@ -596,18 +611,9 @@ async function fetchReviewSummary(
       : [];
 
     if (highlights.length === 0 && complaints.length === 0) {
-      console.warn(`[Perplexity] ${name}: empty highlights & complaints → discard`);
+      console.warn(`[Perplexity:${platform}] ${name}: empty highlights & complaints → discard`);
       return null;
     }
-
-    // sources 由 citation 实际命中域名反推，不让模型自由声明
-    const sources = Array.from(
-      new Set(
-        validCitations
-          .map((u) => sourceFromCitation(u))
-          .filter((s): s is string => Boolean(s)),
-      ),
-    );
 
     return {
       reviewHighlights: highlights as string[],
@@ -616,7 +622,7 @@ async function fetchReviewSummary(
         ? parsed.sentiment
         : "unknown",
       sourceCount: validCitations.length,
-      sources,
+      sources: [meta.sourceName],
       dianpingRating: null,
       dianpingRatingSource: "unknown",
       priceLevel: null,
@@ -624,11 +630,40 @@ async function fetchReviewSummary(
       priceContext: null,
     };
   } catch (e) {
-    console.warn(`[Perplexity] ${name}:`, e instanceof Error ? e.message : e);
+    console.warn(`[Perplexity:${platform}] ${name}:`, e instanceof Error ? e.message : e);
     return null;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchReviewSummary(
+  name: string,
+  city: string,
+  apiKey: string,
+  opts: { country: string; googleMapsUri: string; address: string },
+): Promise<ReviewSummary | null> {
+  const platforms: PlatformKey[] =
+    opts.country === "JP"
+      ? ["yelp", "tripadvisor", "tabelog"]
+      : ["yelp", "tripadvisor"];
+
+  const settled = await Promise.allSettled(
+    platforms.map((p) =>
+      fetchPlatformReview(p, name, city, apiKey, {
+        googleMapsUri: opts.googleMapsUri,
+        address: opts.address,
+      }),
+    ),
+  );
+
+  const results: ReviewSummary[] = [];
+  for (const s of settled) {
+    if (s.status === "fulfilled" && s.value) results.push(s.value);
+  }
+  if (results.length === 0) return null;
+
+  return results.reduce((acc, cur) => mergeReviewSummaries(acc, cur));
 }
 
 const RestaurantSchema = z.object({
