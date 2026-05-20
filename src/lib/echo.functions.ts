@@ -372,33 +372,6 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 
 const SOURCE_ENUM = ["大众点评", "Tabelog", "Google Reviews", "Yelp", "TripAdvisor", "其它"] as const;
 
-// 海外评论域白名单已下沉到 PLATFORM_META，每个平台子查询各自锁域。
-
-// citation URL host 白名单匹配（用于校验 Perplexity 真的去了白名单域）
-function citationMatchesAllowed(url: string, allowed: string[]): boolean {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.toLowerCase();
-    const pathHost = `${host}${u.pathname}`.toLowerCase();
-    return allowed.some((d) => host === d || host.endsWith(`.${d}`) || pathHost.startsWith(d));
-  } catch {
-    return false;
-  }
-}
-
-// 从 citation URL 反推命中的 source 名称
-function sourceFromCitation(url: string): string | null {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    if (host.includes("yelp.com")) return "Yelp";
-    if (host.includes("tripadvisor.")) return "TripAdvisor";
-    if (host.includes("google.") || host.includes("goo.gl")) return "Google Reviews";
-    if (host.includes("tabelog.com")) return "Tabelog";
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
 
 // 把 Google Places 一手 reviews 转成 ReviewSummary（零幻觉，第一手数据）
 function googleReviewsToSummary(p: PlaceCandidate): ReviewSummary | null {
@@ -456,228 +429,6 @@ function mergeReviewSummaries(base: ReviewSummary, extra: ReviewSummary): Review
   };
 }
 
-type PlatformKey = "yelp" | "tripadvisor" | "tabelog";
-
-const PLATFORM_META: Record<
-  PlatformKey,
-  { label: string; sourceName: string; domains: string[] }
-> = {
-  yelp: { label: "Yelp", sourceName: "Yelp", domains: ["yelp.com"] },
-  tripadvisor: {
-    label: "TripAdvisor",
-    sourceName: "TripAdvisor",
-    domains: [
-      "tripadvisor.com",
-      "tripadvisor.co.uk",
-      "tripadvisor.ca",
-      "tripadvisor.com.au",
-      "tripadvisor.com.sg",
-      "tripadvisor.com.hk",
-      "tripadvisor.jp",
-    ],
-  },
-  tabelog: { label: "Tabelog", sourceName: "Tabelog", domains: ["tabelog.com"] },
-};
-
-async function fetchPlatformReview(
-  platform: PlatformKey,
-  name: string,
-  city: string,
-  apiKey: string,
-  opts: { googleMapsUri: string; address: string },
-): Promise<ReviewSummary | null> {
-  const meta = PLATFORM_META[platform];
-  const allowedDomains = meta.domains;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
-  try {
-    const res = await fetch("https://api.perplexity.ai/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: "sonar",
-        messages: [
-          {
-            role: "system",
-            content: `你是餐厅口碑分析助手。**只允许参考 ${meta.label} 平台上的真实顾客评价**，禁止使用任何其它来源（包括 Google、其它点评站、小红书、Reddit、博客）。只输出 JSON。`,
-          },
-          {
-            role: "user",
-            content: `在 ${meta.label} 上查询这家餐厅的真实顾客评价：
-- 店名：${name}
-- 城市：${city}
-- 地址：${opts.address}
-- Google Maps 链接（仅用于地址辨认，不要从此处取评价）：${opts.googleMapsUri}
-
-**严格规则**：
-- 只允许从 ${meta.label} 的页面读取评论；任何其它来源（包括 Google）一律忽略。
-- 用「店名 + 城市/地址」精确匹配同一家店；同名不同店一律算找不到，宁可返回空。
-- 找不到该店在 ${meta.label} 上的页面 → 返回空数组、sourceCount=0、sentiment="unknown"。
-
-返回字段：
-- reviewHighlights: 3-5 条网友提到的真实优点（具体菜品/服务/氛围/性价比，简体中文，每条 ≤ 25 字）
-- commonComplaints: 0-3 条网友普遍提到的缺点/吐槽
-- sentiment: 整体口碑 positive / mixed / negative；信息不足返回 unknown
-- sourceCount: 实际引用的 ${meta.label} 页面数（整数）
-- sources: 真正查到信息时填 ["${meta.sourceName}"]；没找到填 []`,
-          },
-        ],
-        max_tokens: 600,
-        temperature: 0.2,
-        search_recency_filter: "year",
-        search_domain_filter: allowedDomains,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "review_summary",
-            schema: {
-              type: "object",
-              properties: {
-                reviewHighlights: { type: "array", items: { type: "string" } },
-                commonComplaints: { type: "array", items: { type: "string" } },
-                sentiment: { type: "string", enum: ["positive", "mixed", "negative", "unknown"] },
-                sourceCount: { type: "number" },
-                sources: {
-                  type: "array",
-                  items: { type: "string", enum: [...SOURCE_ENUM] },
-                },
-              },
-              required: [
-                "reviewHighlights",
-                "commonComplaints",
-                "sentiment",
-                "sourceCount",
-                "sources",
-              ],
-            },
-          },
-        },
-      }),
-    });
-    if (!res.ok) {
-      console.warn(`[Perplexity:${platform}] ${name}: HTTP ${res.status}`);
-      return null;
-    }
-    const json = await res.json();
-    const content = json?.choices?.[0]?.message?.content;
-    if (!content) return null;
-
-    const rawCitations: unknown = json?.citations ?? json?.search_results ?? [];
-    const allCitationUrls: string[] = Array.isArray(rawCitations)
-      ? (rawCitations as unknown[])
-          .map((c) => (typeof c === "string" ? c : (c as { url?: string })?.url))
-          .filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
-      : [];
-    const validCitations = allCitationUrls.filter((u) =>
-      citationMatchesAllowed(u, allowedDomains),
-    );
-
-    const parsed = JSON.parse(content);
-    const highlights = Array.isArray(parsed.reviewHighlights)
-      ? (parsed.reviewHighlights as unknown[])
-          .filter((s): s is string => typeof s === "string")
-          .slice(0, 5)
-      : [];
-    const complaints = Array.isArray(parsed.commonComplaints)
-      ? (parsed.commonComplaints as unknown[])
-          .filter((s): s is string => typeof s === "string")
-          .slice(0, 3)
-      : [];
-
-    if (highlights.length === 0 && complaints.length === 0) {
-      console.warn(`[Perplexity:${platform}] ${name}: empty highlights & complaints → discard`);
-      return null;
-    }
-
-    // 模型自报的 sourceCount（声称引用了多少条平台页）。
-    const claimedCount =
-      typeof parsed.sourceCount === "number" && parsed.sourceCount > 0
-        ? Math.floor(parsed.sourceCount)
-        : 0;
-    const claimsPlatform =
-      Array.isArray(parsed.sources) &&
-      (parsed.sources as unknown[]).some(
-        (s) => typeof s === "string" && s === meta.sourceName,
-      );
-
-    // 双档证据：
-    //  - 强证据 = 有白名单 citation；
-    //  - 平台限定弱证据 = 没 citation，但本次 search_domain_filter 已经强制锁域，
-    //    且模型自报命中该平台并给出非空摘要 → 仍然采纳为该平台补充口碑。
-    if (validCitations.length === 0) {
-      if (!claimsPlatform || claimedCount === 0) {
-        console.warn(
-          `[Perplexity:${platform}] ${name}: no whitelisted citations and no platform self-claim → discard`,
-        );
-        return null;
-      }
-      console.log(
-        `[Perplexity:${platform}] ${name}: domain-filter fallback (no citations, model claims ${claimedCount}) → accept`,
-      );
-    } else {
-      console.log(
-        `[Perplexity:${platform}] ${name}: verified citations=${validCitations.length} → accept`,
-      );
-    }
-
-    const effectiveSourceCount =
-      validCitations.length > 0 ? validCitations.length : Math.max(1, claimedCount);
-
-    return {
-      reviewHighlights: highlights as string[],
-      commonComplaints: complaints as string[],
-      sentiment: ["positive", "mixed", "negative"].includes(parsed.sentiment)
-        ? parsed.sentiment
-        : "unknown",
-      sourceCount: effectiveSourceCount,
-      sources: [meta.sourceName],
-      dianpingRating: null,
-      dianpingRatingSource: "unknown",
-      priceLevel: null,
-      priceCurrency: null,
-      priceContext: null,
-    };
-  } catch (e) {
-    console.warn(`[Perplexity:${platform}] ${name}:`, e instanceof Error ? e.message : e);
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function fetchReviewSummary(
-  name: string,
-  city: string,
-  apiKey: string,
-  opts: { country: string; googleMapsUri: string; address: string },
-): Promise<ReviewSummary | null> {
-  const platforms: PlatformKey[] =
-    opts.country === "JP"
-      ? ["yelp", "tripadvisor", "tabelog"]
-      : ["yelp", "tripadvisor"];
-
-  const settled = await Promise.allSettled(
-    platforms.map((p) =>
-      fetchPlatformReview(p, name, city, apiKey, {
-        googleMapsUri: opts.googleMapsUri,
-        address: opts.address,
-      }),
-    ),
-  );
-
-  const results: ReviewSummary[] = [];
-  for (const s of settled) {
-    if (s.status === "fulfilled" && s.value) results.push(s.value);
-  }
-  if (results.length === 0) return null;
-
-  return results.reduce((acc, cur) => mergeReviewSummaries(acc, cur));
-}
 
 const RestaurantSchema = z.object({
   id: z.string(),
@@ -894,15 +645,6 @@ function candidateRatings(
   ];
   if (isJP) rows.push({ platform: "Tabelog", score: tabelogScore });
   if (isCN) rows.push({ platform: isEn ? "Dianping" : "大众点评", score: dpScore });
-  // 海外（含日本）：若 Perplexity 已采纳 Yelp / TripAdvisor 评论，显式列出来源，避免“看起来只有 Google”
-  if (!isCN && review?.sources?.length) {
-    if (review.sources.includes("Yelp")) {
-      rows.push({ platform: "Yelp", score: isEn ? "reviews used" : "已纳入网评" });
-    }
-    if (review.sources.includes("TripAdvisor")) {
-      rows.push({ platform: "TripAdvisor", score: isEn ? "reviews used" : "已纳入网评" });
-    }
-  }
   rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
   return rows;
 }
@@ -1152,7 +894,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       );
       placeResults = settled;
     } else {
-      // 海外城市：Google Places + Perplexity 网评（原流程）
+      // 海外城市：Google Places + Google 一手 reviews（基线）
       const language = data.language || guessLanguageCode(data.city);
       const region = country || guessRegionCode(data.city);
 
@@ -1275,8 +1017,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
     }
 
-    // 海外城市：先把 Google Places 一手 reviews 作为基线证据塞入（零幻觉），
-    // 再用 Perplexity 网评做补充合并；Perplexity 失败也不影响 pros/cons 显示。
+    // 海外城市：把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
     if (!useDianping) {
       for (const r of placeResults) {
         for (const p of r.places) {
@@ -1284,46 +1025,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           if (baseline) reviewById.set(p.placeId, baseline);
         }
       }
-      if (pplxKey && data.mode !== "quick") {
-        const tasks: Array<Promise<{ id: string; summary: ReviewSummary | null }>> = [];
-        for (const r of placeResults) {
-          const top = [...r.places]
-            .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
-            .slice(0, 10);
-          for (const p of top) {
-            tasks.push(
-              fetchReviewSummary(p.name, data.city, pplxKey, {
-                country,
-                googleMapsUri: p.googleMapsUri,
-                address: p.address,
-              }).then((s) => ({
-                id: p.placeId,
-                summary: s,
-              })),
-            );
-          }
-        }
-        yield { type: "stage", stage: "reviews", total: tasks.length };
-        // 按完成顺序消费，每个任务结束都 yield 一次进度，持续 flush 字节流。
-        const settledTasks = tasks.map((t) =>
-          t
-            .then((v) => ({ status: "fulfilled" as const, value: v }))
-            .catch((reason) => ({ status: "rejected" as const, reason })),
-        );
-        let done = 0;
-        for await (const s of asCompleted(settledTasks)) {
-          done++;
-          if (s.status === "fulfilled" && s.value.summary) {
-            const existing = reviewById.get(s.value.id);
-            reviewById.set(
-              s.value.id,
-              existing ? mergeReviewSummaries(existing, s.value.summary) : s.value.summary,
-            );
-          }
-          yield { type: "review-progress", done, total: tasks.length };
-        }
-      }
     }
+
 
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
