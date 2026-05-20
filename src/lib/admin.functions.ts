@@ -161,7 +161,7 @@ export const adminListFeedback = createServerFn({ method: "POST" })
       user_agent: string | null;
       result_count: number | null;
       created_at: string;
-      parsed_json: Record<string, unknown> | null;
+      parsedSummary: string | null;
     }>();
 
     if (sessionIds.length > 0) {
@@ -170,6 +170,16 @@ export const adminListFeedback = createServerFn({ method: "POST" })
         .select("id, city, cuisines, lang, user_agent, result_count, created_at, parsed_json")
         .in("id", sessionIds);
       for (const s of sess ?? []) {
+        let parsedSummary: string | null = null;
+        try {
+          const p = s.parsed_json as Record<string, unknown> | null;
+          if (p && typeof p === "object") {
+            const text = (p.originalText ?? p.text ?? p.requirements ?? "") as string;
+            parsedSummary = typeof text === "string" ? text.slice(0, 300) : null;
+          }
+        } catch {
+          parsedSummary = null;
+        }
         sessionsById.set(s.id, {
           city: s.city,
           cuisines: s.cuisines,
@@ -177,7 +187,7 @@ export const adminListFeedback = createServerFn({ method: "POST" })
           user_agent: s.user_agent,
           result_count: s.result_count,
           created_at: s.created_at,
-          parsed_json: s.parsed_json,
+          parsedSummary,
         });
       }
     }
@@ -198,9 +208,24 @@ export const adminGetSession = createServerFn({ method: "POST" })
     await requireAdmin();
     const { data: sess, error } = await supabaseAdmin
       .from("search_sessions")
-      .select("*")
+      .select("id, anon_id, city, cuisines, lang, user_agent, result_count, had_error, error_stage, created_at, parsed_json, results_snapshot")
       .eq("id", data.sessionId)
       .single();
     if (error || !sess) return { session: null };
-    return { session: sess };
+    return {
+      session: {
+        id: sess.id,
+        anonId: sess.anon_id,
+        city: sess.city,
+        cuisines: sess.cuisines,
+        lang: sess.lang,
+        userAgent: sess.user_agent,
+        resultCount: sess.result_count,
+        hadError: sess.had_error,
+        errorStage: sess.error_stage,
+        createdAt: sess.created_at,
+        parsedJsonText: sess.parsed_json ? JSON.stringify(sess.parsed_json, null, 2) : null,
+        resultsSnapshotText: sess.results_snapshot ? JSON.stringify(sess.results_snapshot, null, 2) : null,
+      },
+    };
   });
