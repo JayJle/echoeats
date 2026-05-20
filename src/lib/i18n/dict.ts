@@ -270,6 +270,12 @@ export const dict: Record<Lang, Dict> = {
     "step3.mic.recording": "{s}s · tap to stop",
     "step3.cancel": "Cancel search",
     "step3.inferred": "✨ AI inferred {n} cuisine(s) ({list}), searching in parallel — may be a bit slower",
+    "step3.voice.cta": "Tap to speak your needs",
+    "step3.voice.sub": "Faster than typing — say budget, vibe, dishes…",
+    "step3.voice.badge": "Recommended",
+    "step3.voice.listening": "Listening… tap to stop",
+    "step3.voice.orType": "Or type it instead",
+    "step3.voice.firstTip": "Try voice input — it's much faster 🎤",
 
     "stage.parse.label": "Understanding your request",
     "stage.parse.hint": "AI is parsing budget, vibe, dealbreakers…",
