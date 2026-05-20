@@ -40,6 +40,8 @@ function StepRequirements() {
   const { lang, t } = useT();
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
+  const autoInferCuisines = useQueryStore((s) => s.autoInferCuisines);
+
   const freeText = useQueryStore((s) => s.freeText);
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
