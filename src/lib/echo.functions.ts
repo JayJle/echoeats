@@ -248,11 +248,15 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 输入「7pm sushi」→ \`{"mentioned":true,"evidence":"7pm","weekday":${new Date().getDay()},"hhmm":"19:00","raw":"7pm"}\`
 - 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\``;
 
-    const runOnce = async (modelId: string) => {
+    const runOnce = async (modelId: string, opts?: { forceInfer?: boolean }) => {
       const model = gateway(modelId);
+      const effectivePrompt = opts?.forceInfer
+        ? prompt +
+          `\n\n## 强制识别品类（重试指令）\n用户已**明确要求**自动识别料理品类。即使「其它需求」线索很弱，也必须从菜品、口味、人群、场景、时段、价位中任选维度，给出 1-3 个最相关的**具体**料理品类。**禁止**返回 ["餐厅"] / ["restaurants"] / ["レストラン"] / ["음식점"] 等通用兜底词。`
+        : prompt;
       const { output } = await generateText({
         model,
-        prompt,
+        prompt: effectivePrompt,
         maxOutputTokens: 8000,
         output: Output.object({
           schema: LooseParsedSchema,
@@ -275,6 +279,40 @@ export const parseRequirements = createServerFn({ method: "POST" })
         !userProvidedCuisines &&
         parsed.cuisines.length > 0 &&
         !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
+      return parsed;
+    };
+
+    const FALLBACK_CUISINE_WORDS = new Set([
+      "餐厅",
+      "restaurants",
+      "restaurant",
+      "レストラン",
+      "음식점",
+      "食堂",
+    ]);
+    const isAllFallback = (arr: string[]) =>
+      arr.length > 0 &&
+      arr.every((c) => FALLBACK_CUISINE_WORDS.has(c.trim().toLowerCase()));
+
+    const enforceInferIfRequested = async (
+      parsed: z.infer<typeof ParsedSchema>,
+    ): Promise<z.infer<typeof ParsedSchema>> => {
+      const userProvidedCuisines = data.cuisines.length > 0;
+      const wantsInfer = !userProvidedCuisines && data.autoInferCuisines !== false;
+      if (!wantsInfer || !isAllFallback(parsed.cuisines)) return parsed;
+      console.warn(
+        "[parseRequirements] 用户要求 AI 识别但首轮返回兜底词，跨模型重试 forceInfer",
+      );
+      try {
+        const retry = await runOnce("openai/gpt-5-mini", { forceInfer: true });
+        if (!isAllFallback(retry.cuisines)) return retry;
+        console.warn("[parseRequirements] forceInfer 重试仍为兜底，沿用首轮结果");
+      } catch (e) {
+        console.warn(
+          "[parseRequirements] forceInfer 重试失败：",
+          e instanceof Error ? e.message : e,
+        );
+      }
       return parsed;
     };
 
@@ -301,12 +339,15 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
     try {
       try {
-        return sanitizeVisitTime(await runOnce("google/gemini-2.5-flash"));
+        const first = await runOnce("google/gemini-2.5-flash");
+        return sanitizeVisitTime(await enforceInferIfRequested(first));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
-        return sanitizeVisitTime(await runOnce("openai/gpt-5-mini"));
+        const second = await runOnce("openai/gpt-5-mini");
+        return sanitizeVisitTime(await enforceInferIfRequested(second));
       }
+
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // 兜底：返回最小可用结构，避免整页崩溃
