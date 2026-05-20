@@ -678,6 +678,7 @@ function candidateRatings(
   tabelog: TabelogInfo | null,
   isEn = false,
   country = "",
+  yelp: YelpInfo | null = null,
 ) {
   const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
   const isJP = country === "JP";
@@ -698,11 +699,17 @@ function candidateRatings(
     tabelog?.rating != null
       ? `${tabelog.rating} / 5${tabelog.reviewCount ? ` (${tabelog.reviewCount})` : ""}`
       : null;
+  const yelpScore =
+    yelp?.rating != null
+      ? `${yelp.rating} / 5${yelp.reviewCount ? ` (${yelp.reviewCount})` : ""}`
+      : null;
   const rows: { platform: string; score: string | null }[] = [
     { platform: "Google Maps", score },
   ];
   if (isJP) rows.push({ platform: "Tabelog", score: tabelogScore });
   if (isCN) rows.push({ platform: isEn ? "Dianping" : "大众点评", score: dpScore });
+  // Yelp 行：仅当有数据时插入（无数据不展示，符合用户期望）
+  if (yelpScore) rows.push({ platform: "Yelp", score: yelpScore });
   rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
   return rows;
 }
