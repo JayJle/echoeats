@@ -512,6 +512,8 @@ function getRestaurantSources(r: Restaurant): { key: SourceKey; url?: string }[]
   sources.push({ key: "Google", url: r.googleMapsUri });
   // Tabelog
   if (r.tabelog) sources.push({ key: "Tabelog", url: r.tabelog.url ?? undefined });
+  // Yelp
+  if (r.yelp) sources.push({ key: "Yelp", url: r.yelp.url ?? undefined });
   // 从 ratings 找其他平台（仅当 score 非 null）
   for (const rt of r.ratings) {
     const platform = rt.platform as SourceKey;
@@ -732,6 +734,44 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
           {r.tabelog.url && (
             <a href={r.tabelog.url} target="_blank" rel="noreferrer" className="inline-block text-xs text-primary hover:underline">
               {t("results.tabelog.viewOn")}
+            </a>
+          )}
+        </div>
+      )}
+
+      {r.yelp && (
+        <div className="px-6 py-4 border-t border-border bg-accent/20">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {t("results.yelp.title")}
+            </h4>
+            <span className="text-[10px] text-muted-foreground">Yelp</span>
+          </div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm mb-2">
+            {r.yelp.rating != null && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">{t("results.yelp.rating")}</span>
+                <span className="font-medium">
+                  {r.yelp.rating}
+                  {r.yelp.reviewCount ? ` (${r.yelp.reviewCount})` : ""}
+                </span>
+              </div>
+            )}
+            {r.yelp.priceLevel && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">{t("results.yelp.price")}</span>
+                <span className="font-medium">{r.yelp.priceLevel}</span>
+              </div>
+            )}
+          </div>
+          {r.yelp.summary && (
+            <p className="text-sm leading-relaxed text-muted-foreground mb-2">
+              "{r.yelp.summary}"
+            </p>
+          )}
+          {r.yelp.url && (
+            <a href={r.yelp.url} target="_blank" rel="noreferrer" className="inline-block text-xs text-primary hover:underline">
+              {t("results.yelp.viewOn")}
             </a>
           )}
         </div>

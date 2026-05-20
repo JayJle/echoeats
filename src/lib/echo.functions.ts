@@ -384,6 +384,9 @@ import {
   type CuisineExpansion,
 } from "./cuisine-expand.server";
 import { fetchTabelogInfo, type TabelogInfo } from "./tabelog.server";
+import { fetchYelpInfo, type YelpInfo } from "./yelp.server";
+
+const YELP_COUNTRIES = new Set(["US", "CA", "FR", "IT", "DE", "ES", "GB"]);
 
 // Perplexity 真实网评摘要
 type ReviewSummary = {
@@ -503,6 +506,17 @@ const RestaurantSchema = z.object({
       summary: z.string().nullable(),
     })
     .nullable(),
+  yelp: z
+    .object({
+      rating: z.string().nullable(),
+      reviewCount: z.number().nullable(),
+      url: z.string().nullable(),
+      priceLevel: z.string().nullable(),
+      summary: z.string().nullable(),
+    })
+    .nullable()
+    .optional()
+    .default(null),
   weekdayDescriptions: z.array(z.string()).nullable().optional().default(null),
   visitTimeMatch: z.enum(["open", "unknown"]).nullable().optional().default(null),
 });
@@ -589,7 +603,7 @@ function priceLevelLabel(level: string | null): string | null {
   }
 }
 
-function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = false) {
+function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = false, yelpUrl: string | null = null) {
   const links: { label: string; url: string }[] = [];
   const q = encodeURIComponent(`${p.name} ${city}`);
   const qName = encodeURIComponent(p.name);
@@ -630,10 +644,11 @@ function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = fal
   }
 
   if (!isCN) {
-    // 海外（含日本）：加 Yelp + TripAdvisor 搜索链接，方便用户核验口碑来源
+    // 海外（含日本）：加 Yelp + TripAdvisor 链接，方便用户核验口碑来源
+    // 若已有 Yelp 详情页 URL（来自 fetchYelpInfo），直接深链；否则回退到搜索
     links.push({
       label: "Yelp",
-      url: `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
+      url: yelpUrl ?? `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
     });
     links.push({
       label: "TripAdvisor",
@@ -663,6 +678,7 @@ function candidateRatings(
   tabelog: TabelogInfo | null,
   isEn = false,
   country = "",
+  yelp: YelpInfo | null = null,
 ) {
   const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
   const isJP = country === "JP";
@@ -683,11 +699,17 @@ function candidateRatings(
     tabelog?.rating != null
       ? `${tabelog.rating} / 5${tabelog.reviewCount ? ` (${tabelog.reviewCount})` : ""}`
       : null;
+  const yelpScore =
+    yelp?.rating != null
+      ? `${yelp.rating} / 5${yelp.reviewCount ? ` (${yelp.reviewCount})` : ""}`
+      : null;
   const rows: { platform: string; score: string | null }[] = [
     { platform: "Google Maps", score },
   ];
   if (isJP) rows.push({ platform: "Tabelog", score: tabelogScore });
   if (isCN) rows.push({ platform: isEn ? "Dianping" : "大众点评", score: dpScore });
+  // Yelp 行：仅当有数据时插入（无数据不展示，符合用户期望）
+  if (yelpScore) rows.push({ platform: "Yelp", score: yelpScore });
   rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
   return rows;
 }
@@ -707,6 +729,7 @@ export type SearchStreamChunk =
   | { type: "stage"; stage: string; message?: string; count?: number; total?: number }
   | { type: "review-progress"; done: number; total: number }
   | { type: "tabelog-progress"; done: number; total: number }
+  | { type: "yelp-progress"; done: number; total: number }
   | { type: "heartbeat"; stage: string }
   | { type: "result"; payload: SearchResponse };
 
@@ -1105,6 +1128,39 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
     }
 
+    // US/CA/西欧 分支补充：用 Perplexity 代抓 Yelp 评分+评论数+价位+摘要，与 Tabelog 同构。
+    // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
+    const yelpById = new Map<string, YelpInfo>();
+    if (!useDianping && pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
+      const allTargets: PlaceCandidate[] = [];
+      for (const r of placeResults) {
+        for (const p of r.places) allTargets.push(p);
+      }
+      yield { type: "stage", stage: "yelp", total: allTargets.length };
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const runWorker = async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= allTargets.length) return;
+          const p = allTargets[i];
+          try {
+            const info = await fetchYelpInfo(p.name, p.address, data.city, isEn);
+            if (info) yelpById.set(p.placeId, info);
+          } catch (e) {
+            console.warn(`[Yelp] ${p.name} task error:`, e instanceof Error ? e.message : e);
+          }
+        }
+      };
+      yield* withHeartbeat(
+        Promise.all(
+          Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
+        ),
+        "yelp",
+      );
+      console.log(`[Yelp] hit ${yelpById.size}/${allTargets.length}`);
+    }
+
     // 限制送给 AI 的候选数量：每个 cuisine 分组按 (rating × log(reviewCount)) 排序取前 25
     // AI 排序输出本来也只用 top N，输入侧超过 ~60 家纯属浪费 token、加大输出截断风险。
     const PER_CUISINE_CAP = 25;
@@ -1121,6 +1177,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           candidates: ranked.slice(0, PER_CUISINE_CAP).map((p) => {
             const review = reviewById.get(p.placeId) ?? null;
             const tabelog = tabelogById.get(p.placeId) ?? null;
+            const yelp = yelpById.get(p.placeId) ?? null;
             return {
               placeId: p.placeId,
               name: p.name,
@@ -1147,6 +1204,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
                     priceRange: tabelog.priceRange,
                     priceJPY: tabelog.priceJPY,
                     summary: tabelog.summary,
+                  }
+                : null,
+              yelp: yelp
+                ? {
+                    rating: yelp.rating,
+                    reviewCount: yelp.reviewCount,
+                    priceLevel: yelp.priceLevel,
+                    summary: yelp.summary,
                   }
                 : null,
             };
@@ -1242,6 +1307,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 - **pros/cons 输出格式必须是 { text, source } 对象**（不是字符串）。source 取值范围："Google" / "Yelp" / "TripAdvisor" / "Tabelog" / "大众点评" / "小红书" / "美团" / "综合"（多平台一致时）。source 必须能在 realWorldReviews.sources 中找到对应来源（"Google Reviews" 归为 "Google"），禁止编造；无法归因时填 "综合"。
 - aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**当 realWorldReviews.sources 含 Yelp / TripAdvisor / Tabelog / 大众点评 / 小红书 中任一非 Google 平台时**，在 aiSummary 末尾追加${isEn ? '"(based on user reviews from <平台逗号列表>)"' : '「（综合 <平台顿号列表> 等网友评价）」'}，只列实际出现的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : "若 realWorldReviews 为空，则改为「（暂无可信网评，仅基于 Google 数据）」。"}
 - **Tabelog 信号（仅日本店铺可能有）**：仅 tabelog.priceJPY 参与硬过滤；其它字段只作展示，不参与评分。tabelog 为 null 时不要因此扣分。
+- **Yelp 信号（仅 US/CA/西欧店铺可能有）**：candidate.yelp 的所有字段（rating/reviewCount/priceLevel/summary）**仅作展示，绝不参与硬过滤、绝不参与评分**。yelp 为 null 时不要因此扣分。若 yelp.summary 与用户偏好高度吻合，可在 aiSummary 中引用（须按 source 归因到 "Yelp"）。
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
 - matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**。不要重复 hardFilterChecks 的内容。**严格限定范围**：只能围绕用户实际提到的需求来写，用户没提的维度禁止出现在 matchDetails 里（哪怕网评有相关吐槽，也只能放进 cons）。
 
@@ -1433,6 +1499,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 
             const review = reviewById.get(p.placeId) ?? null;
             const tabelogInfo = tabelogById.get(p.placeId) ?? null;
+            const yelpInfo = yelpById.get(p.placeId) ?? null;
             const restaurant = {
               id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
               name: p.name,
@@ -1447,15 +1514,16 @@ ${JSON.stringify(group.candidates, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: p.rating == null || visitMatchById.get(p.placeId) === "unknown",
-              ratings: candidateRatings(p, review, tabelogInfo, isEn, country),
+              ratings: candidateRatings(p, review, tabelogInfo, isEn, country, yelpInfo),
               aiSummary: pick.aiSummary?.trim() ||
                 `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
               matchDetails,
               pros: pick.pros,
               cons: pick.cons,
-              links: buildLinks(p, data.city, country, isEn),
+              links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
+              yelp: yelpInfo,
               weekdayDescriptions: p.weekdayDescriptions ?? null,
               visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
             };
@@ -1506,6 +1574,7 @@ ${JSON.stringify(group.candidates, null, 2)}
             const p = pool[i];
             const review = reviewById.get(p.placeId) ?? null;
             const tabelogInfo = tabelogById.get(p.placeId) ?? null;
+            const yelpInfo = yelpById.get(p.placeId) ?? null;
             const idx = restaurants.length + partialRestaurants.length;
             const score =
               p.rating != null ? Math.max(40, Math.round(p.rating * 14)) : 50;
@@ -1525,7 +1594,7 @@ ${JSON.stringify(group.candidates, null, 2)}
               openNow: p.openNow ?? true,
               reservable: false,
               needsReview: true,
-              ratings: candidateRatings(p, review, tabelogInfo, isEn, country),
+              ratings: candidateRatings(p, review, tabelogInfo, isEn, country, yelpInfo),
               aiSummary: isEn
                 ? `${p.name} — added based on Google data to complete your list of 5 recommendations. Match against your specific conditions has not been verified.`
                 : `${p.name} — 基于 Google 数据自动补充，用于凑齐 5 个推荐，未逐条核对你的具体条件。`,
@@ -1544,9 +1613,10 @@ ${JSON.stringify(group.candidates, null, 2)}
               ],
               pros: [],
               cons: [],
-              links: buildLinks(p, data.city, country, isEn),
+              links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
               photoUrls: [] as string[],
               tabelog: tabelogInfo,
+              yelp: yelpInfo,
               weekdayDescriptions: p.weekdayDescriptions ?? null,
               visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
             };
