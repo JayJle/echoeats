@@ -12,7 +12,7 @@ const I18nContext = createContext<Ctx | null>(null);
 const STORAGE_KEY = "echo-eats-lang";
 
 function detectInitial(): Lang {
-  if (typeof window === "undefined") return "zh"; // SSR fallback
+  if (typeof window === "undefined") return "en"; // SSR fallback
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved === "en" || saved === "zh") return saved;
@@ -25,7 +25,7 @@ function detectInitial(): Lang {
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
   // SSR-stable default; corrected after hydration.
-  const [lang, setLangState] = useState<Lang>("zh");
+  const [lang, setLangState] = useState<Lang>("en");
 
   useEffect(() => {
     const initial = detectInitial();
