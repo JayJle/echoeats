@@ -849,6 +849,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
   .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
     const uiLang: "zh" | "en" = data.uiLanguage ?? "zh";
     const isEn = uiLang === "en";
+    const warnings: Array<{ stage: string; cuisine?: string; message: string; retryable?: boolean }> = [];
+    const pushWarn = (w: { stage: string; cuisine?: string; message: string; retryable?: boolean }) => {
+      if (warnings.length < 10) warnings.push(w);
+    };
+    try {
     const aiKey = process.env.LOVABLE_API_KEY;
     if (!aiKey) {
       yield {
