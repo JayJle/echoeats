@@ -1775,7 +1775,23 @@ ${JSON.stringify(group.candidates, null, 2)}
             : `没有找到「${missing.join("、")}」的可靠候选`
           : null,
         suggestions: missing.length ? fallbackSuggestions(uiLang) : [],
+        warnings: warnings.length ? warnings : undefined,
       },
     };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[searchRestaurants] uncaught:", msg);
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: isEn
+            ? `Search failed unexpectedly: ${msg.slice(0, 200)}`
+            : `搜索意外失败：${msg.slice(0, 200)}`,
+          suggestions: fallbackSuggestions(uiLang),
+          warnings: warnings.length ? warnings : undefined,
+        },
+      };
+    }
   });
 
