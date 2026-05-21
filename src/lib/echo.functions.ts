@@ -1027,6 +1027,18 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
     yield { type: "stage", stage: "places-done", count: totalCandidates };
+    for (const r of placeResults) {
+      if (!r.places.length && r.error) {
+        pushWarn({
+          stage: useDianping ? "dianping" : "places",
+          cuisine: r.cuisine,
+          message: isEn
+            ? `No candidates returned for "${r.cuisine}". Other cuisines are still shown.`
+            : `「${r.cuisine}」本次没有返回候选，其它品类照常展示。`,
+          retryable: true,
+        });
+      }
+    }
 
     const placesError = placeResults.find((r) => r.error)?.error;
     if (placesError && placeResults.every((r) => !r.places.length)) {
