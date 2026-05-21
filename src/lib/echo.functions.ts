@@ -1140,6 +1140,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         "tabelog",
       );
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
+      if (allTargets.length > 0 && tabelogById.size === 0) {
+        pushWarn({
+          stage: "tabelog",
+          message: isEn
+            ? "Tabelog data is unavailable for this search. Other sources are still shown."
+            : "本次未能取到 Tabelog 数据，其它来源照常展示。",
+          retryable: true,
+        });
+      }
     }
 
     // US/CA/西欧 分支补充：用 Perplexity 代抓 Yelp 评分+评论数+价位+摘要，与 Tabelog 同构。
@@ -1173,6 +1182,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         "yelp",
       );
       console.log(`[Yelp] hit ${yelpById.size}/${allTargets.length}`);
+      if (allTargets.length > 0 && yelpById.size === 0) {
+        pushWarn({
+          stage: "yelp",
+          message: isEn
+            ? "Yelp data is unavailable for this search. Other sources are still shown."
+            : "本次未能取到 Yelp 数据，其它来源照常展示。",
+          retryable: true,
+        });
+      }
     }
 
     // 限制送给 AI 的候选数量：每个 cuisine 分组按 (rating × log(reviewCount)) 排序取前 25
