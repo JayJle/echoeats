@@ -69,10 +69,18 @@ export type Restaurant = {
 
 export type ResultsGroup = { cuisine: string; restaurants: Restaurant[]; partialRestaurants?: Restaurant[] };
 
+export type SearchWarning = {
+  stage: string;          // "places" | "tabelog" | "yelp" | "dianping" | "cuisine-expand" | "photos" | "ai-rank"
+  cuisine?: string;
+  message: string;
+  retryable?: boolean;
+};
+
 export type SearchResults = {
   groups: ResultsGroup[];
   error: string | null;
   suggestions: string[];
+  warnings?: SearchWarning[];
 };
 
 type QueryState = {
