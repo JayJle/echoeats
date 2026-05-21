@@ -715,10 +715,18 @@ function candidateRatings(
   return rows;
 }
 
+const WarningSchema = z.object({
+  stage: z.string(),
+  cuisine: z.string().optional(),
+  message: z.string(),
+  retryable: z.boolean().optional(),
+});
+
 const SearchResponseSchema = z.object({
   groups: ResultsSchema.shape.groups,
   error: z.string().nullable(),
   suggestions: z.array(z.string()),
+  warnings: z.array(WarningSchema).optional(),
 });
 
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
