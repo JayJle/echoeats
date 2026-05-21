@@ -401,6 +401,32 @@ function ResultsPage() {
           </div>
         )}
 
+        {results.warnings && results.warnings.length > 0 && (
+          <div className="mb-6 bg-warning/10 border border-warning/30 rounded-2xl p-4">
+            <p className="text-sm font-medium text-foreground mb-2">
+              {t("results.warnings.title")}
+            </p>
+            <ul className="space-y-1.5 text-sm text-muted-foreground">
+              {results.warnings.map((w, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className="text-warning">⚠</span>
+                  <span>{w.message}</span>
+                </li>
+              ))}
+            </ul>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              onClick={runSearchAgain}
+              disabled={refining}
+            >
+              {t("results.warnings.retry")}
+            </Button>
+          </div>
+        )}
+
         {results.error && (
           <div className="mb-6 bg-warning/10 border border-warning/30 rounded-2xl p-5">
             <p className="text-sm font-medium text-foreground">{results.error}</p>

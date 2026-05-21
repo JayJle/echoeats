@@ -1,5 +1,6 @@
 // Google Places API (New) — Text Search wrapper.
 // Docs: https://developers.google.com/maps/documentation/places/web-service/text-search
+import { withRetry } from "./retry.server";
 
 export type PlaceCandidate = {
   placeId: string;
@@ -78,20 +79,26 @@ export async function searchPlaces(opts: {
   };
   if (opts.region) body.regionCode = opts.region;
 
-  const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Goog-Api-Key": apiKey,
-      "X-Goog-FieldMask": FIELD_MASK,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Google Places ${res.status}: ${text.slice(0, 300)}`);
-  }
+  const res = await withRetry(
+    (signal) =>
+      fetch("https://places.googleapis.com/v1/places:searchText", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": FIELD_MASK,
+        },
+        body: JSON.stringify(body),
+        signal,
+      }).then(async (r) => {
+        if (!r.ok) {
+          const text = await r.text();
+          throw new Error(`Google Places ${r.status}: ${text.slice(0, 300)}`);
+        }
+        return r;
+      }),
+    { label: `places.search`, retries: 2, timeoutMs: 10_000 },
+  );
 
   const json = (await res.json()) as {
     places?: Array<{
@@ -196,17 +203,21 @@ export async function resolvePhotoUrl(
 
   try {
     const url = `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidthPx}&skipHttpRedirect=true&key=${apiKey}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      photoUrlCache.set(cacheKey, null);
-      return null;
-    }
+    const res = await withRetry(
+      (signal) =>
+        fetch(url, { signal }).then(async (r) => {
+          if (!r.ok) throw new Error(`Places photo ${r.status}`);
+          return r;
+        }),
+      { label: "places.photo", retries: 1, timeoutMs: 6_000 },
+    );
     const json = (await res.json()) as { photoUri?: string };
     const photoUri = json.photoUri ?? null;
-    photoUrlCache.set(cacheKey, photoUri);
+    // 关键修复：只在成功（拿到 URL）时写缓存，避免毒化后续刷新。
+    if (photoUri) photoUrlCache.set(cacheKey, photoUri);
     return photoUri;
-  } catch {
-    photoUrlCache.set(cacheKey, null);
+  } catch (e) {
+    console.warn(`[places.photo] fail`, e instanceof Error ? e.message : e);
     return null;
   }
 }

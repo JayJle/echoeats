@@ -715,10 +715,18 @@ function candidateRatings(
   return rows;
 }
 
+const WarningSchema = z.object({
+  stage: z.string(),
+  cuisine: z.string().optional(),
+  message: z.string(),
+  retryable: z.boolean().optional(),
+});
+
 const SearchResponseSchema = z.object({
   groups: ResultsSchema.shape.groups,
   error: z.string().nullable(),
   suggestions: z.array(z.string()),
+  warnings: z.array(WarningSchema).optional(),
 });
 
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
@@ -841,6 +849,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
   .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
     const uiLang: "zh" | "en" = data.uiLanguage ?? "zh";
     const isEn = uiLang === "en";
+    const warnings: Array<{ stage: string; cuisine?: string; message: string; retryable?: boolean }> = [];
+    const pushWarn = (w: { stage: string; cuisine?: string; message: string; retryable?: boolean }) => {
+      if (warnings.length < 10) warnings.push(w);
+    };
+    try {
     const aiKey = process.env.LOVABLE_API_KEY;
     if (!aiKey) {
       yield {
@@ -1014,6 +1027,18 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
     yield { type: "stage", stage: "places-done", count: totalCandidates };
+    for (const r of placeResults) {
+      if (!r.places.length && r.error) {
+        pushWarn({
+          stage: useDianping ? "dianping" : "places",
+          cuisine: r.cuisine,
+          message: isEn
+            ? `No candidates returned for "${r.cuisine}". Other cuisines are still shown.`
+            : `「${r.cuisine}」本次没有返回候选，其它品类照常展示。`,
+          retryable: true,
+        });
+      }
+    }
 
     const placesError = placeResults.find((r) => r.error)?.error;
     if (placesError && placeResults.every((r) => !r.places.length)) {
@@ -1127,6 +1152,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         "tabelog",
       );
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
+      if (allTargets.length > 0 && tabelogById.size === 0) {
+        pushWarn({
+          stage: "tabelog",
+          message: isEn
+            ? "Tabelog data is unavailable for this search. Other sources are still shown."
+            : "本次未能取到 Tabelog 数据，其它来源照常展示。",
+          retryable: true,
+        });
+      }
     }
 
     // US/CA/西欧 分支补充：用 Perplexity 代抓 Yelp 评分+评论数+价位+摘要，与 Tabelog 同构。
@@ -1160,6 +1194,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         "yelp",
       );
       console.log(`[Yelp] hit ${yelpById.size}/${allTargets.length}`);
+      if (allTargets.length > 0 && yelpById.size === 0) {
+        pushWarn({
+          stage: "yelp",
+          message: isEn
+            ? "Yelp data is unavailable for this search. Other sources are still shown."
+            : "本次未能取到 Yelp 数据，其它来源照常展示。",
+          retryable: true,
+        });
+      }
     }
 
     // 限制送给 AI 的候选数量：每个 cuisine 分组按 (rating × log(reviewCount)) 排序取前 25
@@ -1732,7 +1775,23 @@ ${JSON.stringify(group.candidates, null, 2)}
             : `没有找到「${missing.join("、")}」的可靠候选`
           : null,
         suggestions: missing.length ? fallbackSuggestions(uiLang) : [],
+        warnings: warnings.length ? warnings : undefined,
       },
     };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[searchRestaurants] uncaught:", msg);
+      yield {
+        type: "result",
+        payload: {
+          groups: [],
+          error: isEn
+            ? `Search failed unexpectedly: ${msg.slice(0, 200)}`
+            : `搜索意外失败：${msg.slice(0, 200)}`,
+          suggestions: fallbackSuggestions(uiLang),
+          warnings: warnings.length ? warnings : undefined,
+        },
+      };
+    }
   });
 
