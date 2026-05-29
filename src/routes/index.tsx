@@ -46,6 +46,10 @@ function StepCity() {
           className="h-12 text-base"
           maxLength={80}
         />
+        <p className="flex items-start gap-2 text-xs text-muted-foreground">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" aria-hidden />
+          <span>{t("home.notice.dianping")}</span>
+        </p>
         <div className="flex justify-end">
           <Button type="submit" disabled={!value.trim()} size="lg">
             {t("common.next")}
