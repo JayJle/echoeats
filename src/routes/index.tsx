@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useState } from "react";
+import { Info } from "lucide-react";
 import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
