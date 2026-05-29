@@ -431,6 +431,8 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "Need inspiration",
+
+    "home.notice.dianping": "Due to Dianping's anti-scraping measures, results for mainland China cities may be limited. Best experience is in overseas cities.",
   },
 };
 
