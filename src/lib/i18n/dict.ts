@@ -217,6 +217,8 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "需求灵感",
+
+    "home.notice.dianping": "由于大众点评反爬机制，中国大陆地区搜索效果可能不理想，建议优先在海外城市使用。",
   },
   en: {
     "brand.tagline": "AI Restaurant Discovery Agent",
