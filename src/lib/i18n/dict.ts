@@ -477,24 +477,15 @@ export const NEED_BUBBLES: Array<{ zh: string; en: string }> = [
 export const CUISINE_SUGGESTIONS: Array<{ zh: string; en: string }> = [
   { zh: "寿司", en: "Sushi" },
   { zh: "拉面", en: "Ramen" },
-  { zh: "omakase", en: "Omakase" },
   { zh: "烧鸟", en: "Yakitori" },
-  { zh: "居酒屋", en: "Izakaya" },
   { zh: "牛排", en: "Steak" },
-  { zh: "烤肉", en: "Korean BBQ" },
+  { zh: "烤肉", en: "BBQ" },
   { zh: "火锅", en: "Hotpot" },
   { zh: "中餐", en: "Chinese" },
-  { zh: "粤式点心", en: "Dim Sum" },
   { zh: "意餐", en: "Italian" },
-  { zh: "法餐", en: "French" },
   { zh: "泰餐", en: "Thai" },
-  { zh: "印度菜", en: "Indian" },
-  { zh: "墨西哥菜", en: "Mexican" },
-  { zh: "汉堡", en: "Burger" },
-  { zh: "早午餐", en: "Brunch" },
-  { zh: "甜品", en: "Dessert" },
-  { zh: "咖啡", en: "Cafe" },
   { zh: "酒吧", en: "Bar" },
+  { zh: "咖啡", en: "Cafe" },
 ];
 
 
