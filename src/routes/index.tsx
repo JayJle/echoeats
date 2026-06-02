@@ -36,7 +36,7 @@ function StepCity() {
   };
 
   return (
-    <StepShell step={1} total={3} title={t("step1.title")} hint={t("step1.hint")}>
+    <StepShell step={1} total={3} title={t("step1.title")}>
       <form onSubmit={onSubmit} className="space-y-6">
         <Input
           autoFocus
@@ -57,5 +57,6 @@ function StepCity() {
         </div>
       </form>
     </StepShell>
+
   );
 }

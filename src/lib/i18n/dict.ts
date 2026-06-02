@@ -30,12 +30,13 @@ export const dict: Record<Lang, Dict> = {
     "meta.results.desc": "AI 跨平台搜索后的餐厅推荐结果。",
 
     "step1.title": "你想在哪个城市找餐厅？",
-    "step1.hint": "例如：Tokyo / 东京、Shanghai / 上海、Paris",
-    "step1.placeholder": "Tokyo / 东京",
+    "step1.hint": "",
+    "step1.placeholder": "例如 Tokyo / 东京、Shanghai / 上海、Paris",
 
     "step2.title": "想吃什么料理？",
     "step2.hint": "可输入多个，用逗号或空格分隔；不确定也可以跳过，由 AI 根据其它需求推荐",
-    "step2.placeholder": "牛排,居酒屋,蟹料理",
+    "step2.placeholder": "牛排,居酒屋,拉面",
+
     "cuisines.skipDialog.title": "跳过料理选择？",
     "cuisines.skipDialog.body": "让系统从你的「其它需求」自动识别品类？选「否」将按所有品类搜索。",
     "cuisines.skipDialog.auto": "是，自动识别",
@@ -244,12 +245,13 @@ export const dict: Record<Lang, Dict> = {
     "meta.results.desc": "Restaurant picks from an AI cross-platform search.",
 
     "step1.title": "Which city are you eating in?",
-    "step1.hint": "e.g. Tokyo, Shanghai, Paris",
-    "step1.placeholder": "Tokyo",
+    "step1.hint": "",
+    "step1.placeholder": "e.g. Tokyo, Shanghai, Paris",
 
     "step2.title": "What cuisine are you in the mood for?",
     "step2.hint": "Enter one or more, separated by commas or spaces. Not sure? Skip and let AI suggest based on the rest.",
-    "step2.placeholder": "steak, izakaya, crab",
+    "step2.placeholder": "steak, ramen, izakaya",
+
     "cuisines.skipDialog.title": "Skip cuisine selection?",
     "cuisines.skipDialog.body": "Let the system auto-detect cuisines from your other requirements? Choose \"No\" to search across all cuisines.",
     "cuisines.skipDialog.auto": "Yes, auto-detect",
@@ -474,15 +476,27 @@ export const NEED_BUBBLES: Array<{ zh: string; en: string }> = [
 // Cuisine suggestion chips on step 2 — bilingual.
 export const CUISINE_SUGGESTIONS: Array<{ zh: string; en: string }> = [
   { zh: "寿司", en: "Sushi" },
-  { zh: "烧鸟", en: "Yakitori" },
-  { zh: "omakase", en: "Omakase" },
   { zh: "拉面", en: "Ramen" },
-  { zh: "牛排", en: "Steak" },
+  { zh: "omakase", en: "Omakase" },
+  { zh: "烧鸟", en: "Yakitori" },
   { zh: "居酒屋", en: "Izakaya" },
-  { zh: "蟹料理", en: "Crab" },
+  { zh: "牛排", en: "Steak" },
+  { zh: "烤肉", en: "Korean BBQ" },
+  { zh: "火锅", en: "Hotpot" },
+  { zh: "中餐", en: "Chinese" },
+  { zh: "粤式点心", en: "Dim Sum" },
+  { zh: "意餐", en: "Italian" },
   { zh: "法餐", en: "French" },
+  { zh: "泰餐", en: "Thai" },
+  { zh: "印度菜", en: "Indian" },
+  { zh: "墨西哥菜", en: "Mexican" },
+  { zh: "汉堡", en: "Burger" },
+  { zh: "早午餐", en: "Brunch" },
   { zh: "甜品", en: "Dessert" },
+  { zh: "咖啡", en: "Cafe" },
+  { zh: "酒吧", en: "Bar" },
 ];
+
 
 export type TKey = keyof (typeof dict)["zh"];
 
