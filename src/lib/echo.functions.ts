@@ -795,51 +795,6 @@ function reconcileEvidenceStatus(
   return citesPositiveEvidence ? "ok" : "unknown";
 }
 
-function matchDetailTopics(text: string): Set<string> {
-  const normalized = normalizeMatchText(text);
-  const topics = new Set<string>();
-  if (verifyGoogleRatingFilter(text, null, false) || /(评分达标|評分達標|ratingmet)/i.test(normalized)) {
-    topics.add("rating");
-  }
-  if (/(near(?:by)?(?:the)?(?:station|metro|subway)|stationproximity|车站|車站|駅|地铁|地鐵|靠近车站|靠近車站)/i.test(normalized)) {
-    topics.add("station_proximity");
-  }
-  if (/(sweetflavo(?:u)?r|甜味|甜口|grilledpork|炭火(?:烤制|燒製|烧制)?|烤猪|烤豬|猪丼|豬丼|豚丼)/i.test(normalized)) {
-    topics.add("dish_preference");
-  }
-  return topics;
-}
-
-function isDuplicateOfHardFilter(detail: string, hardFilters: string[]): boolean {
-  const normalizedDetail = normalizeMatchText(detail);
-  if (!normalizedDetail) return true;
-  const detailTopics = matchDetailTopics(detail);
-  return hardFilters.some((filter) => {
-    const normalizedFilter = normalizeMatchText(filter);
-    if (!normalizedFilter) return false;
-    if (normalizedDetail.includes(normalizedFilter) || normalizedFilter.includes(normalizedDetail)) {
-      return true;
-    }
-    const filterTopics = matchDetailTopics(filter);
-    return Array.from(detailTopics).some((topic) => filterTopics.has(topic));
-  });
-}
-
-function dedupeMatchDetails(
-  details: Array<{ label: string; status: "ok" | "unknown" | "fail" }>,
-): Array<{ label: string; status: "ok" | "unknown" | "fail" }> {
-  const seen = new Set<string>();
-  const seenTopics = new Set<string>();
-  return details.filter((detail) => {
-    const key = normalizeMatchText(detail.label);
-    const topics = matchDetailTopics(detail.label);
-    if (!key || seen.has(key) || Array.from(topics).some((topic) => seenTopics.has(topic))) return false;
-    seen.add(key);
-    for (const topic of topics) seenTopics.add(topic);
-    return true;
-  });
-}
-
 function priceLevelLabel(level: string | null): string | null {
   switch (level) {
     case "PRICE_LEVEL_FREE":
