@@ -78,6 +78,52 @@ const ParsedSchema = z.object({
   uiLanguage: z.enum(["zh", "en"]).catch("zh").default("zh"),
 });
 
+const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
+  { pattern: /afternoon\s+tea|下午茶/i, hhmm: "15:00" },
+  { pattern: /late[-\s]?night(?:\s+(?:meal|food|dining))?|夜宵|宵夜/i, hhmm: "22:00" },
+  { pattern: /brunch|早午餐/i, hhmm: "10:30" },
+  { pattern: /breakfast|早餐|早饭|早飯/i, hhmm: "08:30" },
+  { pattern: /lunch|午餐|午饭|午飯|中午饭|中午飯/i, hhmm: "12:30" },
+  { pattern: /dinner|supper|晚餐|晚饭|晚飯/i, hhmm: "19:00" },
+];
+
+function inferWeekdayFromText(text: string, today: number): number | null {
+  if (/后天/.test(text)) return (today + 2) % 7;
+  if (/明天|tomorrow/i.test(text)) return (today + 1) % 7;
+  if (/今天|今晚|today|tonight/i.test(text)) return today;
+
+  const weekdayPatterns: Array<[RegExp, number]> = [
+    [/(?:周|星期|礼拜)[日天]|sunday/i, 0],
+    [/(?:周|星期|礼拜)一|monday/i, 1],
+    [/(?:周|星期|礼拜)二|tuesday/i, 2],
+    [/(?:周|星期|礼拜)三|wednesday/i, 3],
+    [/(?:周|星期|礼拜)四|thursday/i, 4],
+    [/(?:周|星期|礼拜)五|friday/i, 5],
+    [/(?:周|星期|礼拜)六|saturday/i, 6],
+  ];
+  return weekdayPatterns.find(([pattern]) => pattern.test(text))?.[1] ?? null;
+}
+
+function inferMealPeriod(text: string): { evidence: string; hhmm: string } | null {
+  for (const { pattern, hhmm } of MEAL_PERIOD_ANCHORS) {
+    const match = text.match(pattern);
+    if (match?.[0]) return { evidence: match[0], hhmm };
+  }
+  return null;
+}
+
+function inferExplicitClock(text: string): string | null {
+  const clock24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (clock24) {
+    return `${clock24[1].padStart(2, "0")}:${clock24[2]}`;
+  }
+  const clock12 = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/i);
+  if (!clock12) return null;
+  const period = clock12[3].toLowerCase();
+  const hour = (Number(clock12[1]) % 12) + (period === "pm" ? 12 : 0);
+  return `${String(hour).padStart(2, "0")}:${clock12[2] ?? "00"}`;
+}
+
 export const parseRequirements = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParseInput.parse(input))
   .handler(async ({ data }) => {
@@ -232,9 +278,11 @@ export const parseRequirements = createServerFn({ method: "POST" })
   - "周六/周日/周一" / "Saturday/Sunday/Monday..." → 直接对应
   - **有具体钟点（原文出现明确的钟表数字，如 "12:00"、"7 点"、"7pm"、"14:30"）但没有任何星期/日期词 → 默认填今天的 weekday = ${new Date().getDay()}**
   - 只有模糊时段词（"晚上"/"中午"/"tonight"/"evening" 等，没有具体钟点）且没有日期词 → null
-- \`hhmm\`：24 小时制 "HH:MM"。
+- \`hhmm\`：24 小时制 "HH:MM"。用户提到餐段就是明确的时间信号，必须推断对应锚点，不得因为没有钟表数字而遗漏。
   - 具体钟点："7 点"→"19:00"（晚上语境）/"07:00"（早上语境）；"7pm"→"19:00"；"12:30"→"12:30"；"下午 2 点半"→"14:30"
-  - 模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
+  - 餐段锚点：早餐/breakfast→"08:30"，早午餐/brunch→"10:30"，午餐/午饭/lunch→"12:30"，下午茶/afternoon tea→"15:00"，晚餐/晚饭/dinner/supper→"19:00"，夜宵/宵夜/late-night meal→"22:00"
+  - 其它模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
+  - 同时出现餐段和具体钟点时，始终以用户的具体钟点为准，例如 "brunch at 11:30"→"11:30"
   - 没有时间信号 → null
 - \`raw\`：原话直接抄过来，用于 UI 展示，例如 "周六晚上 7 点"。
 
@@ -246,7 +294,11 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 输入「晚上去」→ \`{"mentioned":true,"evidence":"晚上","weekday":null,"hhmm":"19:00","raw":"晚上"}\`（只有模糊时段，不过滤）
 - 输入「12:00 去吃」→ \`{"mentioned":true,"evidence":"12:00","weekday":${new Date().getDay()},"hhmm":"12:00","raw":"12:00"}\`（具体钟点无日期 → 默认今天）
 - 输入「7pm sushi」→ \`{"mentioned":true,"evidence":"7pm","weekday":${new Date().getDay()},"hhmm":"19:00","raw":"7pm"}\`
-- 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\``;
+- 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\`
+- 输入「Saturday brunch」→ \`{"mentioned":true,"evidence":"Saturday brunch","weekday":6,"hhmm":"10:30","raw":"Saturday brunch"}\`
+- 输入「dinner tomorrow」→ \`{"mentioned":true,"evidence":"dinner tomorrow","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"19:00","raw":"dinner tomorrow"}\`
+- 输入「周日早午餐」→ \`{"mentioned":true,"evidence":"周日早午餐","weekday":0,"hhmm":"10:30","raw":"周日早午餐"}\`
+- 输入「brunch place」→ \`{"mentioned":true,"evidence":"brunch","weekday":null,"hhmm":"10:30","raw":"brunch"}\`（保留餐段意图，但不虚构日期、不做指定星期硬过滤）`;
 
     const runOnce = async (modelId: string, opts?: { forceInfer?: boolean }) => {
       const model = gateway(modelId);
@@ -320,17 +372,52 @@ export const parseRequirements = createServerFn({ method: "POST" })
       parsed: z.infer<typeof ParsedSchema>,
     ): z.infer<typeof ParsedSchema> => {
       const vt = parsed.visitTime;
-      if (!vt || !vt.mentioned) {
-        return { ...parsed, visitTime: null };
+      const mealPeriod = inferMealPeriod(data.freeText ?? "");
+      const explicitClock = inferExplicitClock(data.freeText ?? "");
+      const inferredWeekday = inferWeekdayFromText(data.freeText ?? "", new Date().getDay());
+      if ((!vt || !vt.mentioned) && mealPeriod) {
+        return {
+          ...parsed,
+          visitTime: {
+            mentioned: true,
+            evidence: mealPeriod.evidence,
+            weekday: inferredWeekday,
+            hhmm: explicitClock ?? mealPeriod.hhmm,
+            raw: mealPeriod.evidence,
+          },
+        };
       }
+      if (!vt || !vt.mentioned) return { ...parsed, visitTime: null };
       // evidence 必须真实出现在原文里（大小写/空格归一化），防 AI 幻觉
       const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
       const ev = norm(vt.evidence ?? "");
       const src = norm(data.freeText ?? "");
       if (!ev || !src.includes(ev)) {
+        if (mealPeriod) {
+          return {
+            ...parsed,
+            visitTime: {
+              mentioned: true,
+              evidence: mealPeriod.evidence,
+              weekday: inferredWeekday,
+              hhmm: explicitClock ?? vt.hhmm ?? mealPeriod.hhmm,
+              raw: mealPeriod.evidence,
+            },
+          };
+        }
         return { ...parsed, visitTime: null };
       }
-      // 必须 weekday + hhmm 都齐才用于过滤
+      if (mealPeriod) {
+        return {
+          ...parsed,
+          visitTime: {
+            ...vt,
+            weekday: vt.weekday ?? inferredWeekday,
+            hhmm: explicitClock ?? vt.hhmm ?? mealPeriod.hhmm,
+          },
+        };
+      }
+      // 非餐段时间仍要求 weekday + hhmm 都齐才用于过滤
       if (vt.weekday == null || !vt.hhmm) {
         return { ...parsed, visitTime: null };
       }
