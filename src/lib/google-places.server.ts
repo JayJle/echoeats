@@ -101,15 +101,32 @@ function locationClearlyOutsideRegion(
   }
 }
 
+function locationClearlyOutsideTargetCity(
+  location: PlaceCandidate["location"],
+  city: string,
+): boolean {
+  if (!location) return false;
+  const normalizedCity = city.toLowerCase().replace(/\s+/g, "");
+  if (!/(?:tokyo|东京|東京|東京都)/i.test(normalizedCity)) return false;
+  const { lat, lng } = location;
+  // Generous Greater Tokyo bounds: reject clearly remote Japanese results without
+  // excluding nearby metro-area restaurants that users reasonably consider Tokyo.
+  return lat < 34.9 || lat > 36.2 || lng < 138.8 || lng > 140.6;
+}
+
 export function isPlaceClearlyOutsideTargetRegion(
   place: Pick<PlaceCandidate, "address" | "location">,
   targetRegion: string | undefined,
+  targetCity = "",
 ): boolean {
   const region = targetRegion?.toUpperCase();
   if (!region) return false;
   const addressRegion = regionFromAddress(place.address);
   if (addressRegion && addressRegion !== region) return true;
-  return locationClearlyOutsideRegion(place.location, region);
+  return (
+    locationClearlyOutsideRegion(place.location, region) ||
+    locationClearlyOutsideTargetCity(place.location, targetCity)
+  );
 }
 
 export async function searchPlaces(opts: {
