@@ -1149,7 +1149,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           }
           const allPlaces = Array.from(merged.values());
           const inRegionPlaces = allPlaces.filter((place) => {
-            const outside = isPlaceClearlyOutsideTargetRegion(place, region);
+            const outside = isPlaceClearlyOutsideTargetRegion(place, region, data.city);
             if (outside) {
               console.warn(
                 `[places/location] removed outside target region=${region || "unknown"} city="${data.city}" place="${place.name}" address="${place.address}"`,
