@@ -543,7 +543,7 @@ const readableStringFrom = (value: unknown, fallback = "") => {
 
 const MatchDetailSchema = z.preprocess(
   (v) => {
-    if (typeof v === "string") return { label: v, status: "warn" };
+    if (typeof v === "string") return { label: v, status: "unknown" };
     if (v && typeof v === "object") {
       const obj = v as Record<string, unknown>;
       const label =
@@ -557,12 +557,12 @@ const MatchDetailSchema = z.preprocess(
         readableStringFrom(obj.evidence) ||
         readableStringFrom(obj.summary) ||
         "Verification detail";
-      return { ...obj, label, status: obj.status ?? "warn" };
+      return { ...obj, label, status: obj.status ?? "unknown" };
     }
-    return { label: "Verification detail", status: "warn" };
+    return { label: "", status: "unknown" };
   },
   z.object({
-    label: z.string().catch("Verification detail"),
+    label: z.string().catch(""),
     // 保持旧版容错：模型偶发返回纯字符串、text/note 字段或非白名单状态时，不丢弃整批核验结果。
     status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
   }),
@@ -677,6 +677,42 @@ function verifyGoogleRatingFilter(
       ? `Google Maps rating is ${rating.toFixed(1)} / 5; requirement: ${comparator} ${threshold}`
       : `Google Maps 实际评分 ${rating.toFixed(1)} / 5；要求 ${comparator} ${threshold} 分`,
   };
+}
+
+function normalizeMatchText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[✓✔✗✘?？⚠]/g, "")
+    .replace(/(google\s*maps?|谷歌(?:地图)?|グーグル)/gi, "google")
+    .replace(/(硬条件(?:未满足|待核实)?|constraint(?: not met| to verify)?)/gi, "")
+    .replace(/[\s:：,，。;；·—_\-()[\]{}]/g, "");
+}
+
+function isDuplicateOfHardFilter(detail: string, hardFilters: string[]): boolean {
+  const normalizedDetail = normalizeMatchText(detail);
+  if (!normalizedDetail) return true;
+  return hardFilters.some((filter) => {
+    const normalizedFilter = normalizeMatchText(filter);
+    if (!normalizedFilter) return false;
+    if (normalizedDetail.includes(normalizedFilter) || normalizedFilter.includes(normalizedDetail)) {
+      return true;
+    }
+    const detailRating = verifyGoogleRatingFilter(detail, null, false);
+    const filterRating = verifyGoogleRatingFilter(filter, null, false);
+    return detailRating !== null && filterRating !== null;
+  });
+}
+
+function dedupeMatchDetails(
+  details: Array<{ label: string; status: "ok" | "warn" }>,
+): Array<{ label: string; status: "ok" | "warn" }> {
+  const seen = new Set<string>();
+  return details.filter((detail) => {
+    const key = normalizeMatchText(detail.label);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function priceLevelLabel(level: string | null): string | null {
