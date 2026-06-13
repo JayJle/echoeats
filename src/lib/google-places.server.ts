@@ -62,6 +62,73 @@ export function guessRegionCode(city: string): string | undefined {
   return undefined;
 }
 
+const REGION_ADDRESS_MARKERS: Record<string, RegExp> = {
+  JP: /(?:日本|japan|〒)/i,
+  HK: /(?:香港|hong\s*kong|hong\s*kong\s*sar)/i,
+  MO: /(?:澳门|澳門|macao|macau)/i,
+  TW: /(?:台湾|臺灣|taiwan)/i,
+  KR: /(?:韩国|韓國|대한민국|south\s*korea|korea)/i,
+  CN: /(?:中国|中國|china)/i,
+  SG: /(?:新加坡|singapore)/i,
+};
+
+function regionFromAddress(address: string): string | null {
+  for (const [region, marker] of Object.entries(REGION_ADDRESS_MARKERS)) {
+    if (marker.test(address)) return region;
+  }
+  return null;
+}
+
+function locationClearlyOutsideRegion(
+  location: PlaceCandidate["location"],
+  region: string,
+): boolean {
+  if (!location) return false;
+  const { lat, lng } = location;
+  switch (region) {
+    case "JP":
+      return lat < 23 || lat > 47 || lng < 122 || lng > 146;
+    case "HK":
+      return lat < 22.1 || lat > 22.7 || lng < 113.8 || lng > 114.5;
+    case "SG":
+      return lat < 1.1 || lat > 1.6 || lng < 103.5 || lng > 104.2;
+    case "KR":
+      return lat < 32.8 || lat > 39 || lng < 124 || lng > 132;
+    case "TW":
+      return lat < 21.5 || lat > 26.5 || lng < 119 || lng > 122.5;
+    default:
+      return false;
+  }
+}
+
+function locationClearlyOutsideTargetCity(
+  location: PlaceCandidate["location"],
+  city: string,
+): boolean {
+  if (!location) return false;
+  const normalizedCity = city.toLowerCase().replace(/\s+/g, "");
+  if (!/(?:tokyo|东京|東京|東京都)/i.test(normalizedCity)) return false;
+  const { lat, lng } = location;
+  // Generous Greater Tokyo bounds: reject clearly remote Japanese results without
+  // excluding nearby metro-area restaurants that users reasonably consider Tokyo.
+  return lat < 34.9 || lat > 36.2 || lng < 138.8 || lng > 140.6;
+}
+
+export function isPlaceClearlyOutsideTargetRegion(
+  place: Pick<PlaceCandidate, "address" | "location">,
+  targetRegion: string | undefined,
+  targetCity = "",
+): boolean {
+  const region = targetRegion?.toUpperCase();
+  if (!region) return false;
+  const addressRegion = regionFromAddress(place.address);
+  if (addressRegion && addressRegion !== region) return true;
+  return (
+    locationClearlyOutsideRegion(place.location, region) ||
+    locationClearlyOutsideTargetCity(place.location, targetCity)
+  );
+}
+
 export async function searchPlaces(opts: {
   query: string;
   language: string;

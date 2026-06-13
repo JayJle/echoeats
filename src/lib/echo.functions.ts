@@ -369,6 +369,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 import {
   guessLanguageCode,
   guessRegionCode,
+  isPlaceClearlyOutsideTargetRegion,
   resolvePhotoUrl,
   searchPlaces,
   type PlaceCandidate,
@@ -543,7 +544,7 @@ const readableStringFrom = (value: unknown, fallback = "") => {
 
 const MatchDetailSchema = z.preprocess(
   (v) => {
-    if (typeof v === "string") return { label: v, status: "warn" };
+    if (typeof v === "string") return { label: v, status: "unknown" };
     if (v && typeof v === "object") {
       const obj = v as Record<string, unknown>;
       const label =
@@ -557,14 +558,14 @@ const MatchDetailSchema = z.preprocess(
         readableStringFrom(obj.evidence) ||
         readableStringFrom(obj.summary) ||
         "Verification detail";
-      return { ...obj, label, status: obj.status ?? "warn" };
+      return { ...obj, label, status: obj.status ?? "unknown" };
     }
-    return { label: "Verification detail", status: "warn" };
+    return { label: "", status: "unknown" };
   },
   z.object({
-    label: z.string().catch("Verification detail"),
-    // 保持旧版容错：模型偶发返回纯字符串、text/note 字段或非白名单状态时，不丢弃整批核验结果。
-    status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
+    label: z.string().catch(""),
+    // 非法/缺失状态不猜测为警告；下游会丢弃这类不可靠的自由文本明细。
+    status: z.enum(["ok", "warn", "unknown"]).catch("unknown"),
   }),
 );
 
@@ -659,7 +660,7 @@ function verifyGoogleRatingFilter(
     passes = rating <= threshold;
   } else if (/(?:低于|少于|小于|below|under|less than|<)/i.test(text)) {
     passes = rating < threshold;
-  } else if (/(?:超过|高于|大于|above|over|greater than|more than|>)/i.test(text)) {
+  } else if (/(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i.test(text)) {
     passes = rating > threshold;
   } else {
     passes = rating >= threshold;
@@ -668,7 +669,7 @@ function verifyGoogleRatingFilter(
     ? "≤"
     : /(?:低于|少于|小于|below|under|less than|<)/i.test(text)
       ? "<"
-      : /(?:超过|高于|大于|above|over|greater than|more than|>)/i.test(text)
+      : /(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i.test(text)
         ? ">"
         : "≥";
   return {
@@ -677,6 +678,42 @@ function verifyGoogleRatingFilter(
       ? `Google Maps rating is ${rating.toFixed(1)} / 5; requirement: ${comparator} ${threshold}`
       : `Google Maps 实际评分 ${rating.toFixed(1)} / 5；要求 ${comparator} ${threshold} 分`,
   };
+}
+
+function normalizeMatchText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[✓✔✗✘?？⚠]/g, "")
+    .replace(/(google\s*maps?|谷歌(?:地图)?|グーグル)/gi, "google")
+    .replace(/(硬条件(?:未满足|待核实)?|constraint(?: not met| to verify)?)/gi, "")
+    .replace(/[\s:：,，。;；·—_\-()[\]{}]/g, "");
+}
+
+function isDuplicateOfHardFilter(detail: string, hardFilters: string[]): boolean {
+  const normalizedDetail = normalizeMatchText(detail);
+  if (!normalizedDetail) return true;
+  return hardFilters.some((filter) => {
+    const normalizedFilter = normalizeMatchText(filter);
+    if (!normalizedFilter) return false;
+    if (normalizedDetail.includes(normalizedFilter) || normalizedFilter.includes(normalizedDetail)) {
+      return true;
+    }
+    const detailRating = verifyGoogleRatingFilter(detail, null, false);
+    const filterRating = verifyGoogleRatingFilter(filter, null, false);
+    return detailRating !== null && filterRating !== null;
+  });
+}
+
+function dedupeMatchDetails(
+  details: Array<{ label: string; status: "ok" | "warn" }>,
+): Array<{ label: string; status: "ok" | "warn" }> {
+  const seen = new Set<string>();
+  return details.filter((detail) => {
+    const key = normalizeMatchText(detail.label);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function priceLevelLabel(level: string | null): string | null {
@@ -958,10 +995,10 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       };
       return;
     }
-    // country/language 优先取 AI parse 结果，正则只做 fallback
+    // 已知城市优先使用确定性国家映射，避免 AI 偶发把东京解析成香港等错误地区。
     const country =
-      (data.country && data.country.toUpperCase()) ||
       guessRegionCode(data.city) ||
+      (data.country && data.country.toUpperCase()) ||
       (isMainlandChinaCity(data.city) ? "CN" : "");
     const useDianping = country === "CN";
 
@@ -1111,7 +1148,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             }
           }
           const allPlaces = Array.from(merged.values());
-          const places = filterByCuisineRelevance(allPlaces, expansion);
+          const inRegionPlaces = allPlaces.filter((place) => {
+            const outside = isPlaceClearlyOutsideTargetRegion(place, region, data.city);
+            if (outside) {
+              console.warn(
+                `[places/location] removed outside target region=${region || "unknown"} city="${data.city}" place="${place.name}" address="${place.address}"`,
+              );
+            }
+            return !outside;
+          });
+          const places = filterByCuisineRelevance(inRegionPlaces, expansion);
           return { cuisine, places, error: places.length ? null : firstError };
         }),
       );
@@ -1395,7 +1441,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
     : `- 「${group.cuisine}」：（无额外扩展）`;
 
-  return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。
+  return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。${langDirective}
 
 用户需求：
 - 城市：${data.city}
@@ -1422,6 +1468,8 @@ ${JSON.stringify(group.candidates, null, 2)}
 ## 铁律
 - **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
 - **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
+- **hardFilterChecks 是硬条件的唯一输出位置**：matchDetails 不得复述、改写或重复任何硬条件（包括 Google 评分阈值）。
+- **matchDetails 只写用户实际提出的非硬条件匹配点**：不要新增用户没提到的维度；没有可靠的额外匹配点就返回空数组。
 - **状态判定依据**：
   - "ok": 明确证据支持。
   - "fail": 明确证据证实不满足。
@@ -1603,9 +1651,11 @@ ${JSON.stringify(group.candidates, null, 2)}
                 },
           };
         });
-        const hasFail = checks.some(({ check }) => check.status === "fail");
+        const hasBlockingFail = checks.some(
+          ({ filter, check }) => check.status === "fail" && filter.weight >= 0.85,
+        );
         const hasUnknown = checks.some(({ check }) => check.status === "unknown");
-        const verificationStatus = hasFail ? "fail" : hasUnknown ? "unknown" : "ok";
+        const verificationStatus = hasBlockingFail ? "fail" : hasUnknown ? "unknown" : "ok";
         const failedWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "fail" ? filter.weight : 0), 0);
         const failedCount = checks.filter(({ check }) => check.status === "fail").length;
         const unknownWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "unknown" ? filter.weight : 0), 0);
@@ -1613,16 +1663,24 @@ ${JSON.stringify(group.candidates, null, 2)}
         const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
         const hardDetails = checks.map(({ filter, check }) => ({
           label: check.status === "ok"
-            ? (isEn ? `✓ Constraint: ${filter.text}` : `✓ 硬条件：${filter.text}`)
+            ? (isEn ? `Constraint: ${filter.text}` : `硬条件：${filter.text}`)
             : check.status === "fail"
-              ? (isEn ? `✗ Constraint not met: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `✗ 硬条件未满足：${filter.text}${check.note ? ` — ${check.note}` : ""}`)
-              : (isEn ? `? Constraint to verify: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `？ 硬条件待核实：${filter.text}${check.note ? ` — ${check.note}` : ""}`),
+              ? (isEn ? `Constraint not met: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${filter.text}${check.note ? ` — ${check.note}` : ""}`)
+              : (isEn ? `Constraint to verify: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${filter.text}${check.note ? ` — ${check.note}` : ""}`),
           status: (check.status === "ok" ? "ok" : "warn") as "ok" | "warn",
         }));
-        const aiDetails = (pick?.matchDetails ?? []).slice(0, 5).map((detail) => ({
-          label: detail.label,
-          status: (detail.status === "ok" ? "ok" : "warn") as "ok" | "warn",
-        }));
+        const aiDetails = (pick?.matchDetails ?? [])
+          .filter(
+            (detail) =>
+              detail.status !== "unknown" &&
+              !isDuplicateOfHardFilter(detail.label, data.hardFilters.map((filter) => filter.text)),
+          )
+          .slice(0, 5)
+          .map((detail) => ({
+            label: detail.label,
+            status: (detail.status === "ok" ? "ok" : "warn") as "ok" | "warn",
+          }));
+        const matchDetails = dedupeMatchDetails([...hardDetails, ...aiDetails]).slice(0, 8);
         const review = reviewById.get(p.placeId) ?? null;
         const tabelogInfo = tabelogById.get(p.placeId) ?? null;
         const yelpInfo = yelpById.get(p.placeId) ?? null;
@@ -1645,7 +1703,7 @@ ${JSON.stringify(group.candidates, null, 2)}
           aiSummary: pick?.aiSummary?.trim() || (isEn
             ? `${p.name} was retained because its detailed conditions could not be fully verified.`
             : `${p.name} 因资料不足暂时保留，具体条件尚未完全核实。`),
-          matchDetails: [...hardDetails, ...aiDetails].slice(0, 8),
+          matchDetails,
           pros: pick?.pros ?? [],
           cons: pick?.cons ?? [],
           links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
