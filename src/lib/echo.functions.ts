@@ -651,8 +651,7 @@ const MatchDetailSchema = z.preprocess(
   },
   z.object({
     label: z.string().catch(""),
-    // 非法/缺失状态不猜测为警告；下游会丢弃这类不可靠的自由文本明细。
-    status: z.enum(["ok", "warn", "unknown"]).catch("unknown"),
+    status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
   }),
 );
 
@@ -782,6 +781,18 @@ function cleanMatchLabel(text: string): string {
     .replace(/^[✓✔✗✘?？⚠!！]+\s*/g, "")
     .replace(/^(?:constraint(?: not met| to verify)?|硬条件(?:未满足|待核实)?)\s*[:：-]?\s*/i, "")
     .trim();
+}
+
+function reconcileEvidenceStatus(
+  status: "ok" | "unknown" | "fail",
+  evidence: string | undefined,
+): "ok" | "unknown" | "fail" {
+  if (status !== "unknown" || !evidence?.trim()) return status;
+  const text = evidence.trim();
+  const saysUncertain = /(无(?:法|从|相关)?(?:资料|信息|证据|评论)|未(?:知|提及|说明|确认|找到)|没有(?:资料|信息|证据|评论|提及)|资料不足|信息不足|待核实|无法确认|不(?:能|足以)确认|unknown|unclear|unavailable|insufficient|no (?:relevant )?(?:data|information|evidence|review)|not (?:mentioned|confirmed|verified)|cannot (?:confirm|verify|determine))/i.test(text);
+  if (saysUncertain) return "unknown";
+  const citesPositiveEvidence = /(明确(?:指出|提到|显示|表明|支持|强调)|评论(?:指出|提到|显示|表明|称|强调|赞扬)|证据(?:显示|表明|支持)|资料(?:显示|表明|支持)|实际(?:为|有|达到)|符合|满足|达标|支持该条件|explicitly (?:states?|mentions?|shows?|supports?|confirms?)|reviews? (?:state|mention|note|say|show|confirm|praise|highlight)|evidence (?:shows?|supports?|confirms?)|is confirmed|requirement (?:is )?met)/i.test(text);
+  return citesPositiveEvidence ? "ok" : "unknown";
 }
 
 function matchDetailTopics(text: string): Set<string> {
