@@ -766,15 +766,6 @@ function verifyGoogleRatingFilter(
   };
 }
 
-function normalizeMatchText(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[✓✔✗✘?？⚠]/g, "")
-    .replace(/(google\s*maps?|谷歌(?:地图)?|グーグル)/gi, "google")
-    .replace(/(硬条件(?:未满足|待核实)?|constraint(?: not met| to verify)?)/gi, "")
-    .replace(/[\s:：,，。;；·—_\-()[\]{}]/g, "");
-}
-
 function cleanMatchLabel(text: string): string {
   return text
     .trim()
