@@ -550,18 +550,21 @@ const AiPickSchema = z.object({
   )).default([]),
   matchDetails: z
     .array(
-      z.object({
-        label: z.string(),
-        // 模型偶发返回 "unknown"/"fail"/"pending" 等非白名单值——一律兜底为 warn，
-        // 避免整个 AI 排序因为 schema 校验失败被打掉。下游归一化时统一映射为 warn。
-        status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
-      }),
+      z.preprocess(
+        (v) => (typeof v === "string" ? { label: v, status: "warn" } : v),
+        z.object({
+          label: z.string(),
+          // 保持旧版容错：模型偶发返回纯字符串或非白名单状态时，不丢弃整批核验结果。
+          status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
+        }),
+      ),
     )
     .default([]),
   hardFilterChecks: z
     .array(
       z.object({
-        filter: z.string(),
+        // 部分模型只返回 status/note；下游会按数组位置重新对应原始硬条件。
+        filter: z.string().optional().default(""),
         status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
         note: z.string().optional(),
       }),
@@ -595,7 +598,8 @@ function verifyGoogleRatingFilter(
   isEn: boolean,
 ): { status: "ok" | "unknown" | "fail"; note: string } | null {
   const text = filterText.toLowerCase();
-  if (!/(google|谷歌|グーグル)/i.test(text) || !/(评分|評分|rating|ratings|星)/i.test(text)) {
+  // 用户常写“谷歌 4.5 以上”，不一定显式包含“评分”二字。
+  if (!/(google(?:\s+maps)?|谷歌(?:地图)?|グーグル)/i.test(text)) {
     return null;
   }
   const thresholdMatch = text.match(/([1-5](?:\.\d+)?)\s*(?:分|星|\/\s*5)?/);
@@ -616,11 +620,18 @@ function verifyGoogleRatingFilter(
   } else {
     passes = rating >= threshold;
   }
+  const comparator = /(?:不超过|至多|最高|以下|不高于|at most|no more than|up to|<=|≤)/i.test(text)
+    ? "≤"
+    : /(?:低于|少于|小于|below|under|less than|<)/i.test(text)
+      ? "<"
+      : /(?:超过|高于|大于|above|over|greater than|more than|>)/i.test(text)
+        ? ">"
+        : "≥";
   return {
     status: passes ? "ok" : "fail",
     note: isEn
-      ? `Google Maps rating is ${rating.toFixed(1)} / 5; required threshold is ${threshold}`
-      : `Google Maps 实际评分 ${rating.toFixed(1)} / 5，要求 ${threshold} 分`,
+      ? `Google Maps rating is ${rating.toFixed(1)} / 5; requirement: ${comparator} ${threshold}`
+      : `Google Maps 实际评分 ${rating.toFixed(1)} / 5；要求 ${comparator} ${threshold} 分`,
   };
 }
 
