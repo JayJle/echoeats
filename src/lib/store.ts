@@ -71,6 +71,7 @@ export type Restaurant = {
 export type ResultsGroup = {
   cuisine: string;
   restaurants: Restaurant[];
+  okRestaurants?: Restaurant[];
   partialRestaurants?: Restaurant[];
   failedRestaurants?: Restaurant[];
 };
