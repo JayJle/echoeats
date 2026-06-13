@@ -1775,11 +1775,13 @@ ${JSON.stringify(group.candidates, null, 2)}
             filter,
             check: deterministicRatingCheck
               ? { filter: filter.text, ...deterministicRatingCheck }
-              : aiCheck ?? {
-                  filter: filter.text,
-                  status: "unknown" as const,
-                  note: isEn ? "Verification incomplete" : "核验未完成",
-                },
+              : aiCheck
+                ? { ...aiCheck, status: reconcileEvidenceStatus(aiCheck.status, aiCheck.note) }
+                : {
+                    filter: filter.text,
+                    status: "unknown" as const,
+                    note: isEn ? "Verification incomplete" : "核验未完成",
+                  },
           };
         });
         const hasBlockingFail = checks.some(
@@ -1800,18 +1802,22 @@ ${JSON.stringify(group.candidates, null, 2)}
               : (isEn ? `Constraint to verify: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`),
           status: check.status,
         }));
-        const aiDetails = (pick?.matchDetails ?? [])
-          .filter(
-            (detail) =>
-              detail.status === "ok" &&
-              !isDuplicateOfHardFilter(detail.label, data.hardFilters.map((filter) => filter.text)),
-          )
-          .slice(0, 5)
-          .map((detail) => ({
-            label: cleanMatchLabel(detail.label),
-            status: "ok" as const,
-          }));
-        const matchDetails = dedupeMatchDetails([...hardDetails, ...aiDetails]).slice(0, 8);
+        const aiDetails = pick?.matchDetails ?? [];
+        const nonHardDetails = nonHardFilters.map((condition, conditionIndex) => {
+          const detail = aiDetails[conditionIndex];
+          const evidence = detail?.label ? cleanMatchLabel(detail.label) : "";
+          const status = detail
+            ? reconcileEvidenceStatus(detail.status, evidence)
+            : "unknown" as const;
+          const fallback = isEn ? "No supporting information found" : "暂无相关资料";
+          return {
+            label: `${cleanMatchLabel(condition.text)} — ${evidence || fallback}`,
+            status,
+          };
+        });
+        // User conditions are intentionally not topic-deduplicated: every parsed filter
+        // must remain visible in matching details, in its original category order.
+        const matchDetails = [...hardDetails, ...nonHardDetails];
         const review = reviewById.get(p.placeId) ?? null;
         const tabelogInfo = tabelogById.get(p.placeId) ?? null;
         const yelpInfo = yelpById.get(p.placeId) ?? null;
