@@ -844,8 +844,8 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
         <ul className="space-y-1 text-sm">
           {r.matchDetails.map((d, i) => (
             <li key={i} className="flex gap-2">
-              <span className={d.status === "ok" ? "text-success" : "text-warning"}>
-                {d.status === "ok" ? "✓" : "⚠"}
+              <span className={d.status === "ok" ? "text-success" : d.status === "fail" ? "text-destructive" : "text-warning"}>
+                {d.status === "ok" ? "✓" : d.status === "fail" ? "✕" : "⚠"}
               </span>
               <span>{d.label}</span>
             </li>
