@@ -494,7 +494,7 @@ const RestaurantSchema = z.object({
   verificationStatus: z.enum(["ok", "unknown", "fail"]).optional().default("unknown"),
   ratings: z.array(z.object({ platform: z.string(), score: z.string().nullable() })),
   aiSummary: z.string(),
-  matchDetails: z.array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) })),
+  matchDetails: z.array(z.object({ label: z.string(), status: z.enum(["ok", "unknown", "fail"]) })),
   pros: z.array(z.object({ text: z.string(), source: z.string().nullable().optional() })),
   cons: z.array(z.object({ text: z.string(), source: z.string().nullable().optional() })),
   links: z.array(z.object({ label: z.string(), url: z.string() })),
@@ -689,29 +689,47 @@ function normalizeMatchText(text: string): string {
     .replace(/[\s:：,，。;；·—_\-()[\]{}]/g, "");
 }
 
+function matchDetailTopics(text: string): Set<string> {
+  const normalized = normalizeMatchText(text);
+  const topics = new Set<string>();
+  if (verifyGoogleRatingFilter(text, null, false) || /(评分达标|評分達標|ratingmet)/i.test(normalized)) {
+    topics.add("rating");
+  }
+  if (/(near(?:by)?(?:the)?(?:station|metro|subway)|stationproximity|车站|車站|駅|地铁|地鐵|靠近车站|靠近車站)/i.test(normalized)) {
+    topics.add("station_proximity");
+  }
+  if (/(sweetflavo(?:u)?r|甜味|甜口|grilledpork|炭火(?:烤制|燒製|烧制)?|烤猪|烤豬|猪丼|豬丼|豚丼)/i.test(normalized)) {
+    topics.add("dish_preference");
+  }
+  return topics;
+}
+
 function isDuplicateOfHardFilter(detail: string, hardFilters: string[]): boolean {
   const normalizedDetail = normalizeMatchText(detail);
   if (!normalizedDetail) return true;
+  const detailTopics = matchDetailTopics(detail);
   return hardFilters.some((filter) => {
     const normalizedFilter = normalizeMatchText(filter);
     if (!normalizedFilter) return false;
     if (normalizedDetail.includes(normalizedFilter) || normalizedFilter.includes(normalizedDetail)) {
       return true;
     }
-    const detailRating = verifyGoogleRatingFilter(detail, null, false);
-    const filterRating = verifyGoogleRatingFilter(filter, null, false);
-    return detailRating !== null && filterRating !== null;
+    const filterTopics = matchDetailTopics(filter);
+    return Array.from(detailTopics).some((topic) => filterTopics.has(topic));
   });
 }
 
 function dedupeMatchDetails(
-  details: Array<{ label: string; status: "ok" | "warn" }>,
-): Array<{ label: string; status: "ok" | "warn" }> {
+  details: Array<{ label: string; status: "ok" | "unknown" | "fail" }>,
+): Array<{ label: string; status: "ok" | "unknown" | "fail" }> {
   const seen = new Set<string>();
+  const seenTopics = new Set<string>();
   return details.filter((detail) => {
     const key = normalizeMatchText(detail.label);
-    if (!key || seen.has(key)) return false;
+    const topics = matchDetailTopics(detail.label);
+    if (!key || seen.has(key) || Array.from(topics).some((topic) => seenTopics.has(topic))) return false;
     seen.add(key);
+    for (const topic of topics) seenTopics.add(topic);
     return true;
   });
 }
@@ -1470,6 +1488,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 - **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
 - **hardFilterChecks 是硬条件的唯一输出位置**：matchDetails 不得复述、改写或重复任何硬条件（包括 Google 评分阈值）。
 - **matchDetails 只写用户实际提出的非硬条件匹配点**：不要新增用户没提到的维度；没有可靠的额外匹配点就返回空数组。
+- **禁止同义重复**：如果 hardFilterChecks 已包含某个主题，matchDetails 不得用另一种语言或近义表达再次输出；尤其禁止重复 Google 评分、靠近车站/地铁、菜品口味等条件。
 - **状态判定依据**：
   - "ok": 明确证据支持。
   - "fail": 明确证据证实不满足。
@@ -1667,18 +1686,18 @@ ${JSON.stringify(group.candidates, null, 2)}
             : check.status === "fail"
               ? (isEn ? `Constraint not met: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${filter.text}${check.note ? ` — ${check.note}` : ""}`)
               : (isEn ? `Constraint to verify: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${filter.text}${check.note ? ` — ${check.note}` : ""}`),
-          status: (check.status === "ok" ? "ok" : "warn") as "ok" | "warn",
+          status: check.status,
         }));
         const aiDetails = (pick?.matchDetails ?? [])
           .filter(
             (detail) =>
-              detail.status !== "unknown" &&
+              detail.status === "ok" &&
               !isDuplicateOfHardFilter(detail.label, data.hardFilters.map((filter) => filter.text)),
           )
           .slice(0, 5)
           .map((detail) => ({
             label: detail.label,
-            status: (detail.status === "ok" ? "ok" : "warn") as "ok" | "warn",
+            status: "ok" as const,
           }));
         const matchDetails = dedupeMatchDetails([...hardDetails, ...aiDetails]).slice(0, 8);
         const review = reviewById.get(p.placeId) ?? null;
