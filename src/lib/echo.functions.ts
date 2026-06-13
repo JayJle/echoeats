@@ -112,6 +112,18 @@ function inferMealPeriod(text: string): { evidence: string; hhmm: string } | nul
   return null;
 }
 
+function inferExplicitClock(text: string): string | null {
+  const clock24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (clock24) {
+    return `${clock24[1].padStart(2, "0")}:${clock24[2]}`;
+  }
+  const clock12 = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/i);
+  if (!clock12) return null;
+  const period = clock12[3].toLowerCase();
+  const hour = (Number(clock12[1]) % 12) + (period === "pm" ? 12 : 0);
+  return `${String(hour).padStart(2, "0")}:${clock12[2] ?? "00"}`;
+}
+
 export const parseRequirements = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParseInput.parse(input))
   .handler(async ({ data }) => {
@@ -268,9 +280,9 @@ export const parseRequirements = createServerFn({ method: "POST" })
   - 只有模糊时段词（"晚上"/"中午"/"tonight"/"evening" 等，没有具体钟点）且没有日期词 → null
 - \`hhmm\`：24 小时制 "HH:MM"。用户提到餐段就是明确的时间信号，必须推断对应锚点，不得因为没有钟表数字而遗漏。
   - 具体钟点："7 点"→"19:00"（晚上语境）/"07:00"（早上语境）；"7pm"→"19:00"；"12:30"→"12:30"；"下午 2 点半"→"14:30"
-   - 餐段锚点：早餐/breakfast→"08:30"，早午餐/brunch→"10:30"，午餐/午饭/lunch→"12:30"，下午茶/afternoon tea→"15:00"，晚餐/晚饭/dinner/supper→"19:00"，夜宵/宵夜/late-night meal→"22:00"
-   - 其它模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
-   - 同时出现餐段和具体钟点时，始终以用户的具体钟点为准，例如 "brunch at 11:30"→"11:30"
+  - 餐段锚点：早餐/breakfast→"08:30"，早午餐/brunch→"10:30"，午餐/午饭/lunch→"12:30"，下午茶/afternoon tea→"15:00"，晚餐/晚饭/dinner/supper→"19:00"，夜宵/宵夜/late-night meal→"22:00"
+  - 其它模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
+  - 同时出现餐段和具体钟点时，始终以用户的具体钟点为准，例如 "brunch at 11:30"→"11:30"
   - 没有时间信号 → null
 - \`raw\`：原话直接抄过来，用于 UI 展示，例如 "周六晚上 7 点"。
 
@@ -361,7 +373,11 @@ export const parseRequirements = createServerFn({ method: "POST" })
     ): z.infer<typeof ParsedSchema> => {
       const vt = parsed.visitTime;
       const mealPeriod = inferMealPeriod(data.freeText ?? "");
-      const inferredWeekday = inferWeekdayFromText(data.freeText ?? "", new Date().getDay());
+      const explicitClock = inferExplicitClock(data.freeText ?? "");
+      const inferredWeekday = inferWeekdayFromText(
+        data.freeText ?? "",
+        new Date().getDay(),
+      );
       if ((!vt || !vt.mentioned) && mealPeriod) {
         return {
           ...parsed,
@@ -369,7 +385,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
             mentioned: true,
             evidence: mealPeriod.evidence,
             weekday: inferredWeekday,
-            hhmm: mealPeriod.hhmm,
+            hhmm: explicitClock ?? mealPeriod.hhmm,
             raw: mealPeriod.evidence,
           },
         };
@@ -387,7 +403,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
               mentioned: true,
               evidence: mealPeriod.evidence,
               weekday: inferredWeekday,
-              hhmm: vt.hhmm ?? mealPeriod.hhmm,
+              hhmm: explicitClock ?? vt.hhmm ?? mealPeriod.hhmm,
               raw: mealPeriod.evidence,
             },
           };
@@ -400,7 +416,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
           visitTime: {
             ...vt,
             weekday: vt.weekday ?? inferredWeekday,
-            hhmm: vt.hhmm ?? mealPeriod.hhmm,
+            hhmm: explicitClock ?? vt.hhmm ?? mealPeriod.hhmm,
           },
         };
       }
