@@ -660,7 +660,7 @@ function verifyGoogleRatingFilter(
     passes = rating <= threshold;
   } else if (/(?:低于|少于|小于|below|under|less than|<)/i.test(text)) {
     passes = rating < threshold;
-  } else if (/(?:超过|高于|大于|above|over|greater than|more than|>)/i.test(text)) {
+  } else if (/(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i.test(text)) {
     passes = rating > threshold;
   } else {
     passes = rating >= threshold;
@@ -669,7 +669,7 @@ function verifyGoogleRatingFilter(
     ? "≤"
     : /(?:低于|少于|小于|below|under|less than|<)/i.test(text)
       ? "<"
-      : /(?:超过|高于|大于|above|over|greater than|more than|>)/i.test(text)
+      : /(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i.test(text)
         ? ">"
         : "≥";
   return {
@@ -995,10 +995,10 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       };
       return;
     }
-    // country/language 优先取 AI parse 结果，正则只做 fallback
+    // 已知城市优先使用确定性国家映射，避免 AI 偶发把东京解析成香港等错误地区。
     const country =
-      (data.country && data.country.toUpperCase()) ||
       guessRegionCode(data.city) ||
+      (data.country && data.country.toUpperCase()) ||
       (isMainlandChinaCity(data.city) ? "CN" : "");
     const useDianping = country === "CN";
 
@@ -1441,7 +1441,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
     : `- 「${group.cuisine}」：（无额外扩展）`;
 
-  return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。
+  return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。${langDirective}
 
 用户需求：
 - 城市：${data.city}
