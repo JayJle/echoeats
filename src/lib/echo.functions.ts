@@ -564,8 +564,8 @@ const MatchDetailSchema = z.preprocess(
   },
   z.object({
     label: z.string().catch(""),
-    // 保持旧版容错：模型偶发返回纯字符串、text/note 字段或非白名单状态时，不丢弃整批核验结果。
-    status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
+    // 非法/缺失状态不猜测为警告；下游会丢弃这类不可靠的自由文本明细。
+    status: z.enum(["ok", "warn", "unknown"]).catch("unknown"),
   }),
 );
 
