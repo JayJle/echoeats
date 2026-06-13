@@ -589,6 +589,38 @@ function tierFromScore(score: number): "perfect" | "high" | "partial" {
   return "partial";
 }
 
+function verifyGoogleRatingFilter(
+  filterText: string,
+  rating: number | null,
+): { status: "ok" | "unknown" | "fail"; note: string } | null {
+  const text = filterText.toLowerCase();
+  if (!/(google|谷歌|グーグル)/i.test(text) || !/(评分|評分|rating|ratings|星)/i.test(text)) {
+    return null;
+  }
+  const thresholdMatch = text.match(/([1-5](?:\.\d+)?)\s*(?:分|星|\/\s*5)?/);
+  if (!thresholdMatch) return null;
+  const threshold = Number(thresholdMatch[1]);
+  if (!Number.isFinite(threshold) || threshold < 1 || threshold > 5) return null;
+  if (rating == null) {
+    return { status: "unknown", note: "Google Maps 评分数据缺失" };
+  }
+
+  let passes: boolean;
+  if (/(?:不超过|至多|最高|以下|不高于|at most|no more than|up to|<=|≤)/i.test(text)) {
+    passes = rating <= threshold;
+  } else if (/(?:低于|少于|小于|below|under|less than|<)/i.test(text)) {
+    passes = rating < threshold;
+  } else if (/(?:超过|高于|大于|above|over|greater than|more than|>)/i.test(text)) {
+    passes = rating > threshold;
+  } else {
+    passes = rating >= threshold;
+  }
+  return {
+    status: passes ? "ok" : "fail",
+    note: `Google Maps 实际评分 ${rating.toFixed(1)} / 5，要求 ${threshold} 分`,
+  };
+}
+
 function priceLevelLabel(level: string | null): string | null {
   switch (level) {
     case "PRICE_LEVEL_FREE":
@@ -1220,6 +1252,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               name: p.name,
               address: p.address,
               rating: p.rating,
+              googleRating: p.rating,
               userRatingCount: p.userRatingCount,
               priceLevel: priceLevelLabel(p.priceLevel),
               priceFromReviews:
@@ -1335,6 +1368,7 @@ ${JSON.stringify(group.candidates, null, 2)}
   - "ok": 明确证据支持。
   - "fail": 明确证据证实不满足。
   - "unknown": 无法确认。
+- **Google 评分是确定性事实**：候选中的 googleRating/rating 来自 Google Places。遇到 Google/谷歌评分阈值条件时必须直接做数值比较；有数值时禁止标为 unknown，也不要用评论文本推断评分。
 - **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
 
 输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
@@ -1495,14 +1529,22 @@ ${JSON.stringify(group.candidates, null, 2)}
       for (const [idx, p] of pool.entries()) {
         const pick = pickById.get(p.placeId);
         const checksByFilter = new Map((pick?.hardFilterChecks ?? []).map((check) => [check.filter, check]));
-        const checks = data.hardFilters.map((filter) => ({
-          filter,
-          check: checksByFilter.get(filter.text) ?? {
-            filter: filter.text,
-            status: "unknown" as const,
-            note: isEn ? "Verification incomplete" : "核验未完成",
-          },
-        }));
+        const aiChecks = pick?.hardFilterChecks ?? [];
+        const checks = data.hardFilters.map((filter, filterIndex) => {
+          const deterministicRatingCheck = verifyGoogleRatingFilter(filter.text, p.rating);
+          const aiCheck = checksByFilter.get(filter.text) ??
+            (aiChecks.length === data.hardFilters.length ? aiChecks[filterIndex] : undefined);
+          return {
+            filter,
+            check: deterministicRatingCheck
+              ? { filter: filter.text, ...deterministicRatingCheck }
+              : aiCheck ?? {
+                  filter: filter.text,
+                  status: "unknown" as const,
+                  note: isEn ? "Verification incomplete" : "核验未完成",
+                },
+          };
+        });
         const hasFail = checks.some(({ check }) => check.status === "fail");
         const hasUnknown = checks.some(({ check }) => check.status === "unknown");
         const verificationStatus = hasFail ? "fail" : hasUnknown ? "unknown" : "ok";
