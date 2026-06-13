@@ -689,6 +689,14 @@ function normalizeMatchText(text: string): string {
     .replace(/[\s:：,，。;；·—_\-()[\]{}]/g, "");
 }
 
+function cleanMatchLabel(text: string): string {
+  return text
+    .trim()
+    .replace(/^[✓✔✗✘?？⚠!！]+\s*/g, "")
+    .replace(/^(?:constraint(?: not met| to verify)?|硬条件(?:未满足|待核实)?)\s*[:：-]?\s*/i, "")
+    .trim();
+}
+
 function matchDetailTopics(text: string): Set<string> {
   const normalized = normalizeMatchText(text);
   const topics = new Set<string>();
@@ -1682,10 +1690,10 @@ ${JSON.stringify(group.candidates, null, 2)}
         const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
         const hardDetails = checks.map(({ filter, check }) => ({
           label: check.status === "ok"
-            ? (isEn ? `Constraint: ${filter.text}` : `硬条件：${filter.text}`)
+            ? (isEn ? `Constraint: ${cleanMatchLabel(filter.text)}` : `硬条件：${cleanMatchLabel(filter.text)}`)
             : check.status === "fail"
-              ? (isEn ? `Constraint not met: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${filter.text}${check.note ? ` — ${check.note}` : ""}`)
-              : (isEn ? `Constraint to verify: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${filter.text}${check.note ? ` — ${check.note}` : ""}`),
+              ? (isEn ? `Constraint not met: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
+              : (isEn ? `Constraint to verify: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`),
           status: check.status,
         }));
         const aiDetails = (pick?.matchDetails ?? [])
@@ -1696,7 +1704,7 @@ ${JSON.stringify(group.candidates, null, 2)}
           )
           .slice(0, 5)
           .map((detail) => ({
-            label: detail.label,
+            label: cleanMatchLabel(detail.label),
             status: "ok" as const,
           }));
         const matchDetails = dedupeMatchDetails([...hardDetails, ...aiDetails]).slice(0, 8);
