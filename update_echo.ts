@@ -2,97 +2,23 @@ import fs from 'fs';
 
 let content = fs.readFileSync('src/lib/echo.functions.ts', 'utf8');
 
-// 1. Update AiPickSchema to be more general
-// (It's already quite general, but let's make sure it doesn't have hard-coded pick-only logic)
-
-// 2. Update buildPromptForGroup
-const oldPromptStart = 'const buildPromptForGroup = (group: GroupForPrompt) => {';
-const newPromptStart = `const buildPromptForGroup = (group: GroupForPrompt) => {
-  const exp = cuisineExpansions.get(group.cuisine);
-  const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
-  const neg =
-    exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
-  const fidelity = exp
-    ? \`- 「\${group.cuisine}」：本地化主词 = "\${exp.primary}"；同义词 = \${syn}；反例（明显不是该料理）= \${neg}\`
-    : \`- 「\${group.cuisine}」：（无额外扩展）\`;
-
-  return \`你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「\${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。
-
-用户需求：
-- 城市：\${data.city}
-- 日期/时间：\${data.dateTime}
-- 硬条件（带 weight 0-1）：\${hardFiltersJson}
-- 偏好（带 weight）：\${softJson === "[]" ? "无" : softJson}
-- 避雷（带 weight）：\${negJson === "[]" ? "无" : negJson}
-- 菜品偏好：\${data.dishPreferences.join("、") || "无"}
-
-## 验证与分类任务
-请核验列表中的**每一个**餐厅，并将其归入以下三个桶（Buckets）之一：
-1. **ok**：满足所有 weight >= 0.85 的硬条件，且没有明显的负面网评冲突。
-2. **unknown**：没有任何 weight >= 0.85 的条件明确判定为 "fail"，但至少有一个重要条件因为信息不足被标记为 "unknown"。
-3. **fail**：至少有一个 weight >= 0.85 的硬条件被明确判定为 "fail"（不满足）。
-
-## 料理保真（最高优先级）
-\${fidelity}
-判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
-- 命中反例关键词且未命中主词/同义词 → **判定为 fail**。
-
-候选数据（JSON）：
-\${JSON.stringify(group.candidates, null, 2)}
-
-## 铁律
-- **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
-- **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 \${hardFiltersList.length}。
-- **状态判定依据**：
-  - "ok": 明确证据支持。
-  - "fail": 明确证据证实不满足。
-  - "unknown": 无法确认。
-- **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
-
-输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
-（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）\`;
-};\n`;
-
-// I will search for the function definition and replace it.
-const promptRegex = /const buildPromptForGroup = \(group: GroupForPrompt\) => \{[\s\S]*?\};/m;
-content = content.replace(promptRegex, newPromptStart);
-
-// 3. Implement batching in rankOneGroup
-const oldRankOneGroup = /const rankOneGroup = async \([\s\S]*? \};/m;
-// This is more complex because it has nested try-catches.
-// I'll replace the loop that calls rankOneGroup instead.
-
+// Update ResultsSchema to match new store structure
 content = content.replace(
-  'const groupResults = yield* withHeartbeat(\n      Promise.all(candidatesForPrompt.map(rankOneGroup)),\n      "rank",\n    );',
-  `const groupResults = yield* withHeartbeat(
-      (async () => {
-        const results = [];
-        for (const group of candidatesForPrompt) {
-          // Batch within each cuisine
-          const BATCH_SIZE = 12;
-          const batches = [];
-          for (let i = 0; i < group.candidates.length; i += BATCH_SIZE) {
-            batches.push(group.candidates.slice(i, i + BATCH_SIZE));
-          }
-          
-          const batchPicks = await Promise.all(batches.map(async (batch) => {
-            const res = await rankOneGroup({ ...group, candidates: batch });
-            return res.picks;
-          }));
-          
-          results.push({ cuisine: group.cuisine, picks: batchPicks.flat() });
-        }
-        return results;
-      })(),
-      "rank",
-    );`
+  /const ResultsSchema = z\.object\(\{\s*groups: z\.array\(\s*z\.object\(\{\s*cuisine: z\.string\(\),\s*restaurants: z\.array\(RestaurantSchema\),\s*partialRestaurants: z\.array\(RestaurantSchema\)\.optional\(\),\s*\}\),\s*\),\s*\}\);/,
+  `const ResultsSchema = z.object({
+  groups: z.array(
+    z.object({
+      cuisine: z.string(),
+      restaurants: z.array(RestaurantSchema),
+      okRestaurants: z.array(RestaurantSchema).optional(),
+      partialRestaurants: z.array(RestaurantSchema).optional(),
+      failedRestaurants: z.array(RestaurantSchema).optional(),
+    }),
+  ),
+});`
 );
 
-// 4. Update Merging Logic (Bucketing and Top-5 Fill)
-const mergingLogicStart = '// 3. 合并 AI picks 与真实 Place 数据';
-const mergingLogicRegex = /\/\/ 3\. 合并 AI picks 与真实 Place 数据[\s\S]*?return \{[\s\S]*?type: "result",[\s\S]*?payload: \{[\s\S]*?groups: groups,[\s\S]*?suggestions: fallbackSuggestions\(uiLang\),[\s\S]*?warnings,[\s\S]*?\},[\s\S]*?\};[\s\S]*?\}\);/m;
-
-// I'll read the existing logic and replace it with bucketing logic.
+// Merging logic with correct bucket names
 const newMergingLogic = `// 3. 合并 AI picks 与真实 Place 数据
     const placeById = new Map<string, { cuisine: string; place: PlaceCandidate }>();
     for (const r of placeResults) {
@@ -129,16 +55,12 @@ const newMergingLogic = `// 3. 合并 AI picks 与真实 Place 数据
 
           // Determine bucket
           let status: "ok" | "unknown" | "fail" = "ok";
-          if (checks.some((c) => c.status === "fail" && c.weight >= 0.85)) {
-            status = "fail";
-          } else if (checks.some((c) => c.status === "unknown" && c.weight >= 0.85)) {
-            status = "unknown";
-          } else if (checks.some((c) => c.status === "unknown")) {
-            // Even low weight unknown makes it unknown for verification purposes if we want to be strict,
-            // but let's say only high weight unknowns demote from OK.
-            // Actually user asked for 3 buckets.
-            status = checks.some(c => c.status === "unknown") ? "unknown" : "ok";
-          }
+          const highWeightFail = checks.some((c) => c.status === "fail" && c.weight >= 0.85);
+          const highWeightUnknown = checks.some((c) => c.status === "unknown" && c.weight >= 0.85);
+          
+          if (highWeightFail) status = "fail";
+          else if (highWeightUnknown) status = "unknown";
+          else if (checks.some(c => c.status === "unknown")) status = "unknown";
 
           const aiScore = Math.round(pick.matchScore);
           let weightAdjust = 0;
@@ -151,7 +73,7 @@ const newMergingLogic = `// 3. 合并 AI picks 与真实 Place 数据
           const restaurant = {
             id: pick.placeId,
             name: p.name,
-            localName: p.displayName || p.name,
+            localName: p.name, // Use original name for consistency or try to get local
             cuisine: entry.cuisine,
             address: p.address,
             googleMapsUri: p.googleMapsUri,
@@ -181,45 +103,41 @@ const newMergingLogic = `// 3. 合并 AI picks 与真实 Place 数据
           else failList.push(restaurant);
         }
 
-        // Top-5 fill
-        const restaurants = [...okList.sort((a, b) => b.matchScore - a.matchScore).slice(0, 5)];
+        // Top-5 fill: OK then Unknown
+        const sortedOk = [...okList].sort((a, b) => b.matchScore - a.matchScore);
+        const sortedUnknown = [...unknownList].sort((a, b) => b.matchScore - a.matchScore);
+        
+        const restaurants = [...sortedOk.slice(0, 5)];
         if (restaurants.length < 5) {
           const needed = 5 - restaurants.length;
-          restaurants.push(...unknownList.sort((a, b) => b.matchScore - a.matchScore).slice(0, needed));
+          restaurants.push(...sortedUnknown.slice(0, needed));
         }
 
         return {
           cuisine,
           restaurants,
-          ok: okList,
-          unknown: unknownList,
-          fail: failList,
-          partialRestaurants: unknownList, // compatibility
+          okRestaurants: sortedOk,
+          partialRestaurants: sortedUnknown,
+          failedRestaurants: failList,
         };
       })
-      .filter((g) => g.restaurants.length > 0 || g.ok.length > 0 || g.unknown.length > 0);
+      .filter((g) => g.restaurants.length > 0 || (g.okRestaurants?.length ?? 0) > 0);
 
     yield {
       type: "result",
       payload: {
         groups,
-        error: groups.length === 0 ? (isEn ? "No matching restaurants found after verification." : "核验后未找到匹配的餐厅。") : null,
+        error: groups.length === 0 ? (isEn ? "No matching restaurants found." : "未找到匹配的餐厅。") : null,
         suggestions: fallbackSuggestions(uiLang),
         warnings,
       },
     };`;
 
-// Use a simpler approach to replace the merging logic as it spans many lines.
 const searchResponseIndex = content.indexOf('// 3. 合并 AI picks 与真实 Place 数据');
-const searchResponseEnd = content.lastIndexOf('});') + 3; // Approximate
-// Better search for the end of the handler
 const handlerEnd = content.indexOf('  });', searchResponseIndex);
 
 if (searchResponseIndex !== -1 && handlerEnd !== -1) {
     content = content.substring(0, searchResponseIndex) + newMergingLogic + content.substring(handlerEnd);
-} else {
-    console.error('Could not find merging logic placement');
-    process.exit(1);
 }
 
 fs.writeFileSync('src/lib/echo.functions.ts', content);
