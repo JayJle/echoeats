@@ -490,6 +490,7 @@ const RestaurantSchema = z.object({
   openNow: z.boolean(),
   reservable: z.boolean(),
   needsReview: z.boolean(),
+  verificationStatus: z.enum(["ok", "unknown", "fail"]).optional().default("unknown"),
   ratings: z.array(z.object({ platform: z.string(), score: z.string().nullable() })),
   aiSummary: z.string(),
   matchDetails: z.array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) })),
@@ -528,6 +529,7 @@ const ResultsSchema = z.object({
       cuisine: z.string(),
       restaurants: z.array(RestaurantSchema),
       partialRestaurants: z.array(RestaurantSchema).optional(),
+      failedRestaurants: z.array(RestaurantSchema).optional(),
     }),
   ),
 });

@@ -108,7 +108,5 @@ export function filterByCuisineRelevance<
     const posHit = positives.some((k) => k && haystack.includes(k));
     return posHit; // 命中 negative 但同时命中 positive → 保留（混合店）
   });
-  // 安全网：过滤后不足 3 家时回退到原集合，宁可让 AI 排序兜底，也不让用户看到空结果。
-  if (filtered.length < 3) return places;
   return filtered;
 }

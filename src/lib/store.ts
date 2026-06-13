@@ -41,6 +41,7 @@ export type Restaurant = {
   openNow: boolean;
   reservable: boolean;
   needsReview: boolean;
+  verificationStatus?: "ok" | "unknown" | "fail";
   ratings: { platform: string; score: string | null }[];
   aiSummary: string;
   matchDetails: { label: string; status: "ok" | "warn" }[];
@@ -67,7 +68,12 @@ export type Restaurant = {
   visitTimeMatch?: "open" | "unknown" | null;
 };
 
-export type ResultsGroup = { cuisine: string; restaurants: Restaurant[]; partialRestaurants?: Restaurant[] };
+export type ResultsGroup = {
+  cuisine: string;
+  restaurants: Restaurant[];
+  partialRestaurants?: Restaurant[];
+  failedRestaurants?: Restaurant[];
+};
 
 export type SearchWarning = {
   stage: string;          // "places" | "tabelog" | "yelp" | "dianping" | "cuisine-expand" | "photos" | "ai-rank"
