@@ -62,6 +62,56 @@ export function guessRegionCode(city: string): string | undefined {
   return undefined;
 }
 
+const REGION_ADDRESS_MARKERS: Record<string, RegExp> = {
+  JP: /(?:日本|japan|〒)/i,
+  HK: /(?:香港|hong\s*kong|hong\s*kong\s*sar)/i,
+  MO: /(?:澳门|澳門|macao|macau)/i,
+  TW: /(?:台湾|臺灣|taiwan)/i,
+  KR: /(?:韩国|韓國|대한민국|south\s*korea|korea)/i,
+  CN: /(?:中国|中國|china)/i,
+  SG: /(?:新加坡|singapore)/i,
+};
+
+function regionFromAddress(address: string): string | null {
+  for (const [region, marker] of Object.entries(REGION_ADDRESS_MARKERS)) {
+    if (marker.test(address)) return region;
+  }
+  return null;
+}
+
+function locationClearlyOutsideRegion(
+  location: PlaceCandidate["location"],
+  region: string,
+): boolean {
+  if (!location) return false;
+  const { lat, lng } = location;
+  switch (region) {
+    case "JP":
+      return lat < 23 || lat > 47 || lng < 122 || lng > 146;
+    case "HK":
+      return lat < 22.1 || lat > 22.7 || lng < 113.8 || lng > 114.5;
+    case "SG":
+      return lat < 1.1 || lat > 1.6 || lng < 103.5 || lng > 104.2;
+    case "KR":
+      return lat < 32.8 || lat > 39 || lng < 124 || lng > 132;
+    case "TW":
+      return lat < 21.5 || lat > 26.5 || lng < 119 || lng > 122.5;
+    default:
+      return false;
+  }
+}
+
+export function isPlaceClearlyOutsideTargetRegion(
+  place: Pick<PlaceCandidate, "address" | "location">,
+  targetRegion: string | undefined,
+): boolean {
+  const region = targetRegion?.toUpperCase();
+  if (!region) return false;
+  const addressRegion = regionFromAddress(place.address);
+  if (addressRegion && addressRegion !== region) return true;
+  return locationClearlyOutsideRegion(place.location, region);
+}
+
 export async function searchPlaces(opts: {
   query: string;
   language: string;
