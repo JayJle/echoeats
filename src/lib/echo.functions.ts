@@ -490,6 +490,7 @@ const RestaurantSchema = z.object({
   openNow: z.boolean(),
   reservable: z.boolean(),
   needsReview: z.boolean(),
+  verificationStatus: z.enum(["ok", "unknown", "fail"]).optional().default("unknown"),
   ratings: z.array(z.object({ platform: z.string(), score: z.string().nullable() })),
   aiSummary: z.string(),
   matchDetails: z.array(z.object({ label: z.string(), status: z.enum(["ok", "warn"]) })),
@@ -528,6 +529,7 @@ const ResultsSchema = z.object({
       cuisine: z.string(),
       restaurants: z.array(RestaurantSchema),
       partialRestaurants: z.array(RestaurantSchema).optional(),
+      failedRestaurants: z.array(RestaurantSchema).optional(),
     }),
   ),
 });
@@ -1078,8 +1080,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       return;
     }
 
-    // 日期/时间硬筛：仅当用户明示了 visitTime 才执行。
-    // 剔除明确 closed，保留 open/unknown；某 cuisine 全被剔光则回退保留前 3 个标 unknown。
+    // 日期/时间硬筛：明确 closed 的候选属于不可用基础淘汰项，不参与后续补足。
     const visitMatchById = new Map<string, "open" | "unknown">();
     if (data.visitTime && data.visitTime.weekday != null && data.visitTime.hhmm) {
       const w = data.visitTime.weekday;
@@ -1088,21 +1089,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       placeResults = placeResults.map((r) => {
         if (!r.places.length) return r;
         const kept: PlaceCandidate[] = [];
-        const dropped: PlaceCandidate[] = [];
         for (const p of r.places) {
           const m = isOpenAt(p.openingPeriods, w, t);
           if (m === "closed") {
-            dropped.push(p);
+            totalRemoved++;
           } else {
             kept.push(p);
             visitMatchById.set(p.placeId, m);
           }
-        }
-        totalRemoved += dropped.length;
-        if (kept.length === 0 && dropped.length > 0) {
-          const fallback = dropped.slice(0, 3);
-          for (const p of fallback) visitMatchById.set(p.placeId, "unknown");
-          return { ...r, places: fallback };
         }
         return { ...r, places: kept };
       });
@@ -1205,10 +1199,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }
     }
 
-    // 限制送给 AI 的候选数量：每个 cuisine 分组按 (rating × log(reviewCount)) 排序取前 25
-    // AI 排序输出本来也只用 top N，输入侧超过 ~60 家纯属浪费 token、加大输出截断风险。
-    const PER_CUISINE_CAP = 25;
-    const candidatesForPrompt = placeResults
+    // 全量候选按每批 8 家核验，避免固定前 25 截断，同时控制单次模型输入输出体积。
+    const AI_BATCH_SIZE = 8;
+    const candidateGroups = placeResults
       .filter((r) => r.places.length)
       .map((r) => {
         const ranked = [...r.places].sort((a, b) => {
@@ -1218,7 +1211,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         });
         return {
           cuisine: r.cuisine,
-          candidates: ranked.slice(0, PER_CUISINE_CAP).map((p) => {
+          candidates: ranked.map((p) => {
             const review = reviewById.get(p.placeId) ?? null;
             const tabelog = tabelogById.get(p.placeId) ?? null;
             const yelp = yelpById.get(p.placeId) ?? null;
@@ -1262,6 +1255,13 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           }),
         };
       });
+    const candidatesForPrompt = candidateGroups.flatMap((group) => {
+      const batches: typeof candidateGroups = [];
+      for (let i = 0; i < group.candidates.length; i += AI_BATCH_SIZE) {
+        batches.push({ cuisine: group.cuisine, candidates: group.candidates.slice(i, i + AI_BATCH_SIZE) });
+      }
+      return batches;
+    });
     const totalCandidatesForPrompt = candidatesForPrompt.reduce(
       (n, g) => n + g.candidates.length,
       0,
@@ -1296,67 +1296,51 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 单 cuisine 的 prompt：只塞当前 cuisine 的候选 + 该 cuisine 的扩展词，输出体量约为
     // 原来的 1/N（N = cuisine 数），从根本上避免触发 maxOutputTokens 截断。
     const buildPromptForGroup = (group: GroupForPrompt) => {
-      const exp = cuisineExpansions.get(group.cuisine);
-      const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
-      const neg =
-        exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
-      const fidelity = exp
-        ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
-        : `- 「${group.cuisine}」：（无额外扩展）`;
+  const exp = cuisineExpansions.get(group.cuisine);
+  const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
+  const neg =
+    exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
+  const fidelity = exp
+    ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
+    : `- 「${group.cuisine}」：（无额外扩展）`;
 
-      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**目标返回 5 家最匹配的店（硬上限 5 家）**。如果候选里实在凑不出 5 家像样的店，可以返回少于 5 家——剩下的会由系统从其它候选自动补齐。${langDirective}
+  return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。
 
 用户需求：
 - 城市：${data.city}
 - 日期/时间：${data.dateTime}
-- 硬条件（带 weight 0-1，下面 hardFilterChecks 必须**逐条且按相同顺序**对照）：${hardFiltersJson}
+- 硬条件（带 weight 0-1）：${hardFiltersJson}
 - 偏好（带 weight）：${softJson === "[]" ? "无" : softJson}
 - 避雷（带 weight）：${negJson === "[]" ? "无" : negJson}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
 
-权重含义：1.0=务必、0.9=必须、0.8=明确硬属性、0.6=希望、0.4=可选。**只有 weight ≥ 0.85 的硬条件 fail 才会真的剔除餐厅**；低权重 fail 会扣分但保留。
+## 验证与分类任务
+请核验列表中的**每一个**餐厅，并将其归入以下三个桶（Buckets）之一：
+1. **ok**：满足所有 weight >= 0.85 的硬条件，且没有明显的负面网评冲突。
+2. **unknown**：没有任何 weight >= 0.85 的条件明确判定为 "fail"，但至少有一个重要条件因为信息不足被标记为 "unknown"。
+3. **fail**：至少有一个 weight >= 0.85 的硬条件被明确判定为 "fail"（不满足）。
 
-## 料理保真（最高优先级，先于其它硬条件）
-本组料理 = 「${group.cuisine}」。本地化主词、同义词、反例：
+## 料理保真（最高优先级）
 ${fidelity}
 判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
-- 命中本组反例关键词且未命中本组主词/同义词 → **直接剔除，不进 picks 也不进 partial**。
-- 候选本身就是主菜的小店（招牌菜与本组料理一致）→ 优先纳入。
-- 候选模糊（综合定食店、菜单不明）→ 允许保留，对应 matchDetails 标 warn 注明"未确认主营是否为本组料理"。
-- 这条规则**不计入 hardFilterChecks 数组**（hardFilterChecks 仍严格等于 ${hardFiltersList.length} 条用户原始硬条件）。
+- 命中反例关键词且未命中主词/同义词 → **判定为 fail**。
 
 候选数据（JSON）：
 ${JSON.stringify(group.candidates, null, 2)}
 
-铁律：
-- **只能使用候选列表里的 placeId**，禁止虚构 placeId、禁止编造店名。
-- **hardFilterChecks 必须对每个候选逐条核对所有 ${hardFiltersList.length} 条硬条件**：长度严格等于 ${hardFiltersList.length}，filter 字段原文复述，status 取值：
-    - "ok" = 候选数据/realWorldReviews 明确证实满足
-    - "unknown" = 信息不足无法判断（既不能确认满足、也不能确认违反）
-    - "fail" = 明确证实不满足
-  note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
-- **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
-- **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。
-- 价格判断（重要，按以下优先级，**前者命中后不再回退**）：
-    1. **Tabelog 价位优先（仅当用户预算币种是 JPY）**：若 candidate.tabelog.priceJPY 存在且用户预算硬条件币种是 JPY → **必须**用 Tabelog 价位判断（覆盖 priceFromReviews 和 Google priceLevel）：
-       - priceJPY.low > 用户预算上限 → fail
-       - priceJPY.high != null 且 priceJPY.high ≤ 用户预算上限 → ok
-       - 区间跨过预算上限（low ≤ 上限 < high，或上限缺一边）→ unknown
-    2. 否则若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
-    3. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
-    4. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
-- **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
-- **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字，不得新增事实）。**如果 realWorldReviews 为 null，或两个数组都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据，不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
-- **pros/cons 必须取真实素材**：reviewHighlights 非空时 pros 至少 2 条来自其浓缩；commonComplaints 非空时 cons 至少 1 条来自其浓缩。禁止"环境不错""值得一试"等空话。
-- **pros/cons 输出格式必须是 { text, source } 对象**（不是字符串）。source 取值范围："Google" / "Yelp" / "TripAdvisor" / "Tabelog" / "大众点评" / "小红书" / "美团" / "综合"（多平台一致时）。source 必须能在 realWorldReviews.sources 中找到对应来源（"Google Reviews" 归为 "Google"），禁止编造；无法归因时填 "综合"。
-- aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**当 realWorldReviews.sources 含 Yelp / TripAdvisor / Tabelog / 大众点评 / 小红书 中任一非 Google 平台时**，在 aiSummary 末尾追加${isEn ? '"(based on user reviews from <平台逗号列表>)"' : '「（综合 <平台顿号列表> 等网友评价）」'}，只列实际出现的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : "若 realWorldReviews 为空，则改为「（暂无可信网评，仅基于 Google 数据）」。"}
-- **Tabelog 信号（仅日本店铺可能有）**：仅 tabelog.priceJPY 参与硬过滤；其它字段只作展示，不参与评分。tabelog 为 null 时不要因此扣分。
-- **Yelp 信号（仅 US/CA/西欧店铺可能有）**：candidate.yelp 的所有字段（rating/reviewCount/priceLevel/summary）**仅作展示，绝不参与硬过滤、绝不参与评分**。yelp 为 null 时不要因此扣分。若 yelp.summary 与用户偏好高度吻合，可在 aiSummary 中引用（须按 source 归因到 "Yelp"）。
-- matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
-- matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**。不要重复 hardFilterChecks 的内容。**严格限定范围**：只能围绕用户实际提到的需求来写，用户没提的维度禁止出现在 matchDetails 里（哪怕网评有相关吐槽，也只能放进 cons）。
+## 铁律
+- **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
+- **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
+- **状态判定依据**：
+  - "ok": 明确证据支持。
+  - "fail": 明确证据证实不满足。
+  - "unknown": 无法确认。
+- **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
 
-输出 JSON：{ "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }`;
-    };
+输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
+（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
+};
+
 
     // 每个 cuisine 独立调用 AI（主调用 + raw 文本兜底）。失败时返回空 picks，不抛出，
     // 这样单个 cuisine 失败不会拖垮整次搜索。
@@ -1369,7 +1353,7 @@ ${JSON.stringify(group.candidates, null, 2)}
       const RAW_FORMAT_HARD_RULES = `\n\n**输出格式硬约束**：
 - 第一个字符必须是 "{"，最后一个字符必须是 "}"。
 - 不要任何前置说明、不要 markdown、不要 \`\`\`json 包裹、不要"以下是"之类的开场。
-- picks 数组**最多 8 条**；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
+- picks 数组必须逐一覆盖本批所有候选（本批最多 8 条）；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
 
       const extractJson = (text: string): string => {
         const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1471,308 +1455,148 @@ ${JSON.stringify(group.candidates, null, 2)}
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
     const groupResults = yield* withHeartbeat(
-      Promise.all(candidatesForPrompt.map(rankOneGroup)),
+      Promise.all(candidatesForPrompt.map(async (group) => {
+        const BATCH_SIZE = 12;
+        const batches = [];
+        for (let i = 0; i < group.candidates.length; i += BATCH_SIZE) {
+          batches.push(group.candidates.slice(i, i + BATCH_SIZE));
+        }
+        const batchPicks = await Promise.all(batches.map(async (batch) => {
+          const res = await rankOneGroup({ ...group, candidates: batch });
+          return res.picks;
+        }));
+        return { cuisine: group.cuisine, picks: batchPicks.flat() };
+      })),
       "rank",
     );
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
     );
-    const ranking: z.infer<typeof AiRankingSchema> = { groups: groupResults };
-
-    // 所有 cuisine 都拿不到 picks 时，给一个友好兜底（输入侧本来就有候选才报错）。
-    if (
-      groupResults.length > 0 &&
-      groupResults.every((g) => g.picks.length === 0) &&
-      candidatesForPrompt.some((g) => g.candidates.length > 0)
-    ) {
-      yield {
-        type: "result",
-        payload: {
-          groups: [],
-          error: isEn
-            ? "AI ranking failed for all cuisines. Please retry or narrow your request."
-            : "AI 排序对所有料理都失败了，请稍后重试或缩小需求范围。",
-          suggestions: fallbackSuggestions(uiLang),
-        },
-      };
-      return;
+    const mergedGroups = new Map<string, z.infer<typeof AiPickSchema>[]>();
+    for (const result of groupResults) {
+      const existing = mergedGroups.get(result.cuisine) ?? [];
+      const byId = new Map(existing.map((pick) => [pick.placeId, pick]));
+      for (const pick of result.picks) byId.set(pick.placeId, pick);
+      mergedGroups.set(result.cuisine, Array.from(byId.values()));
     }
+    const ranking: z.infer<typeof AiRankingSchema> = {
+      groups: Array.from(mergedGroups, ([cuisine, picks]) => ({ cuisine, picks })),
+    };
 
-
-    // 3. 合并 AI picks 与真实 Place 数据
-    const placeById = new Map<string, { cuisine: string; place: PlaceCandidate }>();
-    for (const r of placeResults) {
-      for (const p of r.places) placeById.set(p.placeId, { cuisine: r.cuisine, place: p });
-    }
-
+    // 3. 全量候选按 ok → unknown → fail 分级，再依次补足至 5 家。
     const placeByRestaurantId = new Map<string, PlaceCandidate>();
-    const groups = data.cuisines
-      .map((cuisine) => {
-        const aiGroup =
-          ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
-          ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 5);
+    const groups = data.cuisines.map((cuisine) => {
+      const pool = placeResults.find((r) => r.cuisine === cuisine)?.places ?? [];
+      const aiGroup = ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase());
+      const pickById = new Map((aiGroup?.picks ?? []).map((pick) => [pick.placeId, pick]));
+      type Built = { restaurant: z.infer<typeof RestaurantSchema>; failedWeight: number; failedCount: number };
+      const buckets: Record<"ok" | "unknown" | "fail", Built[]> = { ok: [], unknown: [], fail: [] };
 
-        type Bucket = "ok" | "partial" | null;
-
-        const built = picks
-          .map((pick, idx) => {
-            const entry = placeById.get(pick.placeId);
-            if (!entry) return null; // AI 编了 placeId
-            const p = entry.place;
-
-            // 规范化 hardFilterChecks：长度对齐、缺失视为 unknown
-            const checksByFilter = new Map<string, { status: "ok" | "unknown" | "fail"; note?: string }>();
-            for (const c of pick.hardFilterChecks ?? []) {
-              checksByFilter.set(c.filter, { status: c.status, note: c.note });
-            }
-            const checks = data.hardFilters.map((h) => {
-              const c = checksByFilter.get(h.text);
-              return {
-                ...(c ?? { status: "unknown" as const, note: undefined as string | undefined }),
-                weight: h.weight,
-              };
-            });
-
-            // 仅高权重（≥ 0.85）硬条件 fail 才剔除
-            if (checks.some((c) => c.status === "fail" && c.weight >= 0.85)) return null;
-
-            const hasUnknown = checks.some((c) => c.status === "unknown");
-            const bucket: Bucket = hasUnknown ? "partial" : "ok";
-
-            // 基于权重重算 matchScore：以 AI 给的分为基准，再用权重微调
-            const aiScore = Math.round(pick.matchScore);
-            let weightAdjust = 0;
-            for (const c of checks) {
-              if (c.status === "fail") weightAdjust -= c.weight * 25;
-              else if (c.status === "unknown") weightAdjust -= c.weight * 4;
-            }
-            const score = Math.max(0, Math.min(100, Math.round(aiScore + weightAdjust)));
-
-            let tier =
-              pick.matchTier === "perfect" || pick.matchTier === "high" || pick.matchTier === "partial"
-                ? pick.matchTier
-                : tierFromScore(score);
-            // 含 unknown 的不允许 perfect；权重调分后 tier 也按新分回落
-            if (hasUnknown && tier === "perfect") tier = "high";
-            if (score < 80 && tier !== "partial") tier = score >= 92 ? "perfect" : score >= 80 ? "high" : "partial";
-
-            // 硬条件 detail 置顶
-            const hardDetails = data.hardFilters.map((h, i) => {
-              const c = checks[i];
-              const noteSuffix = c.note ? ` — ${c.note}` : "";
-              if (c.status === "ok") {
-                return {
-                  label: isEn
-                    ? `✓ Constraint: ${h.text}${noteSuffix}`
-                    : `✓ 硬条件：${h.text}${noteSuffix}`,
-                  status: "ok" as const,
-                };
-              }
-              if (c.status === "fail") {
-                return {
-                  label: isEn
-                    ? `✗ Constraint not met: ${h.text}${noteSuffix}`
-                    : `✗ 硬条件未满足：${h.text}${noteSuffix}`,
-                  status: "warn" as const,
-                };
-              }
-              return {
-                label: isEn
-                  ? `? Constraint to verify: ${h.text}${noteSuffix}`
-                  : `？ 硬条件待核实：${h.text}${noteSuffix}`,
-                status: "warn" as const,
-              };
-            });
-            // 归一化：模型偶发返回的 "unknown" 在前端没对应样式，统一映射为 warn。
-            const aiDetails = (pick.matchDetails ?? []).slice(0, 6).map((d) => ({
-              label: d.label,
-              status: (d.status === "ok" ? "ok" : "warn") as "ok" | "warn",
-            }));
-            const matchDetails = [...hardDetails, ...aiDetails].slice(0, 8);
-
-            const review = reviewById.get(p.placeId) ?? null;
-            const tabelogInfo = tabelogById.get(p.placeId) ?? null;
-            const yelpInfo = yelpById.get(p.placeId) ?? null;
-            const restaurant = {
-              id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
-              name: p.name,
-              localName: p.name,
-              cuisine,
-              address: p.address,
-              googleMapsUri: p.googleMapsUri,
-              websiteUri: p.websiteUri,
-              primaryType: p.primaryType,
-              matchScore: score,
-              matchTier: tier,
-              openNow: p.openNow ?? true,
-              reservable: false,
-              needsReview: p.rating == null || visitMatchById.get(p.placeId) === "unknown",
-              ratings: candidateRatings(p, review, tabelogInfo, isEn, country, yelpInfo),
-              aiSummary: pick.aiSummary?.trim() ||
-                `${p.name} 位于 ${p.address || data.city}，${p.rating != null ? `Google 评分 ${p.rating.toFixed(1)}` : "暂无评分"}。`,
-              matchDetails,
-              pros: pick.pros,
-              cons: pick.cons,
-              links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
-              photoUrls: [] as string[],
-              tabelog: tabelogInfo,
-              yelp: yelpInfo,
-              weekdayDescriptions: p.weekdayDescriptions ?? null,
-              visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
-            };
-            placeByRestaurantId.set(restaurant.id, p);
-            return { bucket, restaurant };
-          })
-          .filter((r): r is NonNullable<typeof r> => Boolean(r));
-
-        const sortByScore = (a: { restaurant: { matchScore: number } }, b: { restaurant: { matchScore: number } }) =>
-          b.restaurant.matchScore - a.restaurant.matchScore;
-        const restaurants = built
-          .filter((b) => b.bucket === "ok")
-          .sort(sortByScore)
-          .map((b) => b.restaurant)
-          .slice(0, 5);
-        const partialRestaurants = built
-          .filter((b) => b.bucket === "partial")
-          .sort(sortByScore)
-          .map((b) => b.restaurant)
-          .slice(0, 5);
-
-        // 兜底补足：保证每个 cuisine 最多展示 5 家。如果 AI 精挑结果 < 5，
-        // 从同 cuisine 的剩余 Google 候选里按 (rating × log(reviewCount)) 排序补齐，
-        // 并明确标注「已放宽匹配条件以补足 5 个推荐」。
-        const TARGET_TOTAL = 5;
-        let currentTotal = restaurants.length + partialRestaurants.length;
-        if (currentTotal < TARGET_TOTAL) {
-          const usedIds = new Set<string>(
-            [...restaurants, ...partialRestaurants]
-              .map((r) => placeByRestaurantId.get(r.id)?.placeId ?? "")
-              .filter(Boolean),
-          );
-          const poolEntry = placeResults.find((r) => r.cuisine === cuisine);
-          const pool = (poolEntry?.places ?? [])
-            .filter((p) => p.placeId && !usedIds.has(p.placeId))
-            .slice()
-            .sort((a, b) => {
-              const sa = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
-              const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
-              return sb - sa;
-            });
-
-          const relaxedNote = isEn
-            ? "Relaxed match — added to reach 5 recommendations"
-            : "已放宽匹配条件以补足 5 个推荐";
-
-          for (let i = 0; i < pool.length && currentTotal < TARGET_TOTAL; i++) {
-            const p = pool[i];
-            const review = reviewById.get(p.placeId) ?? null;
-            const tabelogInfo = tabelogById.get(p.placeId) ?? null;
-            const yelpInfo = yelpById.get(p.placeId) ?? null;
-            const idx = restaurants.length + partialRestaurants.length;
-            const score =
-              p.rating != null ? Math.max(40, Math.round(p.rating * 14)) : 50;
-            const relaxedRestaurant = {
-              id: `${cuisine}-relaxed-${idx}-${p.placeId}`
-                .replace(/[^a-zA-Z0-9_-]+/g, "-")
-                .slice(0, 80),
-              name: p.name,
-              localName: p.name,
-              cuisine,
-              address: p.address,
-              googleMapsUri: p.googleMapsUri,
-              websiteUri: p.websiteUri,
-              primaryType: p.primaryType,
-              matchScore: score,
-              matchTier: "partial" as const,
-              openNow: p.openNow ?? true,
-              reservable: false,
-              needsReview: true,
-              ratings: candidateRatings(p, review, tabelogInfo, isEn, country, yelpInfo),
-              aiSummary: isEn
-                ? `${p.name} — added based on Google data to complete your list of 5 recommendations. Match against your specific conditions has not been verified.`
-                : `${p.name} — 基于 Google 数据自动补充，用于凑齐 5 个推荐，未逐条核对你的具体条件。`,
-              matchDetails: [
-                { label: relaxedNote, status: "warn" as const },
-                ...(p.rating != null
-                  ? [
-                      {
-                        label: isEn
-                          ? `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
-                          : `Google ${p.rating.toFixed(1)} / 5${p.userRatingCount ? `（${p.userRatingCount} 条）` : ""}`,
-                        status: "ok" as const,
-                      },
-                    ]
-                  : []),
-              ],
-              pros: [],
-              cons: [],
-              links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
-              photoUrls: [] as string[],
-              tabelog: tabelogInfo,
-              yelp: yelpInfo,
-              weekdayDescriptions: p.weekdayDescriptions ?? null,
-              visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
-            };
-            placeByRestaurantId.set(relaxedRestaurant.id, p);
-            partialRestaurants.push(relaxedRestaurant);
-            currentTotal++;
-          }
-        }
-
-        if (!restaurants.length && !partialRestaurants.length) return null;
-        return {
-          cuisine: cuisinesAutoFilled ? "为你推荐" : cuisine,
-          restaurants,
-          ...(partialRestaurants.length ? { partialRestaurants } : {}),
+      for (const [idx, p] of pool.entries()) {
+        const pick = pickById.get(p.placeId);
+        const checksByFilter = new Map((pick?.hardFilterChecks ?? []).map((check) => [check.filter, check]));
+        const checks = data.hardFilters.map((filter) => ({
+          filter,
+          check: checksByFilter.get(filter.text) ?? {
+            filter: filter.text,
+            status: "unknown" as const,
+            note: isEn ? "Verification incomplete" : "核验未完成",
+          },
+        }));
+        const hasFail = checks.some(({ check }) => check.status === "fail");
+        const hasUnknown = checks.some(({ check }) => check.status === "unknown");
+        const verificationStatus = hasFail ? "fail" : hasUnknown ? "unknown" : "ok";
+        const failedWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "fail" ? filter.weight : 0), 0);
+        const failedCount = checks.filter(({ check }) => check.status === "fail").length;
+        const unknownWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "unknown" ? filter.weight : 0), 0);
+        const baseScore = pick?.matchScore ?? (p.rating != null ? p.rating * 14 : 50);
+        const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
+        const hardDetails = checks.map(({ filter, check }) => ({
+          label: check.status === "ok"
+            ? (isEn ? `✓ Constraint: ${filter.text}` : `✓ 硬条件：${filter.text}`)
+            : check.status === "fail"
+              ? (isEn ? `✗ Constraint not met: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `✗ 硬条件未满足：${filter.text}${check.note ? ` — ${check.note}` : ""}`)
+              : (isEn ? `? Constraint to verify: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `？ 硬条件待核实：${filter.text}${check.note ? ` — ${check.note}` : ""}`),
+          status: (check.status === "ok" ? "ok" : "warn") as "ok" | "warn",
+        }));
+        const aiDetails = (pick?.matchDetails ?? []).slice(0, 5).map((detail) => ({
+          label: detail.label,
+          status: (detail.status === "ok" ? "ok" : "warn") as "ok" | "warn",
+        }));
+        const review = reviewById.get(p.placeId) ?? null;
+        const tabelogInfo = tabelogById.get(p.placeId) ?? null;
+        const yelpInfo = yelpById.get(p.placeId) ?? null;
+        const restaurant: z.infer<typeof RestaurantSchema> = {
+          id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
+          name: p.name,
+          localName: p.name,
+          cuisine,
+          address: p.address,
+          googleMapsUri: p.googleMapsUri,
+          websiteUri: p.websiteUri,
+          primaryType: p.primaryType,
+          matchScore: score,
+          matchTier: verificationStatus === "ok" ? tierFromScore(score) : "partial",
+          openNow: p.openNow ?? true,
+          reservable: false,
+          needsReview: verificationStatus !== "ok" || p.rating == null,
+          verificationStatus,
+          ratings: candidateRatings(p, review, tabelogInfo, isEn, country, yelpInfo),
+          aiSummary: pick?.aiSummary?.trim() || (isEn
+            ? `${p.name} was retained because its detailed conditions could not be fully verified.`
+            : `${p.name} 因资料不足暂时保留，具体条件尚未完全核实。`),
+          matchDetails: [...hardDetails, ...aiDetails].slice(0, 8),
+          pros: pick?.pros ?? [],
+          cons: pick?.cons ?? [],
+          links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
+          photoUrls: [],
+          tabelog: tabelogInfo,
+          yelp: yelpInfo,
+          weekdayDescriptions: p.weekdayDescriptions ?? null,
+          visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
         };
-      })
-      .filter((g): g is NonNullable<typeof g> => Boolean(g));
+        placeByRestaurantId.set(restaurant.id, p);
+        buckets[verificationStatus].push({ restaurant, failedWeight, failedCount });
+      }
 
-    if (!groups.length) {
-      yield {
-        type: "result",
-        payload: {
-          groups: [],
-          error: isEn
-            ? "AI did not pick any matching restaurants from the real candidates. Please loosen your conditions or try a different cuisine."
-            : "AI 在真实候选中没有挑出匹配的餐厅，请放宽条件或换一个料理类型重试。",
-          suggestions: fallbackSuggestions(uiLang),
-        },
+      buckets.ok.sort((a, b) => b.restaurant.matchScore - a.restaurant.matchScore);
+      buckets.unknown.sort((a, b) => b.restaurant.matchScore - a.restaurant.matchScore);
+      buckets.fail.sort((a, b) => a.failedWeight - b.failedWeight || a.failedCount - b.failedCount || b.restaurant.matchScore - a.restaurant.matchScore);
+      let remaining = 5;
+      const restaurants = buckets.ok.slice(0, remaining).map(({ restaurant }) => restaurant);
+      remaining -= restaurants.length;
+      const partialRestaurants = buckets.unknown.slice(0, remaining).map(({ restaurant }) => restaurant);
+      remaining -= partialRestaurants.length;
+      const failedRestaurants = buckets.fail.slice(0, remaining).map(({ restaurant }) => restaurant);
+      return {
+        cuisine: cuisinesAutoFilled ? (isEn ? "Recommended for you" : "为你推荐") : cuisine,
+        restaurants,
+        ...(partialRestaurants.length ? { partialRestaurants } : {}),
+        ...(failedRestaurants.length ? { failedRestaurants } : {}),
       };
-      return;
-    }
+    }).filter((group) => group.restaurants.length + (group.partialRestaurants?.length ?? 0) + (group.failedRestaurants?.length ?? 0) > 0);
 
     yield { type: "stage", stage: "photos" };
-    // Resolve Google photo URLs for displayed restaurants in parallel
-    const allRestaurants = groups.flatMap((g) => [
-      ...g.restaurants,
-      ...(g.partialRestaurants ?? []),
+    const allRestaurants = groups.flatMap((group) => [
+      ...group.restaurants,
+      ...(group.partialRestaurants ?? []),
+      ...(group.failedRestaurants ?? []),
     ]);
-    yield* withHeartbeat(
-      Promise.all(
-        allRestaurants.map(async (r) => {
-          const p = placeByRestaurantId.get(r.id);
-          const names = (p?.photoNames ?? []).slice(0, 6);
-          if (!names.length) return;
-          const urls = await Promise.all(names.map((n) => resolvePhotoUrl(n, 800)));
-          r.photoUrls = urls.filter((u): u is string => Boolean(u));
-        }),
-      ),
-      "photos",
-    );
+    yield* withHeartbeat(Promise.all(allRestaurants.map(async (restaurant) => {
+      const place = placeByRestaurantId.get(restaurant.id);
+      const urls = await Promise.all((place?.photoNames ?? []).slice(0, 6).map((name) => resolvePhotoUrl(name, 800)));
+      restaurant.photoUrls = urls.filter((url): url is string => Boolean(url));
+    })), "photos");
 
-    const missing = data.cuisines.filter(
-      (c) => !groups.some((g) => g.cuisine.toLowerCase() === c.toLowerCase()),
+    const missing = data.cuisines.filter((cuisine) =>
+      !placeResults.some((group) => group.cuisine.toLowerCase() === cuisine.toLowerCase() && group.places.length),
     );
     yield {
       type: "result",
       payload: {
         groups: ResultsSchema.parse({ groups }).groups,
         error: missing.length
-          ? isEn
-            ? `No reliable candidates found for "${missing.join(", ")}"`
-            : `没有找到「${missing.join("、")}」的可靠候选`
+          ? (isEn ? `No candidates found for "${missing.join(", ")}"` : `没有找到「${missing.join("、")}」的候选`)
           : null,
         suggestions: missing.length ? fallbackSuggestions(uiLang) : [],
         warnings: warnings.length ? warnings : undefined,

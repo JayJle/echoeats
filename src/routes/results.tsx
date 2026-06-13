@@ -466,18 +466,37 @@ function ResultsPage() {
                 </div>
 
                 {group.partialRestaurants && group.partialRestaurants.length > 0 && (
+                    <div className="mt-8">
+                      <div className="mb-3 border-l-4 border-warning pl-3">
+                        <h3 className="text-base font-semibold tracking-tight text-muted-foreground">
+                          {t("results.partialTitle")}
+                        </h3>
+                        <p className="mt-1 text-xs text-muted-foreground">{t("results.partialDesc")}</p>
+                      </div>
+                      <div className="space-y-5">
+                        {group.partialRestaurants.map((r, i) => (
+                          <RestaurantCard key={r.id} index={group.restaurants.length + i + 1} r={r} tierLabel={TIER_LABEL} tierClass={TIER_CLASS} />
+                        ))}
+                      </div>
+                    </div>
+                )}
+
+                {/* Failed Candidates */}
+                {group.failedRestaurants && group.failedRestaurants.length > 0 && (
                   <div className="mt-8">
-                    <div className="mb-3 border-l-4 border-warning pl-3">
-                      <h3 className="text-base font-semibold tracking-tight">
-                        {t("results.partialTitle")}
-                      </h3>
-                      <p className="mt-1 text-xs text-muted-foreground">{t("results.partialDesc")}</p>
-                    </div>
-                    <div className="space-y-5">
-                      {group.partialRestaurants.map((r, i) => (
-                        <RestaurantCard key={r.id} index={i + 1} r={r} tierLabel={TIER_LABEL} tierClass={TIER_CLASS} />
-                      ))}
-                    </div>
+                        <div className="mb-3 border-l-4 border-destructive pl-3">
+                          <h3 className="text-base font-semibold tracking-tight text-destructive/80">
+                            {t("results.failedTitle") || "Mismatched Candidates"}
+                          </h3>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {t("results.failedDesc") || "These do not meet your mandatory criteria. Click to show."}
+                          </p>
+                        </div>
+                      <div className="space-y-5 mt-4">
+                        {group.failedRestaurants.map((r, i) => (
+                          <RestaurantCard key={r.id} index={group.restaurants.length + (group.partialRestaurants?.length ?? 0) + i + 1} r={r} tierLabel={TIER_LABEL} tierClass={TIER_CLASS} />
+                        ))}
+                      </div>
                   </div>
                 )}
               </section>
@@ -493,6 +512,7 @@ function ResultsPage() {
             restaurants={results.groups.flatMap((g) => [
               ...g.restaurants,
               ...(g.partialRestaurants ?? []),
+              ...(g.failedRestaurants ?? []),
             ])}
             resultsSnapshot={results}
           />
@@ -662,7 +682,7 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
             )}
             {r.needsReview && (
               <span className="px-2 py-0.5 rounded-full bg-warning/15 text-warning">
-                {t("results.needsReview")}
+                {r.verificationStatus === "fail" ? t("results.failedBadge") : t("results.needsReview")}
               </span>
             )}
           </div>
