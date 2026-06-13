@@ -592,6 +592,7 @@ function tierFromScore(score: number): "perfect" | "high" | "partial" {
 function verifyGoogleRatingFilter(
   filterText: string,
   rating: number | null,
+  isEn: boolean,
 ): { status: "ok" | "unknown" | "fail"; note: string } | null {
   const text = filterText.toLowerCase();
   if (!/(google|谷歌|グーグル)/i.test(text) || !/(评分|評分|rating|ratings|星)/i.test(text)) {
@@ -602,7 +603,7 @@ function verifyGoogleRatingFilter(
   const threshold = Number(thresholdMatch[1]);
   if (!Number.isFinite(threshold) || threshold < 1 || threshold > 5) return null;
   if (rating == null) {
-    return { status: "unknown", note: "Google Maps 评分数据缺失" };
+    return { status: "unknown", note: isEn ? "Google Maps rating is unavailable" : "Google Maps 评分数据缺失" };
   }
 
   let passes: boolean;
@@ -617,7 +618,9 @@ function verifyGoogleRatingFilter(
   }
   return {
     status: passes ? "ok" : "fail",
-    note: `Google Maps 实际评分 ${rating.toFixed(1)} / 5，要求 ${threshold} 分`,
+    note: isEn
+      ? `Google Maps rating is ${rating.toFixed(1)} / 5; required threshold is ${threshold}`
+      : `Google Maps 实际评分 ${rating.toFixed(1)} / 5，要求 ${threshold} 分`,
   };
 }
 
@@ -1531,7 +1534,7 @@ ${JSON.stringify(group.candidates, null, 2)}
         const checksByFilter = new Map((pick?.hardFilterChecks ?? []).map((check) => [check.filter, check]));
         const aiChecks = pick?.hardFilterChecks ?? [];
         const checks = data.hardFilters.map((filter, filterIndex) => {
-          const deterministicRatingCheck = verifyGoogleRatingFilter(filter.text, p.rating);
+          const deterministicRatingCheck = verifyGoogleRatingFilter(filter.text, p.rating, isEn);
           const aiCheck = checksByFilter.get(filter.text) ??
             (aiChecks.length === data.hardFilters.length ? aiChecks[filterIndex] : undefined);
           return {
