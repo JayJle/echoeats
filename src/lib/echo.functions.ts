@@ -651,8 +651,7 @@ const MatchDetailSchema = z.preprocess(
   },
   z.object({
     label: z.string().catch(""),
-    // 非法/缺失状态不猜测为警告；下游会丢弃这类不可靠的自由文本明细。
-    status: z.enum(["ok", "warn", "unknown"]).catch("unknown"),
+    status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
   }),
 );
 
@@ -767,15 +766,6 @@ function verifyGoogleRatingFilter(
   };
 }
 
-function normalizeMatchText(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[✓✔✗✘?？⚠]/g, "")
-    .replace(/(google\s*maps?|谷歌(?:地图)?|グーグル)/gi, "google")
-    .replace(/(硬条件(?:未满足|待核实)?|constraint(?: not met| to verify)?)/gi, "")
-    .replace(/[\s:：,，。;；·—_\-()[\]{}]/g, "");
-}
-
 function cleanMatchLabel(text: string): string {
   return text
     .trim()
@@ -784,49 +774,16 @@ function cleanMatchLabel(text: string): string {
     .trim();
 }
 
-function matchDetailTopics(text: string): Set<string> {
-  const normalized = normalizeMatchText(text);
-  const topics = new Set<string>();
-  if (verifyGoogleRatingFilter(text, null, false) || /(评分达标|評分達標|ratingmet)/i.test(normalized)) {
-    topics.add("rating");
-  }
-  if (/(near(?:by)?(?:the)?(?:station|metro|subway)|stationproximity|车站|車站|駅|地铁|地鐵|靠近车站|靠近車站)/i.test(normalized)) {
-    topics.add("station_proximity");
-  }
-  if (/(sweetflavo(?:u)?r|甜味|甜口|grilledpork|炭火(?:烤制|燒製|烧制)?|烤猪|烤豬|猪丼|豬丼|豚丼)/i.test(normalized)) {
-    topics.add("dish_preference");
-  }
-  return topics;
-}
-
-function isDuplicateOfHardFilter(detail: string, hardFilters: string[]): boolean {
-  const normalizedDetail = normalizeMatchText(detail);
-  if (!normalizedDetail) return true;
-  const detailTopics = matchDetailTopics(detail);
-  return hardFilters.some((filter) => {
-    const normalizedFilter = normalizeMatchText(filter);
-    if (!normalizedFilter) return false;
-    if (normalizedDetail.includes(normalizedFilter) || normalizedFilter.includes(normalizedDetail)) {
-      return true;
-    }
-    const filterTopics = matchDetailTopics(filter);
-    return Array.from(detailTopics).some((topic) => filterTopics.has(topic));
-  });
-}
-
-function dedupeMatchDetails(
-  details: Array<{ label: string; status: "ok" | "unknown" | "fail" }>,
-): Array<{ label: string; status: "ok" | "unknown" | "fail" }> {
-  const seen = new Set<string>();
-  const seenTopics = new Set<string>();
-  return details.filter((detail) => {
-    const key = normalizeMatchText(detail.label);
-    const topics = matchDetailTopics(detail.label);
-    if (!key || seen.has(key) || Array.from(topics).some((topic) => seenTopics.has(topic))) return false;
-    seen.add(key);
-    for (const topic of topics) seenTopics.add(topic);
-    return true;
-  });
+function reconcileEvidenceStatus(
+  status: "ok" | "unknown" | "fail",
+  evidence: string | undefined,
+): "ok" | "unknown" | "fail" {
+  if (status !== "unknown" || !evidence?.trim()) return status;
+  const text = evidence.trim();
+  const saysUncertain = /(无(?:法|从|相关)?(?:资料|信息|证据|评论)|未(?:知|提及|说明|确认|找到)|没有(?:资料|信息|证据|评论|提及)|资料不足|信息不足|待核实|无法确认|不(?:能|足以)确认|unknown|unclear|unavailable|insufficient|no (?:relevant )?(?:data|information|evidence|review)|not (?:mentioned|confirmed|verified)|cannot (?:confirm|verify|determine))/i.test(text);
+  if (saysUncertain) return "unknown";
+  const citesPositiveEvidence = /(明确(?:指出|提到|显示|表明|支持|强调)|评论(?:指出|提到|显示|表明|称|强调|赞扬)|证据(?:显示|表明|支持)|资料(?:显示|表明|支持)|实际(?:为|有|达到)|符合|满足|达标|支持该条件|explicitly (?:states?|mentions?|shows?|supports?|confirms?)|reviews? (?:state|mention|note|say|show|confirm|praise|highlight)|evidence (?:shows?|supports?|confirms?)|is confirmed|requirement (?:is )?met)/i.test(text);
+  return citesPositiveEvidence ? "ok" : "unknown";
 }
 
 function priceLevelLabel(level: string | null): string | null {
@@ -1536,6 +1493,13 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const negJson = JSON.stringify(
       data.negativeFilters.map((n) => ({ text: n.text, weight: n.weight })),
     );
+    const nonHardFilters = [
+      ...data.softPreferences.map((item) => ({ kind: "preference", text: item.text })),
+      ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: item.text })),
+      ...data.dishPreferences
+        .filter((dish) => !data.hardFilters.some((filter) => filter.text.includes(dish)))
+        .map((text) => ({ kind: "dish", text })),
+    ];
 
     const langDirective = isEn
       ? `\n## OUTPUT LANGUAGE (MANDATORY, ZERO TOLERANCE)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English only**. **No CJK characters are allowed in any of those fields**, not even as quoted source snippets. If the source review is in Chinese, paraphrase it into concise English and DROP the original Chinese — do NOT include the Chinese phrase in quotes followed by a translation.\n\nBad (forbidden):\n  - "Reviews mention '氛围复古有特色' (retro and unique atmosphere)"\n  - "高峰期可能要等位 (may have to wait during peak hours)"\nGood:\n  - "Diners praise the retro, characterful atmosphere"\n  - "May involve a wait during peak hours"\n\nRule of thumb: if any character matches /[\\u4e00-\\u9fff]/ in those fields, the output is invalid — rewrite it in pure English. Keep \`placeId\` and any enum/status values exactly as specified.\n`
@@ -1582,12 +1546,13 @@ ${JSON.stringify(group.candidates, null, 2)}
 - **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
 - **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
 - **hardFilterChecks 是硬条件的唯一输出位置**：matchDetails 不得复述、改写或重复任何硬条件（包括 Google 评分阈值）。
-- **matchDetails 只写用户实际提出的非硬条件匹配点**：不要新增用户没提到的维度；没有可靠的额外匹配点就返回空数组。
+- **matchDetails 必须完整覆盖所有非硬条件**：按以下数组顺序逐条返回，长度必须严格等于 ${nonHardFilters.length}，不得遗漏、合并或新增：${JSON.stringify(nonHardFilters)}。
+- 每条 matchDetails.label 必须包含对应用户条件及简短证据；没有资料也必须保留该条件并写明资料不足。
 - **禁止同义重复**：如果 hardFilterChecks 已包含某个主题，matchDetails 不得用另一种语言或近义表达再次输出；尤其禁止重复 Google 评分、靠近车站/地铁、菜品口味等条件。
 - **状态判定依据**：
-  - "ok": 明确证据支持。
+  - "ok": 明确证据支持。只要 label 中引用或概述了明确支持该条件的评论/资料，就必须是 ok，绝不能是 unknown。
   - "fail": 明确证据证实不满足。
-  - "unknown": 无法确认。
+  - "unknown": 确实没有相关证据、资料不足或无法确认。
 - **Google 评分是确定性事实**：候选中的 googleRating/rating 来自 Google Places。遇到 Google/谷歌评分阈值条件时必须直接做数值比较；有数值时禁止标为 unknown，也不要用评论文本推断评分。
 - **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
 
@@ -1758,11 +1723,13 @@ ${JSON.stringify(group.candidates, null, 2)}
             filter,
             check: deterministicRatingCheck
               ? { filter: filter.text, ...deterministicRatingCheck }
-              : aiCheck ?? {
-                  filter: filter.text,
-                  status: "unknown" as const,
-                  note: isEn ? "Verification incomplete" : "核验未完成",
-                },
+              : aiCheck
+                ? { ...aiCheck, status: reconcileEvidenceStatus(aiCheck.status, aiCheck.note) }
+                : {
+                    filter: filter.text,
+                    status: "unknown" as const,
+                    note: isEn ? "Verification incomplete" : "核验未完成",
+                  },
           };
         });
         const hasBlockingFail = checks.some(
@@ -1777,24 +1744,28 @@ ${JSON.stringify(group.candidates, null, 2)}
         const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
         const hardDetails = checks.map(({ filter, check }) => ({
           label: check.status === "ok"
-            ? (isEn ? `Constraint: ${cleanMatchLabel(filter.text)}` : `硬条件：${cleanMatchLabel(filter.text)}`)
+            ? (isEn ? `Constraint: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
             : check.status === "fail"
               ? (isEn ? `Constraint not met: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
               : (isEn ? `Constraint to verify: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`),
           status: check.status,
         }));
-        const aiDetails = (pick?.matchDetails ?? [])
-          .filter(
-            (detail) =>
-              detail.status === "ok" &&
-              !isDuplicateOfHardFilter(detail.label, data.hardFilters.map((filter) => filter.text)),
-          )
-          .slice(0, 5)
-          .map((detail) => ({
-            label: cleanMatchLabel(detail.label),
-            status: "ok" as const,
-          }));
-        const matchDetails = dedupeMatchDetails([...hardDetails, ...aiDetails]).slice(0, 8);
+        const aiDetails = pick?.matchDetails ?? [];
+        const nonHardDetails = nonHardFilters.map((condition, conditionIndex) => {
+          const detail = aiDetails[conditionIndex];
+          const evidence = detail?.label ? cleanMatchLabel(detail.label) : "";
+          const status = detail
+            ? reconcileEvidenceStatus(detail.status, evidence)
+            : "unknown" as const;
+          const fallback = isEn ? "No supporting information found" : "暂无相关资料";
+          return {
+            label: `${cleanMatchLabel(condition.text)} — ${evidence || fallback}`,
+            status,
+          };
+        });
+        // User conditions are intentionally not topic-deduplicated: every parsed filter
+        // must remain visible in matching details, in its original category order.
+        const matchDetails = [...hardDetails, ...nonHardDetails];
         const review = reviewById.get(p.placeId) ?? null;
         const tabelogInfo = tabelogById.get(p.placeId) ?? null;
         const yelpInfo = yelpById.get(p.placeId) ?? null;
