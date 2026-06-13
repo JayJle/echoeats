@@ -1483,26 +1483,6 @@ ${JSON.stringify(group.candidates, null, 2)}
       groups: Array.from(mergedGroups, ([cuisine, picks]) => ({ cuisine, picks })),
     };
 
-    // 所有 cuisine 都拿不到 picks 时，给一个友好兜底（输入侧本来就有候选才报错）。
-    if (
-      groupResults.length > 0 &&
-      groupResults.every((g) => g.picks.length === 0) &&
-      candidatesForPrompt.some((g) => g.candidates.length > 0)
-    ) {
-      yield {
-        type: "result",
-        payload: {
-          groups: [],
-          error: isEn
-            ? "AI ranking failed for all cuisines. Please retry or narrow your request."
-            : "AI 排序对所有料理都失败了，请稍后重试或缩小需求范围。",
-          suggestions: fallbackSuggestions(uiLang),
-        },
-      };
-      return;
-    }
-
-
     // 3. 全量候选按 ok → unknown → fail 分级，再依次补足至 5 家。
     const placeByRestaurantId = new Map<string, PlaceCandidate>();
     const groups = data.cuisines.map((cuisine) => {
