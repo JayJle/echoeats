@@ -1547,6 +1547,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const negJson = JSON.stringify(
       data.negativeFilters.map((n) => ({ text: n.text, weight: n.weight })),
     );
+    const nonHardFilters = [
+      ...data.softPreferences.map((item) => ({ kind: "preference", text: item.text })),
+      ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: item.text })),
+      ...data.dishPreferences.map((text) => ({ kind: "dish", text })),
+    ];
 
     const langDirective = isEn
       ? `\n## OUTPUT LANGUAGE (MANDATORY, ZERO TOLERANCE)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English only**. **No CJK characters are allowed in any of those fields**, not even as quoted source snippets. If the source review is in Chinese, paraphrase it into concise English and DROP the original Chinese — do NOT include the Chinese phrase in quotes followed by a translation.\n\nBad (forbidden):\n  - "Reviews mention '氛围复古有特色' (retro and unique atmosphere)"\n  - "高峰期可能要等位 (may have to wait during peak hours)"\nGood:\n  - "Diners praise the retro, characterful atmosphere"\n  - "May involve a wait during peak hours"\n\nRule of thumb: if any character matches /[\\u4e00-\\u9fff]/ in those fields, the output is invalid — rewrite it in pure English. Keep \`placeId\` and any enum/status values exactly as specified.\n`
@@ -1593,12 +1598,13 @@ ${JSON.stringify(group.candidates, null, 2)}
 - **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
 - **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
 - **hardFilterChecks 是硬条件的唯一输出位置**：matchDetails 不得复述、改写或重复任何硬条件（包括 Google 评分阈值）。
-- **matchDetails 只写用户实际提出的非硬条件匹配点**：不要新增用户没提到的维度；没有可靠的额外匹配点就返回空数组。
+- **matchDetails 必须完整覆盖所有非硬条件**：按以下数组顺序逐条返回，长度必须严格等于 ${nonHardFilters.length}，不得遗漏、合并或新增：${JSON.stringify(nonHardFilters)}。
+- 每条 matchDetails.label 必须包含对应用户条件及简短证据；没有资料也必须保留该条件并写明资料不足。
 - **禁止同义重复**：如果 hardFilterChecks 已包含某个主题，matchDetails 不得用另一种语言或近义表达再次输出；尤其禁止重复 Google 评分、靠近车站/地铁、菜品口味等条件。
 - **状态判定依据**：
-  - "ok": 明确证据支持。
+  - "ok": 明确证据支持。只要 label 中引用或概述了明确支持该条件的评论/资料，就必须是 ok，绝不能是 unknown。
   - "fail": 明确证据证实不满足。
-  - "unknown": 无法确认。
+  - "unknown": 确实没有相关证据、资料不足或无法确认。
 - **Google 评分是确定性事实**：候选中的 googleRating/rating 来自 Google Places。遇到 Google/谷歌评分阈值条件时必须直接做数值比较；有数值时禁止标为 unknown，也不要用评论文本推断评分。
 - **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
 
