@@ -1455,25 +1455,18 @@ ${JSON.stringify(group.candidates, null, 2)}
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
     const groupResults = yield* withHeartbeat(
-      (async () => {
-        const results = [];
-        for (const group of candidatesForPrompt) {
-          // Batch within each cuisine
-          const BATCH_SIZE = 12;
-          const batches = [];
-          for (let i = 0; i < group.candidates.length; i += BATCH_SIZE) {
-            batches.push(group.candidates.slice(i, i + BATCH_SIZE));
-          }
-          
-          const batchPicks = await Promise.all(batches.map(async (batch) => {
-            const res = await rankOneGroup({ ...group, candidates: batch });
-            return res.picks;
-          }));
-          
-          results.push({ cuisine: group.cuisine, picks: batchPicks.flat() });
+      Promise.all(candidatesForPrompt.map(async (group) => {
+        const BATCH_SIZE = 12;
+        const batches = [];
+        for (let i = 0; i < group.candidates.length; i += BATCH_SIZE) {
+          batches.push(group.candidates.slice(i, i + BATCH_SIZE));
         }
-        return results;
-      })(),
+        const batchPicks = await Promise.all(batches.map(async (batch) => {
+          const res = await rankOneGroup({ ...group, candidates: batch });
+          return res.picks;
+        }));
+        return { cuisine: group.cuisine, picks: batchPicks.flat() };
+      })),
       "rank",
     );
     console.log(
@@ -1648,7 +1641,7 @@ ${JSON.stringify(group.candidates, null, 2)}
           const restaurant = {
             id: pick.placeId,
             name: p.name,
-            localName: p.displayName || p.name,
+            localName: p.name,
             cuisine: entry.cuisine,
             address: p.address,
             googleMapsUri: p.googleMapsUri,
