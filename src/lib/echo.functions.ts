@@ -1663,10 +1663,10 @@ ${JSON.stringify(group.candidates, null, 2)}
         const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
         const hardDetails = checks.map(({ filter, check }) => ({
           label: check.status === "ok"
-            ? (isEn ? `✓ Constraint: ${filter.text}` : `✓ 硬条件：${filter.text}`)
+            ? (isEn ? `Constraint: ${filter.text}` : `硬条件：${filter.text}`)
             : check.status === "fail"
-              ? (isEn ? `✗ Constraint not met: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `✗ 硬条件未满足：${filter.text}${check.note ? ` — ${check.note}` : ""}`)
-              : (isEn ? `? Constraint to verify: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `？ 硬条件待核实：${filter.text}${check.note ? ` — ${check.note}` : ""}`),
+              ? (isEn ? `Constraint not met: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${filter.text}${check.note ? ` — ${check.note}` : ""}`)
+              : (isEn ? `Constraint to verify: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${filter.text}${check.note ? ` — ${check.note}` : ""}`),
           status: (check.status === "ok" ? "ok" : "warn") as "ok" | "warn",
         }));
         const aiDetails = (pick?.matchDetails ?? [])
