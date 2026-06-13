@@ -535,6 +535,68 @@ const ResultsSchema = z.object({
 });
 
 // AI 排序输出：每组 picks 用 placeId 引用真实候选
+const readableStringFrom = (value: unknown, fallback = "") => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
+};
+
+const MatchDetailSchema = z.preprocess(
+  (v) => {
+    if (typeof v === "string") return { label: v, status: "warn" };
+    if (v && typeof v === "object") {
+      const obj = v as Record<string, unknown>;
+      const label =
+        readableStringFrom(obj.label) ||
+        readableStringFrom(obj.text) ||
+        readableStringFrom(obj.filter) ||
+        readableStringFrom(obj.condition) ||
+        readableStringFrom(obj.requirement) ||
+        readableStringFrom(obj.note) ||
+        readableStringFrom(obj.reason) ||
+        readableStringFrom(obj.evidence) ||
+        readableStringFrom(obj.summary) ||
+        "Verification detail";
+      return { ...obj, label, status: obj.status ?? "warn" };
+    }
+    return { label: "Verification detail", status: "warn" };
+  },
+  z.object({
+    label: z.string().catch("Verification detail"),
+    // 保持旧版容错：模型偶发返回纯字符串、text/note 字段或非白名单状态时，不丢弃整批核验结果。
+    status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
+  }),
+);
+
+const HardFilterCheckSchema = z.preprocess(
+  (v) => {
+    if (typeof v === "string") return { filter: v, status: "unknown", note: v };
+    if (v && typeof v === "object") {
+      const obj = v as Record<string, unknown>;
+      const filter =
+        readableStringFrom(obj.filter) ||
+        readableStringFrom(obj.condition) ||
+        readableStringFrom(obj.requirement) ||
+        readableStringFrom(obj.text) ||
+        "";
+      const note =
+        readableStringFrom(obj.note) ||
+        readableStringFrom(obj.reason) ||
+        readableStringFrom(obj.evidence) ||
+        readableStringFrom(obj.summary) ||
+        undefined;
+      return { ...obj, filter, note, status: obj.status ?? "unknown" };
+    }
+    return { filter: "", status: "unknown" };
+  },
+  z.object({
+    // 部分模型只返回 status/note；下游会按数组位置重新对应原始硬条件。
+    filter: z.string().catch("").default(""),
+    status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
+    note: z.string().optional(),
+  }),
+);
+
 const AiPickSchema = z.object({
   placeId: z.string(),
   matchScore: z.number().min(0).max(100),
@@ -548,28 +610,8 @@ const AiPickSchema = z.object({
     (v) => (typeof v === "string" ? { text: v, source: null } : v),
     z.object({ text: z.string(), source: z.string().nullable().optional() }),
   )).default([]),
-  matchDetails: z
-    .array(
-      z.preprocess(
-        (v) => (typeof v === "string" ? { label: v, status: "warn" } : v),
-        z.object({
-          label: z.string(),
-          // 保持旧版容错：模型偶发返回纯字符串或非白名单状态时，不丢弃整批核验结果。
-          status: z.enum(["ok", "warn", "unknown"]).catch("warn"),
-        }),
-      ),
-    )
-    .default([]),
-  hardFilterChecks: z
-    .array(
-      z.object({
-        // 部分模型只返回 status/note；下游会按数组位置重新对应原始硬条件。
-        filter: z.string().optional().default(""),
-        status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
-        note: z.string().optional(),
-      }),
-    )
-    .default([]),
+  matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
+  hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
 });
 
 const AiRankingSchema = z.object({
@@ -598,8 +640,10 @@ function verifyGoogleRatingFilter(
   isEn: boolean,
 ): { status: "ok" | "unknown" | "fail"; note: string } | null {
   const text = filterText.toLowerCase();
-  // 用户常写“谷歌 4.5 以上”，不一定显式包含“评分”二字。
-  if (!/(google(?:\s+maps)?|谷歌(?:地图)?|グーグル)/i.test(text)) {
+  // 用户常写“谷歌 4.5 以上”，解析器也可能标准化成“评分 ≥ 4.5”而丢掉“谷歌”。
+  const mentionsGoogle = /(google(?:\s+maps)?|谷歌(?:地图)?|グーグル)/i.test(text);
+  const mentionsRating = /(评分|評分|评级|評級|星级|星級|rating|rated|stars?|score|分|星|\/\s*5)/i.test(text);
+  if (!mentionsGoogle && !mentionsRating) {
     return null;
   }
   const thresholdMatch = text.match(/([1-5](?:\.\d+)?)\s*(?:分|星|\/\s*5)?/);
