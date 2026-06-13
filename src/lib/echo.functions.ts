@@ -1080,8 +1080,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       return;
     }
 
-    // 日期/时间硬筛：仅当用户明示了 visitTime 才执行。
-    // 剔除明确 closed，保留 open/unknown；某 cuisine 全被剔光则回退保留前 3 个标 unknown。
+    // 日期/时间硬筛：明确 closed 的候选属于不可用基础淘汰项，不参与后续补足。
     const visitMatchById = new Map<string, "open" | "unknown">();
     if (data.visitTime && data.visitTime.weekday != null && data.visitTime.hhmm) {
       const w = data.visitTime.weekday;
@@ -1090,21 +1089,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       placeResults = placeResults.map((r) => {
         if (!r.places.length) return r;
         const kept: PlaceCandidate[] = [];
-        const dropped: PlaceCandidate[] = [];
         for (const p of r.places) {
           const m = isOpenAt(p.openingPeriods, w, t);
           if (m === "closed") {
-            dropped.push(p);
+            totalRemoved++;
           } else {
             kept.push(p);
             visitMatchById.set(p.placeId, m);
           }
-        }
-        totalRemoved += dropped.length;
-        if (kept.length === 0 && dropped.length > 0) {
-          const fallback = dropped.slice(0, 3);
-          for (const p of fallback) visitMatchById.set(p.placeId, "unknown");
-          return { ...r, places: fallback };
         }
         return { ...r, places: kept };
       });
@@ -1207,10 +1199,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }
     }
 
-    // 限制送给 AI 的候选数量：每个 cuisine 分组按 (rating × log(reviewCount)) 排序取前 25
-    // AI 排序输出本来也只用 top N，输入侧超过 ~60 家纯属浪费 token、加大输出截断风险。
-    const PER_CUISINE_CAP = 25;
-    const candidatesForPrompt = placeResults
+    // 全量候选按每批 8 家核验，避免固定前 25 截断，同时控制单次模型输入输出体积。
+    const AI_BATCH_SIZE = 8;
+    const candidateGroups = placeResults
       .filter((r) => r.places.length)
       .map((r) => {
         const ranked = [...r.places].sort((a, b) => {
@@ -1220,7 +1211,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         });
         return {
           cuisine: r.cuisine,
-          candidates: ranked.slice(0, PER_CUISINE_CAP).map((p) => {
+          candidates: ranked.map((p) => {
             const review = reviewById.get(p.placeId) ?? null;
             const tabelog = tabelogById.get(p.placeId) ?? null;
             const yelp = yelpById.get(p.placeId) ?? null;
@@ -1264,6 +1255,13 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           }),
         };
       });
+    const candidatesForPrompt = candidateGroups.flatMap((group) => {
+      const batches: typeof candidateGroups = [];
+      for (let i = 0; i < group.candidates.length; i += AI_BATCH_SIZE) {
+        batches.push({ cuisine: group.cuisine, candidates: group.candidates.slice(i, i + AI_BATCH_SIZE) });
+      }
+      return batches;
+    });
     const totalCandidatesForPrompt = candidatesForPrompt.reduce(
       (n, g) => n + g.candidates.length,
       0,
