@@ -1304,7 +1304,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
         : `- 「${group.cuisine}」：（无额外扩展）`;
 
-      return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（只针对一种料理：「${group.cuisine}」）。请根据用户需求，**目标返回 5 家最匹配的店（硬上限 5 家）**。如果候选里实在凑不出 5 家像样的店，可以返回少于 5 家——剩下的会由系统从其它候选自动补齐。${langDirective}
+      return `你是 Echo Eats 的餐厅条件核验分析师。下面是 Google Places 返回的一批真实候选餐厅（只针对一种料理：「${group.cuisine}」）。你必须逐一核验并返回本批次的**每一家候选**，不得只挑前 5、不得因条件不满足而省略。系统将在全部批次完成后统一排序。${langDirective}
 
 用户需求：
 - 城市：${data.city}
@@ -1320,7 +1320,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 本组料理 = 「${group.cuisine}」。本地化主词、同义词、反例：
 ${fidelity}
 判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
-- 命中本组反例关键词且未命中本组主词/同义词 → **直接剔除，不进 picks 也不进 partial**。
+- 候选已经通过基础料理过滤；不要再凭模糊料理信息省略候选。
 - 候选本身就是主菜的小店（招牌菜与本组料理一致）→ 优先纳入。
 - 候选模糊（综合定食店、菜单不明）→ 允许保留，对应 matchDetails 标 warn 注明"未确认主营是否为本组料理"。
 - 这条规则**不计入 hardFilterChecks 数组**（hardFilterChecks 仍严格等于 ${hardFiltersList.length} 条用户原始硬条件）。
@@ -1335,7 +1335,7 @@ ${JSON.stringify(group.candidates, null, 2)}
     - "unknown" = 信息不足无法判断（既不能确认满足、也不能确认违反）
     - "fail" = 明确证实不满足
   note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
-- **任何一条 status="fail" 的候选不要放进 picks**。允许有 unknown 的候选进入 picks（前端会单独展示）。
+- **无论 hardFilterChecks 是 ok、unknown 还是 fail，都必须把候选放进 picks**。fail 只代表有证据确认不满足，最终是否作为补位由系统决定。
 - **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。
 - 价格判断（重要，按以下优先级，**前者命中后不再回退**）：
     1. **Tabelog 价位优先（仅当用户预算币种是 JPY）**：若 candidate.tabelog.priceJPY 存在且用户预算硬条件币种是 JPY → **必须**用 Tabelog 价位判断（覆盖 priceFromReviews 和 Google priceLevel）：
@@ -1355,7 +1355,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 - matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
 - matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**。不要重复 hardFilterChecks 的内容。**严格限定范围**：只能围绕用户实际提到的需求来写，用户没提的维度禁止出现在 matchDetails 里（哪怕网评有相关吐槽，也只能放进 cons）。
 
-输出 JSON：{ "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }`;
+输出 JSON：{ "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }。picks 数量必须与本批候选数量一致。`;
     };
 
     // 每个 cuisine 独立调用 AI（主调用 + raw 文本兜底）。失败时返回空 picks，不抛出，
@@ -1369,7 +1369,7 @@ ${JSON.stringify(group.candidates, null, 2)}
       const RAW_FORMAT_HARD_RULES = `\n\n**输出格式硬约束**：
 - 第一个字符必须是 "{"，最后一个字符必须是 "}"。
 - 不要任何前置说明、不要 markdown、不要 \`\`\`json 包裹、不要"以下是"之类的开场。
-- picks 数组**最多 8 条**；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
+- picks 数组必须逐一覆盖本批所有候选（本批最多 8 条）；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
 
       const extractJson = (text: string): string => {
         const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1477,7 +1477,16 @@ ${JSON.stringify(group.candidates, null, 2)}
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
     );
-    const ranking: z.infer<typeof AiRankingSchema> = { groups: groupResults };
+    const mergedGroups = new Map<string, z.infer<typeof AiPickSchema>[]>();
+    for (const result of groupResults) {
+      const existing = mergedGroups.get(result.cuisine) ?? [];
+      const byId = new Map(existing.map((pick) => [pick.placeId, pick]));
+      for (const pick of result.picks) byId.set(pick.placeId, pick);
+      mergedGroups.set(result.cuisine, Array.from(byId.values()));
+    }
+    const ranking: z.infer<typeof AiRankingSchema> = {
+      groups: Array.from(mergedGroups, ([cuisine, picks]) => ({ cuisine, picks })),
+    };
 
     // 所有 cuisine 都拿不到 picks 时，给一个友好兜底（输入侧本来就有候选才报错）。
     if (
