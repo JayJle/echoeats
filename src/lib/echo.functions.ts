@@ -1468,6 +1468,8 @@ ${JSON.stringify(group.candidates, null, 2)}
 ## 铁律
 - **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
 - **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
+- **hardFilterChecks 是硬条件的唯一输出位置**：matchDetails 不得复述、改写或重复任何硬条件（包括 Google 评分阈值）。
+- **matchDetails 只写用户实际提出的非硬条件匹配点**：不要新增用户没提到的维度；没有可靠的额外匹配点就返回空数组。
 - **状态判定依据**：
   - "ok": 明确证据支持。
   - "fail": 明确证据证实不满足。
@@ -1649,9 +1651,11 @@ ${JSON.stringify(group.candidates, null, 2)}
                 },
           };
         });
-        const hasFail = checks.some(({ check }) => check.status === "fail");
+        const hasBlockingFail = checks.some(
+          ({ filter, check }) => check.status === "fail" && filter.weight >= 0.85,
+        );
         const hasUnknown = checks.some(({ check }) => check.status === "unknown");
-        const verificationStatus = hasFail ? "fail" : hasUnknown ? "unknown" : "ok";
+        const verificationStatus = hasBlockingFail ? "fail" : hasUnknown ? "unknown" : "ok";
         const failedWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "fail" ? filter.weight : 0), 0);
         const failedCount = checks.filter(({ check }) => check.status === "fail").length;
         const unknownWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "unknown" ? filter.weight : 0), 0);
@@ -1665,10 +1669,18 @@ ${JSON.stringify(group.candidates, null, 2)}
               : (isEn ? `? Constraint to verify: ${filter.text}${check.note ? ` — ${check.note}` : ""}` : `？ 硬条件待核实：${filter.text}${check.note ? ` — ${check.note}` : ""}`),
           status: (check.status === "ok" ? "ok" : "warn") as "ok" | "warn",
         }));
-        const aiDetails = (pick?.matchDetails ?? []).slice(0, 5).map((detail) => ({
-          label: detail.label,
-          status: (detail.status === "ok" ? "ok" : "warn") as "ok" | "warn",
-        }));
+        const aiDetails = (pick?.matchDetails ?? [])
+          .filter(
+            (detail) =>
+              detail.status !== "unknown" &&
+              !isDuplicateOfHardFilter(detail.label, data.hardFilters.map((filter) => filter.text)),
+          )
+          .slice(0, 5)
+          .map((detail) => ({
+            label: detail.label,
+            status: (detail.status === "ok" ? "ok" : "warn") as "ok" | "warn",
+          }));
+        const matchDetails = dedupeMatchDetails([...hardDetails, ...aiDetails]).slice(0, 8);
         const review = reviewById.get(p.placeId) ?? null;
         const tabelogInfo = tabelogById.get(p.placeId) ?? null;
         const yelpInfo = yelpById.get(p.placeId) ?? null;
@@ -1691,7 +1703,7 @@ ${JSON.stringify(group.candidates, null, 2)}
           aiSummary: pick?.aiSummary?.trim() || (isEn
             ? `${p.name} was retained because its detailed conditions could not be fully verified.`
             : `${p.name} 因资料不足暂时保留，具体条件尚未完全核实。`),
-          matchDetails: [...hardDetails, ...aiDetails].slice(0, 8),
+          matchDetails,
           pros: pick?.pros ?? [],
           cons: pick?.cons ?? [],
           links: buildLinks(p, data.city, country, isEn, yelpInfo?.url ?? null),
