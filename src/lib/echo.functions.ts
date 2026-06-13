@@ -374,10 +374,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
       const vt = parsed.visitTime;
       const mealPeriod = inferMealPeriod(data.freeText ?? "");
       const explicitClock = inferExplicitClock(data.freeText ?? "");
-      const inferredWeekday = inferWeekdayFromText(
-        data.freeText ?? "",
-        new Date().getDay(),
-      );
+      const inferredWeekday = inferWeekdayFromText(data.freeText ?? "", new Date().getDay());
       if ((!vt || !vt.mentioned) && mealPeriod) {
         return {
           ...parsed,
