@@ -1496,7 +1496,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const nonHardFilters = [
       ...data.softPreferences.map((item) => ({ kind: "preference", text: item.text })),
       ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: item.text })),
-      ...data.dishPreferences.map((text) => ({ kind: "dish", text })),
+      ...data.dishPreferences
+        .filter((dish) => !data.hardFilters.some((filter) => filter.text.includes(dish)))
+        .map((text) => ({ kind: "dish", text })),
     ];
 
     const langDirective = isEn
@@ -1742,7 +1744,7 @@ ${JSON.stringify(group.candidates, null, 2)}
         const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
         const hardDetails = checks.map(({ filter, check }) => ({
           label: check.status === "ok"
-            ? (isEn ? `Constraint: ${cleanMatchLabel(filter.text)}` : `硬条件：${cleanMatchLabel(filter.text)}`)
+            ? (isEn ? `Constraint: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
             : check.status === "fail"
               ? (isEn ? `Constraint not met: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
               : (isEn ? `Constraint to verify: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`),
