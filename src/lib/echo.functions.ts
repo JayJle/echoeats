@@ -1296,67 +1296,51 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 单 cuisine 的 prompt：只塞当前 cuisine 的候选 + 该 cuisine 的扩展词，输出体量约为
     // 原来的 1/N（N = cuisine 数），从根本上避免触发 maxOutputTokens 截断。
     const buildPromptForGroup = (group: GroupForPrompt) => {
-      const exp = cuisineExpansions.get(group.cuisine);
-      const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
-      const neg =
-        exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
-      const fidelity = exp
-        ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
-        : `- 「${group.cuisine}」：（无额外扩展）`;
+  const exp = cuisineExpansions.get(group.cuisine);
+  const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
+  const neg =
+    exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
+  const fidelity = exp
+    ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
+    : `- 「${group.cuisine}」：（无额外扩展）`;
 
-      return `你是 Echo Eats 的餐厅条件核验分析师。下面是 Google Places 返回的一批真实候选餐厅（只针对一种料理：「${group.cuisine}」）。你必须逐一核验并返回本批次的**每一家候选**，不得只挑前 5、不得因条件不满足而省略。系统将在全部批次完成后统一排序。${langDirective}
+  return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。
 
 用户需求：
 - 城市：${data.city}
 - 日期/时间：${data.dateTime}
-- 硬条件（带 weight 0-1，下面 hardFilterChecks 必须**逐条且按相同顺序**对照）：${hardFiltersJson}
+- 硬条件（带 weight 0-1）：${hardFiltersJson}
 - 偏好（带 weight）：${softJson === "[]" ? "无" : softJson}
 - 避雷（带 weight）：${negJson === "[]" ? "无" : negJson}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
 
-权重含义：1.0=务必、0.9=必须、0.8=明确硬属性、0.6=希望、0.4=可选。**只有 weight ≥ 0.85 的硬条件 fail 才会真的剔除餐厅**；低权重 fail 会扣分但保留。
+## 验证与分类任务
+请核验列表中的**每一个**餐厅，并将其归入以下三个桶（Buckets）之一：
+1. **ok**：满足所有 weight >= 0.85 的硬条件，且没有明显的负面网评冲突。
+2. **unknown**：没有任何 weight >= 0.85 的条件明确判定为 "fail"，但至少有一个重要条件因为信息不足被标记为 "unknown"。
+3. **fail**：至少有一个 weight >= 0.85 的硬条件被明确判定为 "fail"（不满足）。
 
-## 料理保真（最高优先级，先于其它硬条件）
-本组料理 = 「${group.cuisine}」。本地化主词、同义词、反例：
+## 料理保真（最高优先级）
 ${fidelity}
 判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
-- 候选已经通过基础料理过滤；不要再凭模糊料理信息省略候选。
-- 候选本身就是主菜的小店（招牌菜与本组料理一致）→ 优先纳入。
-- 候选模糊（综合定食店、菜单不明）→ 允许保留，对应 matchDetails 标 warn 注明"未确认主营是否为本组料理"。
-- 这条规则**不计入 hardFilterChecks 数组**（hardFilterChecks 仍严格等于 ${hardFiltersList.length} 条用户原始硬条件）。
+- 命中反例关键词且未命中主词/同义词 → **判定为 fail**。
 
 候选数据（JSON）：
 ${JSON.stringify(group.candidates, null, 2)}
 
-铁律：
-- **只能使用候选列表里的 placeId**，禁止虚构 placeId、禁止编造店名。
-- **hardFilterChecks 必须对每个候选逐条核对所有 ${hardFiltersList.length} 条硬条件**：长度严格等于 ${hardFiltersList.length}，filter 字段原文复述，status 取值：
-    - "ok" = 候选数据/realWorldReviews 明确证实满足
-    - "unknown" = 信息不足无法判断（既不能确认满足、也不能确认违反）
-    - "fail" = 明确证实不满足
-  note 字段（可选，≤30 字）写明依据，如"网评人均 ¥120 ≤ ¥150"或"无营业时间数据"。
-- **无论 hardFilterChecks 是 ok、unknown 还是 fail，都必须把候选放进 picks**。fail 只代表有证据确认不满足，最终是否作为补位由系统决定。
-- **fail / unknown 边界（严格执行，避免误剔）**：fail 仅在候选数据或 realWorldReviews **明确证伪**时使用。一切"数据里没说"、"网评没提及"、"无法核实"、"凭店名/类型推测"的情况一律 **unknown**，禁止凭推测打 fail。
-- 价格判断（重要，按以下优先级，**前者命中后不再回退**）：
-    1. **Tabelog 价位优先（仅当用户预算币种是 JPY）**：若 candidate.tabelog.priceJPY 存在且用户预算硬条件币种是 JPY → **必须**用 Tabelog 价位判断（覆盖 priceFromReviews 和 Google priceLevel）：
-       - priceJPY.low > 用户预算上限 → fail
-       - priceJPY.high != null 且 priceJPY.high ≤ 用户预算上限 → ok
-       - 区间跨过预算上限（low ≤ 上限 < high，或上限缺一边）→ unknown
-    2. 否则若候选有 priceFromReviews.amount 且与用户预算同币种 → 用它判断；超出 → fail；满足 → ok。
-    3. 否则用 Google priceLevel：$$$$ 等明显远超用户预算 → fail；可比但模糊 → unknown。
-    4. 货币不一致或无任何价格信息且用户给了预算上限 → unknown（不要 fail）。
-- **realWorldReviews 优先**：当候选有 realWorldReviews 时，优先依据它判断匹配度；commonComplaints 命中用户避雷项 → 大幅扣分；reviewHighlights 与用户偏好/菜品偏好吻合 → 加分。
-- **绝对禁止编造网评**：pros / cons / aiSummary 中提到的"网友评价"内容**只能**来自该候选的 realWorldReviews.reviewHighlights / commonComplaints 原文（可适当浓缩改写到 ≤ 25 字，不得新增事实）。**如果 realWorldReviews 为 null，或两个数组都为空**：pros 和 cons 必须为空数组 []；aiSummary 只能基于 Google 数据，不准出现"网友说""口碑""评价"等字样，并在末尾注明"（暂无可信网评，仅基于 Google 数据）"。
-- **pros/cons 必须取真实素材**：reviewHighlights 非空时 pros 至少 2 条来自其浓缩；commonComplaints 非空时 cons 至少 1 条来自其浓缩。禁止"环境不错""值得一试"等空话。
-- **pros/cons 输出格式必须是 { text, source } 对象**（不是字符串）。source 取值范围："Google" / "Yelp" / "TripAdvisor" / "Tabelog" / "大众点评" / "小红书" / "美团" / "综合"（多平台一致时）。source 必须能在 realWorldReviews.sources 中找到对应来源（"Google Reviews" 归为 "Google"），禁止编造；无法归因时填 "综合"。
-- aiSummary: ${isEn ? "2-3 sentences in English" : "2-3 句中文"}，结合用户偏好+真实网评说明为什么选它。有 realWorldReviews 时必须明示${isEn ? '"reviewers mention…" / "diners note…"' : '"网友提到…"'}。**当 realWorldReviews.sources 含 Yelp / TripAdvisor / Tabelog / 大众点评 / 小红书 中任一非 Google 平台时**，在 aiSummary 末尾追加${isEn ? '"(based on user reviews from <平台逗号列表>)"' : '「（综合 <平台顿号列表> 等网友评价）」'}，只列实际出现的平台。${isEn ? ' If realWorldReviews is null or both arrays are empty, append "(no trusted reviews available; based on Google data only)" instead.' : "若 realWorldReviews 为空，则改为「（暂无可信网评，仅基于 Google 数据）」。"}
-- **Tabelog 信号（仅日本店铺可能有）**：仅 tabelog.priceJPY 参与硬过滤；其它字段只作展示，不参与评分。tabelog 为 null 时不要因此扣分。
-- **Yelp 信号（仅 US/CA/西欧店铺可能有）**：candidate.yelp 的所有字段（rating/reviewCount/priceLevel/summary）**仅作展示，绝不参与硬过滤、绝不参与评分**。yelp 为 null 时不要因此扣分。若 yelp.summary 与用户偏好高度吻合，可在 aiSummary 中引用（须按 source 归因到 "Yelp"）。
-- matchScore: 0-100；matchTier: perfect (92+) / high (80-91) / partial (<80)。含 unknown 的候选 matchTier 不能给 perfect。
-- matchDetails: 3-6 条短描述，每条带 status。**status 字段只能取 "ok" 或 "warn"**。不要重复 hardFilterChecks 的内容。**严格限定范围**：只能围绕用户实际提到的需求来写，用户没提的维度禁止出现在 matchDetails 里（哪怕网评有相关吐槽，也只能放进 cons）。
+## 铁律
+- **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
+- **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
+- **状态判定依据**：
+  - "ok": 明确证据支持。
+  - "fail": 明确证据证实不满足。
+  - "unknown": 无法确认。
+- **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
 
-输出 JSON：{ "picks": [{ "placeId": "...", "matchScore": 88, "matchTier": "high", "hardFilterChecks": [{"filter":"...","status":"ok","note":"..."}], "aiSummary": "...", "pros": [...], "cons": [...], "matchDetails": [{ "label": "...", "status": "ok" }] }] }。picks 数量必须与本批候选数量一致。`;
-    };
+输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
+（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
+};
+
 
     // 每个 cuisine 独立调用 AI（主调用 + raw 文本兜底）。失败时返回空 picks，不抛出，
     // 这样单个 cuisine 失败不会拖垮整次搜索。
@@ -1471,7 +1455,25 @@ ${JSON.stringify(group.candidates, null, 2)}
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
     const groupResults = yield* withHeartbeat(
-      Promise.all(candidatesForPrompt.map(rankOneGroup)),
+      (async () => {
+        const results = [];
+        for (const group of candidatesForPrompt) {
+          // Batch within each cuisine
+          const BATCH_SIZE = 12;
+          const batches = [];
+          for (let i = 0; i < group.candidates.length; i += BATCH_SIZE) {
+            batches.push(group.candidates.slice(i, i + BATCH_SIZE));
+          }
+          
+          const batchPicks = await Promise.all(batches.map(async (batch) => {
+            const res = await rankOneGroup({ ...group, candidates: batch });
+            return res.picks;
+          }));
+          
+          results.push({ cuisine: group.cuisine, picks: batchPicks.flat() });
+        }
+        return results;
+      })(),
       "rank",
     );
     console.log(
@@ -1514,34 +1516,115 @@ ${JSON.stringify(group.candidates, null, 2)}
       for (const p of r.places) placeById.set(p.placeId, { cuisine: r.cuisine, place: p });
     }
 
-    const placeByRestaurantId = new Map<string, PlaceCandidate>();
     const groups = data.cuisines
       .map((cuisine) => {
         const aiGroup =
           ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase()) ??
           ranking.groups.find((g) => g.cuisine === cuisine);
-        const picks = (aiGroup?.picks ?? []).slice(0, 5);
+        const allVerified = aiGroup?.picks ?? [];
 
-        type Bucket = "ok" | "partial" | null;
+        const okList: any[] = [];
+        const unknownList: any[] = [];
+        const failList: any[] = [];
 
-        const built = picks
-          .map((pick, idx) => {
-            const entry = placeById.get(pick.placeId);
-            if (!entry) return null; // AI 编了 placeId
-            const p = entry.place;
+        for (const pick of allVerified) {
+          const entry = placeById.get(pick.placeId);
+          if (!entry) continue;
+          const p = entry.place;
 
-            // 规范化 hardFilterChecks：长度对齐、缺失视为 unknown
-            const checksByFilter = new Map<string, { status: "ok" | "unknown" | "fail"; note?: string }>();
-            for (const c of pick.hardFilterChecks ?? []) {
-              checksByFilter.set(c.filter, { status: c.status, note: c.note });
-            }
-            const checks = data.hardFilters.map((h) => {
-              const c = checksByFilter.get(h.text);
-              return {
-                ...(c ?? { status: "unknown" as const, note: undefined as string | undefined }),
-                weight: h.weight,
-              };
-            });
+          const checksByFilter = new Map<string, { status: "ok" | "unknown" | "fail"; note?: string }>();
+          for (const c of pick.hardFilterChecks ?? []) {
+            checksByFilter.set(c.filter, { status: c.status, note: c.note });
+          }
+          const checks = data.hardFilters.map((h) => {
+            const c = checksByFilter.get(h.text);
+            return {
+              ...(c ?? { status: "unknown" as const, note: undefined }),
+              weight: h.weight,
+            };
+          });
+
+          // Determine bucket
+          let status: "ok" | "unknown" | "fail" = "ok";
+          if (checks.some((c) => c.status === "fail" && c.weight >= 0.85)) {
+            status = "fail";
+          } else if (checks.some((c) => c.status === "unknown" && c.weight >= 0.85)) {
+            status = "unknown";
+          } else if (checks.some((c) => c.status === "unknown")) {
+            // Even low weight unknown makes it unknown for verification purposes if we want to be strict,
+            // but let's say only high weight unknowns demote from OK.
+            // Actually user asked for 3 buckets.
+            status = checks.some(c => c.status === "unknown") ? "unknown" : "ok";
+          }
+
+          const aiScore = Math.round(pick.matchScore);
+          let weightAdjust = 0;
+          for (const c of checks) {
+            if (c.status === "fail") weightAdjust -= c.weight * 25;
+            else if (c.status === "unknown") weightAdjust -= c.weight * 4;
+          }
+          const score = Math.max(0, Math.min(100, Math.round(aiScore + weightAdjust)));
+
+          const restaurant = {
+            id: pick.placeId,
+            name: p.name,
+            localName: p.displayName || p.name,
+            cuisine: entry.cuisine,
+            address: p.address,
+            googleMapsUri: p.googleMapsUri,
+            websiteUri: p.websiteUri,
+            primaryType: p.primaryType,
+            matchScore: score,
+            matchTier: score >= 92 ? "perfect" : score >= 80 ? "high" : "partial",
+            verificationStatus: status,
+            openNow: p.openNow,
+            reservable: p.reservable,
+            needsReview: status !== "ok",
+            ratings: candidateRatings(p, reviewById.get(p.placeId) || null, tabelogById.get(p.placeId) || null, isEn, country, yelpById.get(p.placeId) || null),
+            aiSummary: pick.aiSummary,
+            matchDetails: pick.matchDetails.map(d => ({ ...d, status: d.status === "ok" ? "ok" : "warn" })),
+            pros: pick.pros,
+            cons: pick.cons,
+            links: buildLinks(p, data.city, country, isEn, yelpById.get(p.placeId)?.url),
+            photoUrls: p.photoUrls || [],
+            tabelog: tabelogById.get(p.placeId) || null,
+            yelp: yelpById.get(p.placeId) || null,
+            weekdayDescriptions: p.weekdayDescriptions,
+            visitTimeMatch: visitMatchById.get(p.placeId) || null,
+          };
+
+          if (status === "ok") okList.push(restaurant);
+          else if (status === "unknown") unknownList.push(restaurant);
+          else failList.push(restaurant);
+        }
+
+        // Top-5 fill
+        const restaurants = [...okList.sort((a, b) => b.matchScore - a.matchScore).slice(0, 5)];
+        if (restaurants.length < 5) {
+          const needed = 5 - restaurants.length;
+          restaurants.push(...unknownList.sort((a, b) => b.matchScore - a.matchScore).slice(0, needed));
+        }
+
+        return {
+          cuisine,
+          restaurants,
+          ok: okList,
+          unknown: unknownList,
+          fail: failList,
+          partialRestaurants: unknownList, // compatibility
+        };
+      })
+      .filter((g) => g.restaurants.length > 0 || g.ok.length > 0 || g.unknown.length > 0);
+
+    yield {
+      type: "result",
+      payload: {
+        groups,
+        error: groups.length === 0 ? (isEn ? "No matching restaurants found after verification." : "核验后未找到匹配的餐厅。") : null,
+        suggestions: fallbackSuggestions(uiLang),
+        warnings,
+      },
+    };  });
 
             // 仅高权重（≥ 0.85）硬条件 fail 才剔除
             if (checks.some((c) => c.status === "fail" && c.weight >= 0.85)) return null;
