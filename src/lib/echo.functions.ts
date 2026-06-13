@@ -369,6 +369,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 import {
   guessLanguageCode,
   guessRegionCode,
+  isPlaceClearlyOutsideTargetRegion,
   resolvePhotoUrl,
   searchPlaces,
   type PlaceCandidate,
@@ -1147,7 +1148,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             }
           }
           const allPlaces = Array.from(merged.values());
-          const places = filterByCuisineRelevance(allPlaces, expansion);
+          const inRegionPlaces = allPlaces.filter((place) => {
+            const outside = isPlaceClearlyOutsideTargetRegion(place, region);
+            if (outside) {
+              console.warn(
+                `[places/location] removed outside target region=${region || "unknown"} city="${data.city}" place="${place.name}" address="${place.address}"`,
+              );
+            }
+            return !outside;
+          });
+          const places = filterByCuisineRelevance(inRegionPlaces, expansion);
           return { cuisine, places, error: places.length ? null : firstError };
         }),
       );
