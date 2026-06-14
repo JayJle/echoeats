@@ -78,6 +78,48 @@ const ParsedSchema = z.object({
   uiLanguage: z.enum(["zh", "en"]).catch("zh").default("zh"),
 });
 
+type WeightedCondition = z.infer<typeof WeightedConditionSchema>;
+
+function conditionKey(text: string): string {
+  const source = text.split(/\s*(?:→|->|=>)\s*/, 1)[0] || text;
+  return source
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function uniqueConditions(items: WeightedCondition[]): WeightedCondition[] {
+  const unique = new Map<string, WeightedCondition>();
+  for (const item of items) {
+    const key = conditionKey(item.text);
+    if (!key) continue;
+    const existing = unique.get(key);
+    if (!existing) unique.set(key, item);
+    else if (item.weight > existing.weight) unique.set(key, { ...existing, weight: item.weight });
+  }
+  return [...unique.values()];
+}
+
+function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
+  const negativeFilters = uniqueConditions(parsed.negativeFilters);
+  const negativeKeys = new Set(negativeFilters.map((item) => conditionKey(item.text)));
+  const hardFilters = uniqueConditions(parsed.hardFilters).filter(
+    (item) => !negativeKeys.has(conditionKey(item.text)),
+  );
+  const hardKeys = new Set(hardFilters.map((item) => conditionKey(item.text)));
+  const softPreferences = uniqueConditions(parsed.softPreferences).filter((item) => {
+    const key = conditionKey(item.text);
+    return !negativeKeys.has(key) && !hardKeys.has(key);
+  });
+  const dishPreferences = [...new Map(
+    parsed.dishPreferences
+      .map((dish) => [conditionKey(dish), dish.trim()] as const)
+      .filter(([key, dish]) => key && dish),
+  ).values()];
+
+  return { ...parsed, negativeFilters, hardFilters, softPreferences, dishPreferences };
+}
+
 const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
   { pattern: /afternoon\s+tea|下午茶/i, hhmm: "15:00" },
   { pattern: /late[-\s]?night(?:\s+(?:meal|food|dining))?|夜宵|宵夜/i, hhmm: "22:00" },
@@ -331,7 +373,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         !userProvidedCuisines &&
         parsed.cuisines.length > 0 &&
         !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
-      return parsed;
+      return dedupeParsedConditions(parsed);
     };
 
     const FALLBACK_CUISINE_WORDS = new Set([

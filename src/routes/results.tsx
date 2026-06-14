@@ -44,6 +44,31 @@ function todayHoursLabel(
   return line.replace(/^[^:：]+[:：]\s*/, "");
 }
 
+function displayConditionKey(text: string): string {
+  const source = text.split(/\s*(?:→|->|=>)\s*/, 1)[0] || text;
+  return source.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function uniqueDisplayItems<T extends { text: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = displayConditionKey(item.text);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function uniqueDisplayStrings(items: string[]): string[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = displayConditionKey(item);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function ResultsPage() {
   const navigate = useNavigate();
   const { lang, t } = useT();
@@ -101,6 +126,10 @@ function ResultsPage() {
     partial: "bg-secondary text-secondary-foreground",
   };
   const weekdayShort = t("results.weekday.short").split(",");
+  const displayedHardFilters = uniqueDisplayItems(parsed.hardFilters);
+  const displayedSoftPreferences = uniqueDisplayItems(parsed.softPreferences);
+  const displayedNegativeFilters = uniqueDisplayItems(parsed.negativeFilters);
+  const displayedDishPreferences = uniqueDisplayStrings(parsed.dishPreferences);
 
   const cancelRefine = () => {
     abortRef.current?.abort();
@@ -282,11 +311,11 @@ function ResultsPage() {
               </div>
             </div>
           )}
-          {parsed.hardFilters.length > 0 && (
+          {displayedHardFilters.length > 0 && (
             <div className="mt-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.hardFilters")}</p>
               <div className="flex flex-wrap gap-1.5">
-                {parsed.hardFilters.map((f, i) => (
+                {displayedHardFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
                     {f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
                   </span>
@@ -294,11 +323,11 @@ function ResultsPage() {
               </div>
             </div>
           )}
-          {parsed.softPreferences.length > 0 && (
+          {displayedSoftPreferences.length > 0 && (
             <div className="mt-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.softPrefs")}</p>
               <div className="flex flex-wrap gap-1.5">
-                {parsed.softPreferences.map((f, i) => (
+                {displayedSoftPreferences.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground">
                     {f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
                   </span>
@@ -306,11 +335,11 @@ function ResultsPage() {
               </div>
             </div>
           )}
-          {parsed.negativeFilters.length > 0 && (
+          {displayedNegativeFilters.length > 0 && (
             <div className="mt-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.negative")}</p>
               <div className="flex flex-wrap gap-1.5">
-                {parsed.negativeFilters.map((f, i) => (
+                {displayedNegativeFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
                     {f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
                   </span>
@@ -318,11 +347,11 @@ function ResultsPage() {
               </div>
             </div>
           )}
-          {parsed.dishPreferences.length > 0 && (
+          {displayedDishPreferences.length > 0 && (
             <div className="mt-3">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.dishes")}</p>
               <div className="flex flex-wrap gap-1.5">
-                {parsed.dishPreferences.map((f, i) => (
+                {displayedDishPreferences.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-accent text-accent-foreground">
                     {f}
                   </span>
