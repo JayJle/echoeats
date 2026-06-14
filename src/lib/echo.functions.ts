@@ -774,15 +774,54 @@ function cleanMatchLabel(text: string): string {
     .trim();
 }
 
+function conciseCondition(text: string): string {
+  const cleaned = cleanMatchLabel(text);
+  const [original] = cleaned.split(/\s*(?:→|->|=>)\s*/, 1);
+  return (original || cleaned).replace(/[：:—-]+\s*$/, "").trim();
+}
+
+function conciseEvidence(text: string | undefined, condition: string, isEn: boolean): string {
+  if (!text?.trim()) return isEn ? "No supporting information found" : "暂无相关资料";
+
+  let cleaned = cleanMatchLabel(text)
+    .replace(
+      new RegExp(
+        `^${condition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:→|->|=>|[-—:：])\\s*`,
+        "i",
+      ),
+      "",
+    )
+    .replace(/\bPrimaryType\b/gi, isEn ? "restaurant type" : "餐厅类型")
+    .replace(/\breviewHighlights?\b/gi, isEn ? "reviews" : "评论")
+    .replace(/\beditorialSummary\b/gi, isEn ? "editorial summary" : "商家摘要")
+    .replace(/\brealWorldReviews\b/gi, isEn ? "customer reviews" : "用户评论")
+    .replace(/(?:菜系|餐厅档次|包含菜品)\s*=\s*/g, "")
+    .replace(/\s*(?:→|->|=>)\s*/g, isEn ? ": " : "：")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleaned.length > 90) {
+    const sentence = cleaned.match(/^.{1,90}?[。！？.!?](?:\s|$)/)?.[0];
+    cleaned = sentence?.trim() || `${cleaned.slice(0, 88).trim()}…`;
+  }
+  return cleaned || (isEn ? "No supporting information found" : "暂无相关资料");
+}
+
 function reconcileEvidenceStatus(
   status: "ok" | "unknown" | "fail",
   evidence: string | undefined,
 ): "ok" | "unknown" | "fail" {
   if (status !== "unknown" || !evidence?.trim()) return status;
   const text = evidence.trim();
-  const saysUncertain = /(无(?:法|从|相关)?(?:资料|信息|证据|评论)|未(?:知|提及|说明|确认|找到)|没有(?:资料|信息|证据|评论|提及)|资料不足|信息不足|待核实|无法确认|不(?:能|足以)确认|unknown|unclear|unavailable|insufficient|no (?:relevant )?(?:data|information|evidence|review)|not (?:mentioned|confirmed|verified)|cannot (?:confirm|verify|determine))/i.test(text);
+  const saysUncertain =
+    /(可能|很可能|大概|推测|或许|无(?:法|从|相关)?(?:资料|信息|证据|评论)|未(?:知|明确提及|说明|确认|找到)|没有(?:资料|信息|证据|评论|提及)|资料不足|信息不足|待核实|无法确认|不(?:能|足以)确认|unknown|unclear|unavailable|insufficient|possibly|probably|likely|may\b|might\b|no (?:relevant )?(?:data|information|evidence|review)|not (?:mentioned|confirmed|verified)|cannot (?:confirm|verify|determine))/i.test(
+      text,
+    );
   if (saysUncertain) return "unknown";
-  const citesPositiveEvidence = /(明确(?:指出|提到|显示|表明|支持|强调)|评论(?:指出|提到|显示|表明|称|强调|赞扬)|证据(?:显示|表明|支持)|资料(?:显示|表明|支持)|实际(?:为|有|达到)|符合|满足|达标|支持该条件|explicitly (?:states?|mentions?|shows?|supports?|confirms?)|reviews? (?:state|mention|note|say|show|confirm|praise|highlight)|evidence (?:shows?|supports?|confirms?)|is confirmed|requirement (?:is )?met)/i.test(text);
+  const citesPositiveEvidence =
+    /(明确(?:指出|提到|显示|表明|支持|强调|符合)|评论(?:指出|提到|显示|表明|称|强调|赞扬)|证据(?:显示|表明|支持)|资料(?:显示|表明|支持)|实际(?:为|有|达到)|符合(?:.{0,16})?(?:定位|要求|条件)?|满足|达标|支持该条件|命中(?:主词|同义词|正向)|(?:没有|未)(?:命中|发现)(?:任何)?(?:反例|负面)(?:关键词)?|explicitly (?:states?|mentions?|shows?|supports?|confirms?|matches?)|reviews? (?:state|mention|note|say|show|confirm|praise|highlight)|evidence (?:shows?|supports?|confirms?)|is confirmed|requirements? (?:is |are )?met|matches?|satisf(?:y|ies|ied)|supports?|no (?:negative|counterexample) (?:keyword )?(?:hit|found))/i.test(
+      text,
+    );
   return citesPositiveEvidence ? "ok" : "unknown";
 }
 
@@ -1553,6 +1592,8 @@ ${JSON.stringify(group.candidates, null, 2)}
   - "ok": 明确证据支持。只要 label 中引用或概述了明确支持该条件的评论/资料，就必须是 ok，绝不能是 unknown。
   - "fail": 明确证据证实不满足。
   - "unknown": 确实没有相关证据、资料不足或无法确认。
+- **状态与文案必须一致**：note/label 出现“符合、满足、支持、明确表明、未命中反例”等确定性表达时，status 必须为 ok；出现“可能、很可能、未明确提及、资料不足、无法确认”等表达时，status 必须为 unknown。
+- **面向用户写短句**：hardFilterChecks[].note 和 matchDetails[].label 只写简短结论与依据，建议 20–40 字；禁止展示 PrimaryType、reviewHighlights、editorialSummary、realWorldReviews 等内部字段名，禁止使用“字段 = 值”或连续箭头解释推理过程。
 - **Google 评分是确定性事实**：候选中的 googleRating/rating 来自 Google Places。遇到 Google/谷歌评分阈值条件时必须直接做数值比较；有数值时禁止标为 unknown，也不要用评论文本推断评分。
 - **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
 
@@ -1742,24 +1783,24 @@ ${JSON.stringify(group.candidates, null, 2)}
         const unknownWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "unknown" ? filter.weight : 0), 0);
         const baseScore = pick?.matchScore ?? (p.rating != null ? p.rating * 14 : 50);
         const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
-        const hardDetails = checks.map(({ filter, check }) => ({
-          label: check.status === "ok"
-            ? (isEn ? `Constraint: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
-            : check.status === "fail"
-              ? (isEn ? `Constraint not met: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
-              : (isEn ? `Constraint to verify: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`),
-          status: check.status,
-        }));
+        const hardDetails = checks.map(({ filter, check }) => {
+          const condition = conciseCondition(filter.text);
+          const evidence = conciseEvidence(check.note, condition, isEn);
+          return {
+            label: `${condition}：${evidence}`,
+            status: check.status,
+          };
+        });
         const aiDetails = pick?.matchDetails ?? [];
         const nonHardDetails = nonHardFilters.map((condition, conditionIndex) => {
           const detail = aiDetails[conditionIndex];
-          const evidence = detail?.label ? cleanMatchLabel(detail.label) : "";
+          const conditionLabel = conciseCondition(condition.text);
+          const evidence = conciseEvidence(detail?.label, conditionLabel, isEn);
           const status = detail
             ? reconcileEvidenceStatus(detail.status, evidence)
             : "unknown" as const;
-          const fallback = isEn ? "No supporting information found" : "暂无相关资料";
           return {
-            label: `${cleanMatchLabel(condition.text)} — ${evidence || fallback}`,
+            label: `${conditionLabel}：${evidence}`,
             status,
           };
         });
