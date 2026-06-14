@@ -2,6 +2,74 @@
 // Docs: https://developers.google.com/maps/documentation/places/web-service/text-search
 import { withRetry } from "./retry.server";
 
+export type CityCandidate = {
+  placeId: string;
+  displayName: string;
+  city: string;
+  countryOrRegion: string;
+};
+
+export async function autocompleteCities(input: string): Promise<CityCandidate[]> {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) throw new Error("缺少 GOOGLE_PLACES_API_KEY 环境变量");
+
+  const res = await withRetry(
+    (signal) =>
+      fetch("https://places.googleapis.com/v1/places:autocomplete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": [
+            "suggestions.placePrediction.placeId",
+            "suggestions.placePrediction.text.text",
+            "suggestions.placePrediction.structuredFormat.mainText.text",
+            "suggestions.placePrediction.structuredFormat.secondaryText.text",
+          ].join(","),
+        },
+        body: JSON.stringify({ input, includedPrimaryTypes: ["(cities)"] }),
+        signal,
+      }).then(async (response) => {
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`Google Places autocomplete ${response.status}: ${text.slice(0, 300)}`);
+        }
+        return response;
+      }),
+    { label: "places.city-autocomplete", retries: 1, timeoutMs: 7_000 },
+  );
+
+  const json = (await res.json()) as {
+    suggestions?: Array<{
+      placePrediction?: {
+        placeId?: string;
+        text?: { text?: string };
+        structuredFormat?: {
+          mainText?: { text?: string };
+          secondaryText?: { text?: string };
+        };
+      };
+    }>;
+  };
+
+  const unique = new Map<string, CityCandidate>();
+  for (const suggestion of json.suggestions ?? []) {
+    const prediction = suggestion.placePrediction;
+    const placeId = prediction?.placeId?.trim();
+    const city = prediction?.structuredFormat?.mainText?.text?.trim();
+    if (!placeId || !city || unique.has(placeId)) continue;
+    const countryOrRegion = prediction?.structuredFormat?.secondaryText?.text?.trim() ?? "";
+    unique.set(placeId, {
+      placeId,
+      city,
+      countryOrRegion,
+      displayName: prediction?.text?.text?.trim() || [city, countryOrRegion].filter(Boolean).join(", "),
+    });
+    if (unique.size === 5) break;
+  }
+  return [...unique.values()];
+}
+
 export type PlaceCandidate = {
   placeId: string;
   name: string;

@@ -1,11 +1,26 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
 import { FormEvent, useState } from "react";
-import { Info } from "lucide-react";
+import { Info, Loader2, MapPin } from "lucide-react";
 import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useQueryStore } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
+import {
+  validateCity,
+  type CityValidationCandidate,
+  type CityValidationResult,
+} from "@/lib/city.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -26,13 +41,44 @@ function StepCity() {
   const city = useQueryStore((s) => s.city);
   const setCity = useQueryStore((s) => s.setCity);
   const [value, setValue] = useState(city);
+  const [isChecking, setIsChecking] = useState(false);
+  const [error, setError] = useState("");
+  const [candidates, setCandidates] = useState<CityValidationCandidate[]>([]);
+  const validateCityFn = useServerFn(validateCity);
   const { t } = useT();
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!value.trim()) return;
-    setCity(value.trim());
+  const continueWithCity = (candidate: CityValidationCandidate) => {
+    setCity(candidate.displayName);
+    setCandidates([]);
     navigate({ to: "/cuisines" });
+  };
+
+  const handleResult = (result: CityValidationResult) => {
+    if (result.status === "confirmed") {
+      continueWithCity(result.candidate);
+      return;
+    }
+    if (result.status === "choose") {
+      setCandidates(result.candidates);
+      return;
+    }
+    setError(t(result.status === "invalid" ? "step1.invalid" : result.status === "not_found" ? "step1.notFound" : "step1.unavailable"));
+  };
+
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    const trimmed = value.normalize("NFKC").trim();
+    if (!trimmed || isChecking) return;
+    setError("");
+    setIsChecking(true);
+    try {
+      const result = await validateCityFn({ data: { city: trimmed } });
+      handleResult(result);
+    } catch {
+      setError(t("step1.unavailable"));
+    } finally {
+      setIsChecking(false);
+    }
   };
 
   return (
@@ -41,21 +87,56 @@ function StepCity() {
         <Input
           autoFocus
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError("");
+          }}
           placeholder={t("step1.placeholder")}
           className="h-12 text-base"
           maxLength={80}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? "city-error" : undefined}
         />
+        {error ? <p id="city-error" className="text-sm text-destructive" role="alert">{error}</p> : null}
         <p className="flex items-start gap-2 text-xs text-muted-foreground">
           <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" aria-hidden />
           <span>{t("home.notice.dianping")}</span>
         </p>
         <div className="flex justify-end">
-          <Button type="submit" disabled={!value.trim()} size="lg">
-            {t("common.next")}
+          <Button type="submit" disabled={!value.trim() || isChecking} size="lg">
+            {isChecking ? <><Loader2 className="animate-spin" />{t("step1.checking")}</> : t("common.next")}
           </Button>
         </div>
       </form>
+
+      <AlertDialog open={candidates.length > 0} onOpenChange={(open) => !open && setCandidates([])}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("step1.chooseTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("step1.chooseDesc", { city: value.trim() })}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-2">
+            {candidates.map((candidate) => (
+              <Button
+                key={candidate.placeId}
+                type="button"
+                variant="outline"
+                className="h-auto justify-start whitespace-normal px-4 py-3 text-left"
+                onClick={() => continueWithCity(candidate)}
+              >
+                <MapPin className="shrink-0 text-primary" />
+                <span>
+                  <span className="block font-medium">{candidate.city}</span>
+                  {candidate.countryOrRegion ? <span className="block text-xs text-muted-foreground">{candidate.countryOrRegion}</span> : null}
+                </span>
+              </Button>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </StepShell>
 
   );
