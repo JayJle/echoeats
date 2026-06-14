@@ -34,6 +34,16 @@ function fallbackWord(lang: string): string {
   return "restaurants";
 }
 
+function uniqueCuisines(items: string[]): string[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = item.normalize("NFKC").trim().toLocaleLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function StepCuisines() {
   const navigate = useNavigate();
   const cuisines = useQueryStore((s) => s.cuisines);
@@ -42,15 +52,12 @@ function StepCuisines() {
   const { lang, t } = useT();
 
   const sep = lang === "zh" ? "，" : ", ";
-  const [value, setValue] = useState(cuisines.join(sep));
+  const [value, setValue] = useState(uniqueCuisines(cuisines).join(sep));
   const [skipDialogOpen, setSkipDialogOpen] = useState(false);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    const list = value
-      .split(/[，,、\s]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const list = uniqueCuisines(value.split(/[，,、\s]+/));
     if (!list.length) return;
     setCuisines(list);
     setAutoInferCuisines(false);
