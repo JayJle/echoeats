@@ -780,11 +780,7 @@ function conciseCondition(text: string): string {
   return (original || cleaned).replace(/[：:—-]+\s*$/, "").trim();
 }
 
-function conciseEvidence(
-  text: string | undefined,
-  condition: string,
-  isEn: boolean,
-): string {
+function conciseEvidence(text: string | undefined, condition: string, isEn: boolean): string {
   if (!text?.trim()) return isEn ? "No supporting information found" : "暂无相关资料";
 
   let cleaned = cleanMatchLabel(text)
