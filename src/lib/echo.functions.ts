@@ -100,6 +100,16 @@ function uniqueConditions(items: WeightedCondition[]): WeightedCondition[] {
   return [...unique.values()];
 }
 
+function uniqueStrings(items: string[]): string[] {
+  const unique = new Map<string, string>();
+  for (const item of items) {
+    const value = item.normalize("NFKC").trim();
+    const key = value.toLocaleLowerCase();
+    if (key && !unique.has(key)) unique.set(key, value);
+  }
+  return [...unique.values()];
+}
+
 function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
   const negativeFilters = uniqueConditions(parsed.negativeFilters);
   const negativeKeys = new Set(negativeFilters.map((item) => conditionKey(item.text)));
@@ -117,7 +127,14 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
       .filter(([key, dish]) => key && dish),
   ).values()];
 
-  return { ...parsed, negativeFilters, hardFilters, softPreferences, dishPreferences };
+  return {
+    ...parsed,
+    cuisines: uniqueStrings(parsed.cuisines),
+    negativeFilters,
+    hardFilters,
+    softPreferences,
+    dishPreferences,
+  };
 }
 
 const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
@@ -1125,7 +1142,7 @@ function isOpenAt(
 }
 
 export const searchRestaurants = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => ParsedSchema.parse(input))
+  .inputValidator((input: unknown) => dedupeParsedConditions(ParsedSchema.parse(input)))
   .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
     const uiLang: "zh" | "en" = data.uiLanguage ?? "zh";
     const isEn = uiLang === "en";
