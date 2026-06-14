@@ -1580,6 +1580,8 @@ ${JSON.stringify(group.candidates, null, 2)}
   - "ok": 明确证据支持。只要 label 中引用或概述了明确支持该条件的评论/资料，就必须是 ok，绝不能是 unknown。
   - "fail": 明确证据证实不满足。
   - "unknown": 确实没有相关证据、资料不足或无法确认。
+- **状态与文案必须一致**：note/label 出现“符合、满足、支持、明确表明、未命中反例”等确定性表达时，status 必须为 ok；出现“可能、很可能、未明确提及、资料不足、无法确认”等表达时，status 必须为 unknown。
+- **面向用户写短句**：hardFilterChecks[].note 和 matchDetails[].label 只写简短结论与依据，建议 20–40 字；禁止展示 PrimaryType、reviewHighlights、editorialSummary、realWorldReviews 等内部字段名，禁止使用“字段 = 值”或连续箭头解释推理过程。
 - **Google 评分是确定性事实**：候选中的 googleRating/rating 来自 Google Places。遇到 Google/谷歌评分阈值条件时必须直接做数值比较；有数值时禁止标为 unknown，也不要用评论文本推断评分。
 - **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
 
@@ -1769,24 +1771,24 @@ ${JSON.stringify(group.candidates, null, 2)}
         const unknownWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "unknown" ? filter.weight : 0), 0);
         const baseScore = pick?.matchScore ?? (p.rating != null ? p.rating * 14 : 50);
         const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
-        const hardDetails = checks.map(({ filter, check }) => ({
-          label: check.status === "ok"
-            ? (isEn ? `Constraint: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
-            : check.status === "fail"
-              ? (isEn ? `Constraint not met: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件未满足：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`)
-              : (isEn ? `Constraint to verify: ${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}` : `硬条件待核实：${cleanMatchLabel(filter.text)}${check.note ? ` — ${check.note}` : ""}`),
-          status: check.status,
-        }));
+        const hardDetails = checks.map(({ filter, check }) => {
+          const condition = conciseCondition(filter.text);
+          const evidence = conciseEvidence(check.note, condition, isEn);
+          return {
+            label: `${condition}：${evidence}`,
+            status: check.status,
+          };
+        });
         const aiDetails = pick?.matchDetails ?? [];
         const nonHardDetails = nonHardFilters.map((condition, conditionIndex) => {
           const detail = aiDetails[conditionIndex];
-          const evidence = detail?.label ? cleanMatchLabel(detail.label) : "";
+          const conditionLabel = conciseCondition(condition.text);
+          const evidence = conciseEvidence(detail?.label, conditionLabel, isEn);
           const status = detail
             ? reconcileEvidenceStatus(detail.status, evidence)
             : "unknown" as const;
-          const fallback = isEn ? "No supporting information found" : "暂无相关资料";
           return {
-            label: `${cleanMatchLabel(condition.text)} — ${evidence || fallback}`,
+            label: `${conditionLabel}：${evidence}`,
             status,
           };
         });
