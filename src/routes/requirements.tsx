@@ -27,12 +27,10 @@ export const Route = createFileRoute("/requirements")({
 type StageKey = "parse" | "search" | "reviews" | "rank";
 
 const JP_CITIES = ["东京", "大阪", "京都", "札幌", "福冈", "名古屋", "横滨", "神户", "tokyo", "osaka", "kyoto", "sapporo", "fukuoka", "nagoya", "yokohama", "kobe"];
-const CN_CITIES = ["北京", "上海", "广州", "深圳", "成都", "杭州", "南京", "重庆", "武汉", "西安", "苏州", "天津", "厦门", "长沙"];
 
 function reviewsHintKey(city: string): string {
   const c = city.toLowerCase();
   if (JP_CITIES.some((x) => c.includes(x.toLowerCase()))) return "stage.reviews.hint.jp";
-  if (CN_CITIES.some((x) => city.includes(x))) return "stage.reviews.hint.cn";
   return "stage.reviews.hint.other";
 }
 
