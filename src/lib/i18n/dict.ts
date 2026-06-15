@@ -30,7 +30,7 @@ export const dict: Record<Lang, Dict> = {
     "meta.results.desc": "AI 跨平台搜索后的餐厅推荐结果。",
 
     "step1.title": "你想在哪个城市找餐厅？",
-    "step1.hint": "",
+    "step1.notice": "暂不支持中国大陆地区",
     "step1.placeholder": "城市 / City",
     "step1.checking": "正在校验城市…",
     "step1.invalid": "请输入有效的城市名称（最多 80 个字符）。",
