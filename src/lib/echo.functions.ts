@@ -1240,7 +1240,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     for (const r of placeResults) {
       if (!r.places.length && r.error) {
         pushWarn({
-          stage: useDianping ? "dianping" : "places",
+          stage: "places",
           cuisine: r.cuisine,
           message: isEn
             ? `No candidates returned for "${r.cuisine}". Other cuisines are still shown.`
@@ -1256,13 +1256,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         type: "result",
         payload: {
           groups: [],
-          error: useDianping
-            ? isEn
-              ? `Dianping lookup failed: ${placesError}`
-              : `大众点评检索失败：${placesError}`
-            : isEn
-              ? `Google Places call failed: ${placesError}`
-              : `Google Places 调用失败：${placesError}`,
+          error: isEn
+            ? `Google Places call failed: ${placesError}`
+            : `Google Places 调用失败：${placesError}`,
           suggestions: fallbackSuggestions(uiLang),
         },
       };
@@ -1275,13 +1271,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         type: "result",
         payload: {
           groups: [],
-          error: useDianping
-            ? isEn
-              ? `Dianping found no matching candidates in "${data.city}"`
-              : `大众点评在「${data.city}」没找到符合的餐厅候选`
-            : isEn
-              ? `Google Places found no matching candidates in "${data.city}"`
-              : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
+          error: isEn
+            ? `Google Places found no matching candidates in "${data.city}"`
+            : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
           suggestions: fallbackSuggestions(uiLang),
         },
       };
@@ -1311,13 +1303,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
     }
 
-    // 海外城市：把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
-    if (!useDianping) {
-      for (const r of placeResults) {
-        for (const p of r.places) {
-          const baseline = googleReviewsToSummary(p);
-          if (baseline) reviewById.set(p.placeId, baseline);
-        }
+    // 把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
+    for (const r of placeResults) {
+      for (const p of r.places) {
+        const baseline = googleReviewsToSummary(p);
+        if (baseline) reviewById.set(p.placeId, baseline);
       }
     }
 
@@ -1325,7 +1315,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
-    if (!useDianping && pplxKey && country === "JP" && data.mode !== "quick") {
+    if (pplxKey && country === "JP" && data.mode !== "quick") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
@@ -1368,7 +1358,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // US/CA/西欧 分支补充：用 Perplexity 代抓 Yelp 评分+评论数+价位+摘要，与 Tabelog 同构。
     // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
     const yelpById = new Map<string, YelpInfo>();
-    if (!useDianping && pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
+    if (pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
