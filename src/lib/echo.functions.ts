@@ -1128,8 +1128,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const country =
       guessRegionCode(data.city) ||
       (data.country && data.country.toUpperCase()) ||
-      (isMainlandChinaCity(data.city) ? "CN" : "");
-    const useDianping = country === "CN";
+      "";
 
     // cuisines 兜底：用户跳过且 AI 也没推断出来时，按通用「餐厅」搜索
     const cuisinesAutoFilled = data.cuisines.length === 0;
@@ -1147,7 +1146,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
     const pplxKey = process.env.PERPLEXITY_API_KEY;
 
-    if (!useDianping && !process.env.GOOGLE_PLACES_API_KEY) {
+    if (!process.env.GOOGLE_PLACES_API_KEY) {
       yield {
         type: "result",
         payload: {
@@ -1155,19 +1154,6 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           error: isEn
             ? "Google Places API key (GOOGLE_PLACES_API_KEY) is not configured"
             : "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
-          suggestions: [],
-        },
-      };
-      return;
-    }
-    if (useDianping && !pplxKey) {
-      yield {
-        type: "result",
-        payload: {
-          groups: [],
-          error: isEn
-            ? "Mainland China cities require a Perplexity API key to fetch Dianping data, but none is configured"
-            : "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
           suggestions: [],
         },
       };
@@ -1188,50 +1174,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       error: string | null;
     }>;
 
-    if (useDianping) {
-      // 国内城市：大众点评一手数据流（候选 + 网评一次拿到）
-      const firecrawlKey = process.env.FIRECRAWL_API_KEY ?? null;
-      const settled = await Promise.all(
-        data.cuisines.map(async (cuisine) => {
-          try {
-            const expansion = await expandCuisineQueries({
-              cuisine,
-              city: data.city,
-              language: "zh-CN",
-              apiKey: aiKey,
-            });
-            cuisineExpansions.set(cuisine, expansion);
-            const items = await searchDianpingCuisine({
-              city: data.city,
-              cuisine,
-              cuisineSynonyms: expansion.synonyms,
-              hardFilters: data.hardFilters.map((c) => c.text),
-              perplexityKey: pplxKey!,
-              firecrawlKey,
-            });
-            const places: PlaceCandidate[] = [];
-            for (const it of items) {
-              places.push(it.candidate);
-              if (it.review) {
-                reviewById.set(it.candidate.placeId, it.review as ReviewSummary);
-              }
-            }
-            return {
-              cuisine,
-              places,
-              error: places.length ? null : isEn ? "Dianping returned no candidates" : "大众点评未返回候选",
-            };
-          } catch (e) {
-            return {
-              cuisine,
-              places: [] as PlaceCandidate[],
-              error: e instanceof Error ? e.message : String(e),
-            };
-          }
-        }),
-      );
-      placeResults = settled;
-    } else {
+    {
       // 海外城市：Google Places + Google 一手 reviews（基线）
       const language = data.language || guessLanguageCode(data.city);
       const region = country || guessRegionCode(data.city);
