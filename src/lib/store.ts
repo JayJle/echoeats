@@ -77,7 +77,7 @@ export type ResultsGroup = {
 };
 
 export type SearchWarning = {
-  stage: string;          // "places" | "tabelog" | "yelp" | "dianping" | "cuisine-expand" | "photos" | "ai-rank"
+  stage: string;          // "places" | "tabelog" | "yelp" | "cuisine-expand" | "photos" | "ai-rank"
   cuisine?: string;
   message: string;
   retryable?: boolean;
