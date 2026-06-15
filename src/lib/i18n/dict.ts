@@ -255,8 +255,7 @@ export const dict: Record<Lang, Dict> = {
 
     "step1.title": "Which city are you eating in?",
     "step1.hint": "",
-    "step1.placeholder": "e.g. Tokyo, Hong Kong, Paris",
-    "step1.mainlandNotice": "Note: Mainland China cities are not supported. Try Hong Kong, Taipei, Tokyo, Seoul, Singapore, or Paris.",
+    "step1.placeholder": "City",
     "step1.checking": "Checking city…",
     "step1.invalid": "Enter a valid city name (up to 80 characters).",
     "step1.notFound": "We couldn't find that city. Check the spelling or add a country or region.",
