@@ -254,7 +254,7 @@ export const dict: Record<Lang, Dict> = {
     "meta.results.desc": "Restaurant picks from an AI cross-platform search.",
 
     "step1.title": "Which city are you eating in?",
-    "step1.hint": "",
+    "step1.notice": "Mainland China is not supported",
     "step1.placeholder": "City",
     "step1.checking": "Checking city…",
     "step1.invalid": "Enter a valid city name (up to 80 characters).",
