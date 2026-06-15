@@ -123,7 +123,7 @@ export function guessRegionCode(city: string): string | undefined {
   if (/[\u3040-\u30ff]/.test(city)) return "JP";
   if (/japan|日本|tokyo|kyoto|osaka|东京|京都|大阪|sapporo|札幌|yokohama|横滨|横浜|nagoya|名古屋|fukuoka|福冈|福岡|kobe|神户|神戸|nara|奈良|hiroshima|广岛|広島|okinawa|冲绳|沖縄|naha|那霸|那覇|kanazawa|金泽|金沢|sendai|仙台|chiba|千叶|千葉|saitama|埼玉|kawasaki|川崎|hakone|箱根|kamakura|镰仓|鎌倉|nikko|日光|takayama|高山/i.test(city)) return "JP";
   if (/korea|seoul|busan|韩国|首尔/i.test(city)) return "KR";
-  if (/china|中国|北京|上海|广州|深圳|成都|杭州|武汉|南京|重庆/i.test(city)) return "CN";
+  // 中国大陆已在第一页拦截，这里不再判 CN
   if (/taiwan|台湾|台北|高雄/i.test(city)) return "TW";
   if (/hong kong|香港/i.test(city)) return "HK";
   if (/singapore|新加坡/i.test(city)) return "SG";
