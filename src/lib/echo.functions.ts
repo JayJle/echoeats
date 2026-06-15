@@ -3,7 +3,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
 
-const PLATFORMS = ["Google Maps", "Tabelog", "Yelp", "大众点评", "美团"];
+const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
 const ParseInput = z.object({
   city: z.string().min(1),
@@ -307,7 +307,6 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 - **country**：根据 city 推断 ISO 3166-1 alpha-2 国家码（两个大写字母）。覆盖所有城市，不只是大城市：
   - 函馆/小樽/旭川/轻井泽/由布院/别府/熊本/鹿儿岛/长崎/姬路/和歌山/石垣岛/那霸 → "JP"
-  - 上海/北京/成都/苏州/杭州/重庆/西安等大陆城市 → "CN"
   - 香港 → "HK"，澳门 → "MO"，台北/高雄/台中 → "TW"
   - 首尔/釜山/济州 → "KR"
   - 清迈/曼谷/普吉 → "TH"
@@ -316,7 +315,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
   - 实在判断不出来留 ""。
 - **language**：该城市本地主要书面语言的 BCP 47 代码：
   - JP → "ja"，KR → "ko"
-  - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
+  - HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
   - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
   - US/UK/AU/CA/SG → "en"
   - 其它按国家主语言映射，判断不出留 ""。
@@ -521,11 +520,6 @@ import {
   type PlaceCandidate,
 } from "./google-places.server";
 import {
-  isMainlandChinaCity,
-  searchDianpingCuisine,
-  type DianpingReview,
-} from "./dianping.server";
-import {
   expandCuisineQueries,
   filterByCuisineRelevance,
   type CuisineExpansion,
@@ -542,8 +536,6 @@ type ReviewSummary = {
   sentiment: "positive" | "mixed" | "negative" | "unknown";
   sourceCount: number;
   sources: string[];
-  dianpingRating: number | null;
-  dianpingRatingSource: "dianping" | "xiaohongshu_mention" | "other" | "unknown";
   priceLevel: number | null;
   priceCurrency: string | null;
   priceContext: string | null;
@@ -563,7 +555,7 @@ const CURRENCY_SYMBOL: Record<string, string> = {
   GBP: "£",
 };
 
-const SOURCE_ENUM = ["大众点评", "Tabelog", "Google Reviews", "Yelp", "TripAdvisor", "其它"] as const;
+const SOURCE_ENUM = ["Tabelog", "Google Reviews", "Yelp", "TripAdvisor", "其它"] as const;
 
 
 // 把 Google Places 一手 reviews 转成 ReviewSummary（零幻觉，第一手数据）
@@ -596,8 +588,6 @@ function googleReviewsToSummary(p: PlaceCandidate): ReviewSummary | null {
     sentiment,
     sourceCount: p.reviews.length,
     sources: ["Google Reviews"],
-    dianpingRating: null,
-    dianpingRatingSource: "unknown",
     priceLevel: null,
     priceCurrency: null,
     priceContext: null,
@@ -613,9 +603,6 @@ function mergeReviewSummaries(base: ReviewSummary, extra: ReviewSummary): Review
     sentiment: extra.sentiment !== "unknown" ? extra.sentiment : base.sentiment,
     sourceCount: base.sourceCount + extra.sourceCount,
     sources: Array.from(new Set([...base.sources, ...extra.sources])),
-    dianpingRating: extra.dianpingRating ?? base.dianpingRating,
-    dianpingRatingSource:
-      extra.dianpingRating != null ? extra.dianpingRatingSource : base.dianpingRatingSource,
     priceLevel: extra.priceLevel ?? base.priceLevel,
     priceCurrency: extra.priceCurrency ?? base.priceCurrency,
     priceContext: extra.priceContext ?? base.priceContext,
