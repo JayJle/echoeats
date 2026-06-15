@@ -31,7 +31,7 @@ export const dict: Record<Lang, Dict> = {
 
     "step1.title": "你想在哪个城市找餐厅？",
     "step1.notice": "暂不支持查找中国大陆地区的城市",
-    "step1.placeholder": "城市 / City",
+    "step1.placeholder": "香港 / Hong Kong，东京 / Tokyo",
     "step1.checking": "正在校验城市…",
     "step1.invalid": "请输入有效的城市名称（最多 80 个字符）。",
     "step1.notFound": "没有找到这个城市，请检查拼写，或补充国家/地区。",
@@ -255,7 +255,7 @@ export const dict: Record<Lang, Dict> = {
 
     "step1.title": "Which city are you eating in?",
     "step1.notice": "Cities in Mainland China are not supported",
-    "step1.placeholder": "City",
+    "step1.placeholder": "Hong Kong / 香港, Tokyo / 东京",
     "step1.checking": "Checking city…",
     "step1.invalid": "Enter a valid city name (up to 80 characters).",
     "step1.notFound": "We couldn't find that city. Check the spelling or add a country or region.",
