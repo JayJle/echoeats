@@ -307,6 +307,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 - **country**：根据 city 推断 ISO 3166-1 alpha-2 国家码（两个大写字母）。覆盖所有城市，不只是大城市：
   - 函馆/小樽/旭川/轻井泽/由布院/别府/熊本/鹿儿岛/长崎/姬路/和歌山/石垣岛/那霸 → "JP"
+  - 上海/北京/成都/苏州/杭州/重庆/西安/广州/深圳等大陆城市 → "CN"
   - 香港 → "HK"，澳门 → "MO"，台北/高雄/台中 → "TW"
   - 首尔/釜山/济州 → "KR"
   - 清迈/曼谷/普吉 → "TH"
@@ -315,7 +316,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
   - 实在判断不出来留 ""。
 - **language**：该城市本地主要书面语言的 BCP 47 代码：
   - JP → "ja"，KR → "ko"
-  - HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
+  - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
   - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
   - US/UK/AU/CA/SG → "en"
   - 其它按国家主语言映射，判断不出留 ""。
