@@ -36,6 +36,7 @@ export const dict: Record<Lang, Dict> = {
     "step1.invalid": "请输入有效的城市名称（最多 80 个字符）。",
     "step1.notFound": "没有找到这个城市，请检查拼写，或补充国家/地区。",
     "step1.unavailable": "城市校验服务暂时不可用，请稍后重试。",
+    "step1.unsupportedRegion": "暂不支持中国大陆地区，欢迎尝试香港、台北、东京、首尔、新加坡等城市。",
     "step1.chooseTitle": "请选择正确的城市",
     "step1.chooseDesc": "没有直接确认“{city}”。请选择你想搜索的地点，我们不会自动替换。",
 
@@ -82,7 +83,6 @@ export const dict: Record<Lang, Dict> = {
     "stage.search.hintQuick": "扫一遍主流地图，几秒就好",
     "stage.reviews.label": "抓取本地点评与口碑",
     "stage.reviews.hint.jp": "翻 Google、Tabelog、Yelp、TripAdvisor…",
-    "stage.reviews.hint.cn": "翻大众点评、美团、小红书、知乎…",
     "stage.reviews.hint.other": "翻 Google、Yelp、TripAdvisor…",
     "stage.rank.label": "AI 综合排序",
     "stage.rank.hintDeep": "把口碑、价位、距离揉在一起打分",
@@ -229,8 +229,6 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "需求灵感",
-
-    "home.notice.dianping": "由于大众点评反爬机制，中国大陆地区搜索效果可能不理想，建议优先在海外城市使用。",
   },
   en: {
     "brand.tagline": "AI Restaurant Discovery Agent",
@@ -262,6 +260,7 @@ export const dict: Record<Lang, Dict> = {
     "step1.invalid": "Enter a valid city name (up to 80 characters).",
     "step1.notFound": "We couldn't find that city. Check the spelling or add a country or region.",
     "step1.unavailable": "City validation is temporarily unavailable. Please try again.",
+    "step1.unsupportedRegion": "Mainland China cities are not supported. Try Hong Kong, Taipei, Tokyo, Seoul, Singapore, etc.",
     "step1.chooseTitle": "Choose the correct city",
     "step1.chooseDesc": "We couldn't directly confirm “{city}”. Choose the location you meant; we won't replace it automatically.",
 
@@ -308,7 +307,6 @@ export const dict: Record<Lang, Dict> = {
     "stage.search.hintQuick": "Scanning major maps, just a few seconds",
     "stage.reviews.label": "Pulling local reviews and word-of-mouth",
     "stage.reviews.hint.jp": "Checking Google, Tabelog, Yelp, TripAdvisor…",
-    "stage.reviews.hint.cn": "Checking Dianping, Meituan, Xiaohongshu, Zhihu…",
     "stage.reviews.hint.other": "Checking Google, Yelp, TripAdvisor…",
     "stage.rank.label": "AI ranking",
     "stage.rank.hintDeep": "Combining reviews, prices and distance into a score",
@@ -453,8 +451,6 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "Need inspiration",
-
-    "home.notice.dianping": "Due to Dianping's anti-scraping measures, results for mainland China cities may be limited. Best experience is in overseas cities.",
   },
 };
 

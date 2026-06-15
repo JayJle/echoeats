@@ -3,7 +3,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
 
-const PLATFORMS = ["Google Maps", "Tabelog", "Yelp", "大众点评", "美团"];
+const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
 const ParseInput = z.object({
   city: z.string().min(1),
@@ -307,7 +307,6 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 - **country**：根据 city 推断 ISO 3166-1 alpha-2 国家码（两个大写字母）。覆盖所有城市，不只是大城市：
   - 函馆/小樽/旭川/轻井泽/由布院/别府/熊本/鹿儿岛/长崎/姬路/和歌山/石垣岛/那霸 → "JP"
-  - 上海/北京/成都/苏州/杭州/重庆/西安等大陆城市 → "CN"
   - 香港 → "HK"，澳门 → "MO"，台北/高雄/台中 → "TW"
   - 首尔/釜山/济州 → "KR"
   - 清迈/曼谷/普吉 → "TH"
@@ -316,7 +315,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
   - 实在判断不出来留 ""。
 - **language**：该城市本地主要书面语言的 BCP 47 代码：
   - JP → "ja"，KR → "ko"
-  - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
+  - HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
   - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
   - US/UK/AU/CA/SG → "en"
   - 其它按国家主语言映射，判断不出留 ""。
@@ -521,11 +520,6 @@ import {
   type PlaceCandidate,
 } from "./google-places.server";
 import {
-  isMainlandChinaCity,
-  searchDianpingCuisine,
-  type DianpingReview,
-} from "./dianping.server";
-import {
   expandCuisineQueries,
   filterByCuisineRelevance,
   type CuisineExpansion,
@@ -542,8 +536,6 @@ type ReviewSummary = {
   sentiment: "positive" | "mixed" | "negative" | "unknown";
   sourceCount: number;
   sources: string[];
-  dianpingRating: number | null;
-  dianpingRatingSource: "dianping" | "xiaohongshu_mention" | "other" | "unknown";
   priceLevel: number | null;
   priceCurrency: string | null;
   priceContext: string | null;
@@ -563,7 +555,7 @@ const CURRENCY_SYMBOL: Record<string, string> = {
   GBP: "£",
 };
 
-const SOURCE_ENUM = ["大众点评", "Tabelog", "Google Reviews", "Yelp", "TripAdvisor", "其它"] as const;
+const SOURCE_ENUM = ["Tabelog", "Google Reviews", "Yelp", "TripAdvisor", "其它"] as const;
 
 
 // 把 Google Places 一手 reviews 转成 ReviewSummary（零幻觉，第一手数据）
@@ -596,8 +588,6 @@ function googleReviewsToSummary(p: PlaceCandidate): ReviewSummary | null {
     sentiment,
     sourceCount: p.reviews.length,
     sources: ["Google Reviews"],
-    dianpingRating: null,
-    dianpingRatingSource: "unknown",
     priceLevel: null,
     priceCurrency: null,
     priceContext: null,
@@ -613,9 +603,6 @@ function mergeReviewSummaries(base: ReviewSummary, extra: ReviewSummary): Review
     sentiment: extra.sentiment !== "unknown" ? extra.sentiment : base.sentiment,
     sourceCount: base.sourceCount + extra.sourceCount,
     sources: Array.from(new Set([...base.sources, ...extra.sources])),
-    dianpingRating: extra.dianpingRating ?? base.dianpingRating,
-    dianpingRatingSource:
-      extra.dianpingRating != null ? extra.dianpingRatingSource : base.dianpingRatingSource,
     priceLevel: extra.priceLevel ?? base.priceLevel,
     priceCurrency: extra.priceCurrency ?? base.priceCurrency,
     priceContext: extra.priceContext ?? base.priceContext,
@@ -907,21 +894,7 @@ function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = fal
   const qName = encodeURIComponent(p.name);
   const qCity = encodeURIComponent(city);
 
-  const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
   const isJP = country === "JP";
-
-  if (isCN) {
-    // 大众点评 H5 搜索深链（手机会拉起 App）
-    links.push({
-      label: isEn ? "Dianping" : "大众点评",
-      url: `https://m.dianping.com/searchshop?keyword=${qName}&regionname=${qCity}`,
-    });
-    // 小红书搜索（用户口碑）
-    links.push({
-      label: isEn ? "Xiaohongshu" : "小红书",
-      url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
-    });
-  }
 
   if (isJP) {
     links.push({
@@ -932,27 +905,21 @@ function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = fal
 
   links.push({ label: "Google Maps", url: p.googleMapsUri });
   if (p.websiteUri) {
-    const isDianpingShop = /dianping\.com\/shop\//i.test(p.websiteUri);
     links.push({
-      label: isDianpingShop
-        ? isEn ? "Dianping page" : "大众点评店铺页"
-        : isEn ? "Website" : "官网",
+      label: isEn ? "Website" : "官网",
       url: p.websiteUri,
     });
   }
 
-  if (!isCN) {
-    // 海外（含日本）：加 Yelp + TripAdvisor 链接，方便用户核验口碑来源
-    // 若已有 Yelp 详情页 URL（来自 fetchYelpInfo），直接深链；否则回退到搜索
-    links.push({
-      label: "Yelp",
-      url: yelpUrl ?? `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
-    });
-    links.push({
-      label: "TripAdvisor",
-      url: `https://www.tripadvisor.com/Search?q=${q}`,
-    });
-  }
+  // 海外（含日本/港澳台）：加 Yelp + TripAdvisor 链接
+  links.push({
+    label: "Yelp",
+    url: yelpUrl ?? `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
+  });
+  links.push({
+    label: "TripAdvisor",
+    url: `https://www.tripadvisor.com/Search?q=${q}`,
+  });
 
   links.push({ label: isEn ? "Google Search" : "Google 搜索", url: `https://www.google.com/search?q=${q}` });
   return links.slice(0, 6);
@@ -978,15 +945,10 @@ function candidateRatings(
   country = "",
   yelp: YelpInfo | null = null,
 ) {
-  const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
   const isJP = country === "JP";
   const score =
     p.rating != null
       ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
-      : null;
-  const dpScore =
-    review?.dianpingRating != null
-      ? `${review.dianpingRating.toFixed(1)} / 5${isEn ? " (reviews)" : "（网评）"}`
       : null;
   const reviewPrice = formatPriceFromReview(review, isEn);
   const googleFallback = priceLevelLabel(p.priceLevel);
@@ -1005,7 +967,6 @@ function candidateRatings(
     { platform: "Google Maps", score },
   ];
   if (isJP) rows.push({ platform: "Tabelog", score: tabelogScore });
-  if (isCN) rows.push({ platform: isEn ? "Dianping" : "大众点评", score: dpScore });
   // Yelp 行：仅当有数据时插入（无数据不展示，符合用户期望）
   if (yelpScore) rows.push({ platform: "Yelp", score: yelpScore });
   rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
@@ -1167,8 +1128,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const country =
       guessRegionCode(data.city) ||
       (data.country && data.country.toUpperCase()) ||
-      (isMainlandChinaCity(data.city) ? "CN" : "");
-    const useDianping = country === "CN";
+      "";
 
     // cuisines 兜底：用户跳过且 AI 也没推断出来时，按通用「餐厅」搜索
     const cuisinesAutoFilled = data.cuisines.length === 0;
@@ -1186,7 +1146,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
     const pplxKey = process.env.PERPLEXITY_API_KEY;
 
-    if (!useDianping && !process.env.GOOGLE_PLACES_API_KEY) {
+    if (!process.env.GOOGLE_PLACES_API_KEY) {
       yield {
         type: "result",
         payload: {
@@ -1194,19 +1154,6 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           error: isEn
             ? "Google Places API key (GOOGLE_PLACES_API_KEY) is not configured"
             : "服务未配置 Google Places API Key（GOOGLE_PLACES_API_KEY）",
-          suggestions: [],
-        },
-      };
-      return;
-    }
-    if (useDianping && !pplxKey) {
-      yield {
-        type: "result",
-        payload: {
-          groups: [],
-          error: isEn
-            ? "Mainland China cities require a Perplexity API key to fetch Dianping data, but none is configured"
-            : "国内城市需要 Perplexity API Key 抓取大众点评数据，但未配置",
           suggestions: [],
         },
       };
@@ -1227,50 +1174,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       error: string | null;
     }>;
 
-    if (useDianping) {
-      // 国内城市：大众点评一手数据流（候选 + 网评一次拿到）
-      const firecrawlKey = process.env.FIRECRAWL_API_KEY ?? null;
-      const settled = await Promise.all(
-        data.cuisines.map(async (cuisine) => {
-          try {
-            const expansion = await expandCuisineQueries({
-              cuisine,
-              city: data.city,
-              language: "zh-CN",
-              apiKey: aiKey,
-            });
-            cuisineExpansions.set(cuisine, expansion);
-            const items = await searchDianpingCuisine({
-              city: data.city,
-              cuisine,
-              cuisineSynonyms: expansion.synonyms,
-              hardFilters: data.hardFilters.map((c) => c.text),
-              perplexityKey: pplxKey!,
-              firecrawlKey,
-            });
-            const places: PlaceCandidate[] = [];
-            for (const it of items) {
-              places.push(it.candidate);
-              if (it.review) {
-                reviewById.set(it.candidate.placeId, it.review as ReviewSummary);
-              }
-            }
-            return {
-              cuisine,
-              places,
-              error: places.length ? null : isEn ? "Dianping returned no candidates" : "大众点评未返回候选",
-            };
-          } catch (e) {
-            return {
-              cuisine,
-              places: [] as PlaceCandidate[],
-              error: e instanceof Error ? e.message : String(e),
-            };
-          }
-        }),
-      );
-      placeResults = settled;
-    } else {
+    {
       // 海外城市：Google Places + Google 一手 reviews（基线）
       const language = data.language || guessLanguageCode(data.city);
       const region = country || guessRegionCode(data.city);
@@ -1336,7 +1240,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     for (const r of placeResults) {
       if (!r.places.length && r.error) {
         pushWarn({
-          stage: useDianping ? "dianping" : "places",
+          stage: "places",
           cuisine: r.cuisine,
           message: isEn
             ? `No candidates returned for "${r.cuisine}". Other cuisines are still shown.`
@@ -1352,13 +1256,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         type: "result",
         payload: {
           groups: [],
-          error: useDianping
-            ? isEn
-              ? `Dianping lookup failed: ${placesError}`
-              : `大众点评检索失败：${placesError}`
-            : isEn
-              ? `Google Places call failed: ${placesError}`
-              : `Google Places 调用失败：${placesError}`,
+          error: isEn
+            ? `Google Places call failed: ${placesError}`
+            : `Google Places 调用失败：${placesError}`,
           suggestions: fallbackSuggestions(uiLang),
         },
       };
@@ -1371,13 +1271,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         type: "result",
         payload: {
           groups: [],
-          error: useDianping
-            ? isEn
-              ? `Dianping found no matching candidates in "${data.city}"`
-              : `大众点评在「${data.city}」没找到符合的餐厅候选`
-            : isEn
-              ? `Google Places found no matching candidates in "${data.city}"`
-              : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
+          error: isEn
+            ? `Google Places found no matching candidates in "${data.city}"`
+            : `Google Places 在「${data.city}」没有找到任何符合的餐厅候选`,
           suggestions: fallbackSuggestions(uiLang),
         },
       };
@@ -1407,13 +1303,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
     }
 
-    // 海外城市：把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
-    if (!useDianping) {
-      for (const r of placeResults) {
-        for (const p of r.places) {
-          const baseline = googleReviewsToSummary(p);
-          if (baseline) reviewById.set(p.placeId, baseline);
-        }
+    // 把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
+    for (const r of placeResults) {
+      for (const p of r.places) {
+        const baseline = googleReviewsToSummary(p);
+        if (baseline) reviewById.set(p.placeId, baseline);
       }
     }
 
@@ -1421,7 +1315,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
-    if (!useDianping && pplxKey && country === "JP" && data.mode !== "quick") {
+    if (pplxKey && country === "JP" && data.mode !== "quick") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);
@@ -1464,7 +1358,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // US/CA/西欧 分支补充：用 Perplexity 代抓 Yelp 评分+评论数+价位+摘要，与 Tabelog 同构。
     // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
     const yelpById = new Map<string, YelpInfo>();
-    if (!useDianping && pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
+    if (pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
       const allTargets: PlaceCandidate[] = [];
       for (const r of placeResults) {
         for (const p of r.places) allTargets.push(p);

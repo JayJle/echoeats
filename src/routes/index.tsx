@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { FormEvent, useState } from "react";
-import { Info, Loader2, MapPin } from "lucide-react";
+import { Loader2, MapPin } from "lucide-react";
 import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -62,7 +62,15 @@ function StepCity() {
       setCandidates(result.candidates);
       return;
     }
-    setError(t(result.status === "invalid" ? "step1.invalid" : result.status === "not_found" ? "step1.notFound" : "step1.unavailable"));
+    const key =
+      result.status === "invalid"
+        ? "step1.invalid"
+        : result.status === "not_found"
+          ? "step1.notFound"
+          : result.status === "unsupported_region"
+            ? "step1.unsupportedRegion"
+            : "step1.unavailable";
+    setError(t(key));
   };
 
   const onSubmit = async (e: FormEvent) => {
@@ -98,10 +106,6 @@ function StepCity() {
           aria-describedby={error ? "city-error" : undefined}
         />
         {error ? <p id="city-error" className="text-sm text-destructive" role="alert">{error}</p> : null}
-        <p className="flex items-start gap-2 text-xs text-muted-foreground">
-          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" aria-hidden />
-          <span>{t("home.notice.dianping")}</span>
-        </p>
         <div className="flex justify-end">
           <Button type="submit" disabled={!value.trim() || isChecking} size="lg">
             {isChecking ? <><Loader2 className="animate-spin" />{t("step1.checking")}</> : t("common.next")}
