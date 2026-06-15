@@ -894,21 +894,7 @@ function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = fal
   const qName = encodeURIComponent(p.name);
   const qCity = encodeURIComponent(city);
 
-  const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
   const isJP = country === "JP";
-
-  if (isCN) {
-    // 大众点评 H5 搜索深链（手机会拉起 App）
-    links.push({
-      label: isEn ? "Dianping" : "大众点评",
-      url: `https://m.dianping.com/searchshop?keyword=${qName}&regionname=${qCity}`,
-    });
-    // 小红书搜索（用户口碑）
-    links.push({
-      label: isEn ? "Xiaohongshu" : "小红书",
-      url: `https://www.xiaohongshu.com/search_result?keyword=${q}&type=51`,
-    });
-  }
 
   if (isJP) {
     links.push({
@@ -919,27 +905,21 @@ function buildLinks(p: PlaceCandidate, city: string, country: string, isEn = fal
 
   links.push({ label: "Google Maps", url: p.googleMapsUri });
   if (p.websiteUri) {
-    const isDianpingShop = /dianping\.com\/shop\//i.test(p.websiteUri);
     links.push({
-      label: isDianpingShop
-        ? isEn ? "Dianping page" : "大众点评店铺页"
-        : isEn ? "Website" : "官网",
+      label: isEn ? "Website" : "官网",
       url: p.websiteUri,
     });
   }
 
-  if (!isCN) {
-    // 海外（含日本）：加 Yelp + TripAdvisor 链接，方便用户核验口碑来源
-    // 若已有 Yelp 详情页 URL（来自 fetchYelpInfo），直接深链；否则回退到搜索
-    links.push({
-      label: "Yelp",
-      url: yelpUrl ?? `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
-    });
-    links.push({
-      label: "TripAdvisor",
-      url: `https://www.tripadvisor.com/Search?q=${q}`,
-    });
-  }
+  // 海外（含日本/港澳台）：加 Yelp + TripAdvisor 链接
+  links.push({
+    label: "Yelp",
+    url: yelpUrl ?? `https://www.yelp.com/search?find_desc=${qName}&find_loc=${qCity}`,
+  });
+  links.push({
+    label: "TripAdvisor",
+    url: `https://www.tripadvisor.com/Search?q=${q}`,
+  });
 
   links.push({ label: isEn ? "Google Search" : "Google 搜索", url: `https://www.google.com/search?q=${q}` });
   return links.slice(0, 6);
@@ -965,15 +945,10 @@ function candidateRatings(
   country = "",
   yelp: YelpInfo | null = null,
 ) {
-  const isCN = country === "CN" || country === "HK" || country === "MO" || country === "TW";
   const isJP = country === "JP";
   const score =
     p.rating != null
       ? `${p.rating.toFixed(1)} / 5${p.userRatingCount ? ` (${p.userRatingCount})` : ""}`
-      : null;
-  const dpScore =
-    review?.dianpingRating != null
-      ? `${review.dianpingRating.toFixed(1)} / 5${isEn ? " (reviews)" : "（网评）"}`
       : null;
   const reviewPrice = formatPriceFromReview(review, isEn);
   const googleFallback = priceLevelLabel(p.priceLevel);
@@ -992,7 +967,6 @@ function candidateRatings(
     { platform: "Google Maps", score },
   ];
   if (isJP) rows.push({ platform: "Tabelog", score: tabelogScore });
-  if (isCN) rows.push({ platform: isEn ? "Dianping" : "大众点评", score: dpScore });
   // Yelp 行：仅当有数据时插入（无数据不展示，符合用户期望）
   if (yelpScore) rows.push({ platform: "Yelp", score: yelpScore });
   rows.push({ platform: isEn ? "Avg. price" : "人均价格", score: priceScore });
