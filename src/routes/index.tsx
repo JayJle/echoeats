@@ -105,7 +105,6 @@ function StepCity() {
           aria-invalid={Boolean(error)}
           aria-describedby={error ? "city-error" : undefined}
         />
-        <p className="text-xs text-muted-foreground">{t("step1.mainlandNotice")}</p>
         {error ? <p id="city-error" className="text-sm text-destructive" role="alert">{error}</p> : null}
         <div className="flex justify-end">
           <Button type="submit" disabled={!value.trim() || isChecking} size="lg">
