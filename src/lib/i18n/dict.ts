@@ -36,7 +36,7 @@ export const dict: Record<Lang, Dict> = {
     "step1.invalid": "请输入有效的城市名称（最多 80 个字符）。",
     "step1.notFound": "没有找到这个城市，请检查拼写，或补充国家/地区。",
     "step1.unavailable": "城市校验服务暂时不可用，请稍后重试。",
-    "step1.unsupportedRegion": "暂不支持中国大陆地区，欢迎尝试香港、台北、东京、首尔、新加坡等城市。",
+    "step1.unsupportedRegion": "暂不支持中国大陆地区，欢迎选择其它城市。",
     "step1.chooseTitle": "请选择正确的城市",
     "step1.chooseDesc": "没有直接确认“{city}”。请选择你想搜索的地点，我们不会自动替换。",
 
@@ -260,7 +260,7 @@ export const dict: Record<Lang, Dict> = {
     "step1.invalid": "Enter a valid city name (up to 80 characters).",
     "step1.notFound": "We couldn't find that city. Check the spelling or add a country or region.",
     "step1.unavailable": "City validation is temporarily unavailable. Please try again.",
-    "step1.unsupportedRegion": "Mainland China cities are not supported. Try Hong Kong, Taipei, Tokyo, Seoul, Singapore, etc.",
+    "step1.unsupportedRegion": "Mainland China is not supported. Please choose another city.",
     "step1.chooseTitle": "Choose the correct city",
     "step1.chooseDesc": "We couldn't directly confirm “{city}”. Choose the location you meant; we won't replace it automatically.",
 
