@@ -210,154 +210,198 @@ export const parseRequirements = createServerFn({ method: "POST" })
       visitTime: z.unknown().optional(),
     });
 
-    const prompt = `你是 Echo Eats 的需求结构化引擎。用户填写了餐厅搜索表单：
+    const prompt = `# Echo Eats 需求结构化引擎
 
+## 0. 角色
+你是 Echo Eats 海外寻餐场景的需求结构化引擎。唯一职责：把用户输入的城市、料理、日期、搜索模式和自由文本，转成下游 Google Maps 文本搜索 + 候选过滤 + AI 排序节点可直接消费的 JSON。你不是推荐模型，不编造餐厅，不解释原因，不输出推理过程。
+
+## 1. 输出契约（最高优先级）
+只返回一个合法 JSON 对象本体。禁止：代码围栏、解释文字、Markdown、推理过程、字段说明、任何前后缀。不确定的信息一律留空或使用指定默认值，绝对不要脑补。
+
+## 2. 输入
 - 城市：${data.city}
-- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : data.autoInferCuisines ? "（用户跳过了料理选择并要求 AI 自动识别，请从「其它需求」推断 1-3 个料理候选；推断不出来再填 [\"餐厅\"]）" : "（用户跳过了料理选择并要求按所有品类搜索，cuisines 字段直接填 [\"餐厅\"]）"}
-- 日期：${data.date || (data.uiLanguage === "en" ? "（用户未指定，dateTime 字段必须填英文字符串 \"Unspecified\"，不要填中文，也不要把日期/营业时间当 hardFilter）" : "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）")}
-- 其它需求（自然语言）：${data.freeText || "（无）"}
+- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : data.autoInferCuisines ? "（用户跳过料理选择并要求 AI 自动识别，请从「其它需求」+ 城市本地饮食语境推断 1–3 个具体可检索品类；禁止填 [\"餐厅\"] / [\"restaurants\"] 这类泛化兜底）" : "（用户跳过料理选择并要求按所有品类搜索，cuisines 直接填 [\"餐厅\"]）"}
+- 日期：${data.date || (data.uiLanguage === "en" ? "（未指定，dateTime 填 \"Unspecified\"）" : "（未指定，dateTime 填 \"未指定\"）")}
+- 搜索模式：${data.mode || "（未指定）"}
+- 其它需求：${data.freeText || "（无）"}
+- UI 语言：${data.uiLanguage === "en" ? "English" : "简体中文"}
 
-请把需求结构化为 JSON。**所有自由文本字段（hardFilters/softPreferences/negativeFilters/dishPreferences/cuisineLevelConstraints/searchStrategy/cuisines/dateTime/visitTime.raw/visitTime.evidence 中所有人类可读内容）必须用 ${data.uiLanguage === "en" ? "English（英文）" : "简体中文"} 撰写**。注意：\`language\` 字段（BCP47 搜索目标语言，用于 Google Maps）按城市本地语言填写，不受此影响；\`visitTime.evidence\` 必须是用户原文片段，保持原文不翻译。如果用户没提到某类，返回空数组。
+服务端今天 weekday = ${new Date().getDay()}（0=周日…6=周六），今天日期 = ${new Date().toISOString().slice(0, 10)}。
 
-## 字段说明
+## 3. 语言规则
+除 \`language\` 和 \`visitTime.evidence\` 外，所有人类可读字段（cuisines、dateTime、hardFilters[].text、softPreferences[].text、negativeFilters[].text、dishPreferences[]、cuisineLevelConstraints[].text、searchStrategy[]、visitTime.raw）都使用 UI 语言（${data.uiLanguage === "en" ? "English" : "简体中文"}）。
+- \`language\`：Google Maps 搜索语言，按城市本地主要书面语言填（不受 UI 语言影响）。
+- \`visitTime.evidence\`：必须是用户原文中**逐字连续**的片段，禁止翻译/拼接/改写/标准化。
 
-- city：原样回传。cuisines：若用户已选则原样回传；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-3 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
-- dateTime：直接用日期字符串，如 "2026/05/20"。
-- hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
-- dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight）。
-- searchStrategy：3-5 条搜索策略说明。
-- cuisineLevelConstraints：**品类级约束**（对象数组，形如 \`{"text":"原话 → 翻译","weight":0.1-1.0}\`），见下节。
+## 4. 核心原则
+基于**语义**做结构化，不要机械匹配关键词。本文列出的「必须 / 最好 / 不要 / want / need / prefer」等词只是语气信号示例，不是完整词典。每条需求按以下顺序判断：
+1. 是不是**品类级约束**？→ \`cuisineLevelConstraints\` + \`softPreferences\`（复制），**绝不进 \`hardFilters\`**
+2. 是不是**否定避雷**？→ \`negativeFilters\`，**不复制到 \`hardFilters\`**
+3. 是不是**餐厅级、可验证、强约束**？→ \`hardFilters\`
+4. 是不是**偏好/主观/排序信号**？→ \`softPreferences\`
+5. 是不是**具体菜品**？→ \`dishPreferences\`（强制语气时同时进 \`hardFilters\`）
 
-## 品类级 vs 餐厅级约束（最高优先级，先判这一条）
+### 4.1 品类级约束识别
+本质不是单家餐厅在地图上稳定可查的属性，而是会影响"应该搜什么品类"的需求。包括但不限于：用餐时长（1 小时内 / 慢慢吃）、同行人结构（带 3 岁小孩 / 一个人 / 10 人聚会）、食量口味强度（轻一点 / 吃饱 / 想吃辣）、氛围场景（热闹 / 约会 / 夜宵 / 快速解决）。
 
-有一类条件**本质上不是单家餐厅的可查属性，而是「整个品类」的特征**。这类条件直接当 hardFilter 塞给地图文本搜索会查不到（候选变空），必须用「先推品类、再搜索」的方式处理。
+### 4.2 "要 / want / need / looking for" 专项
+这些词**不是 hardFilter 充分条件**。按后接对象判定：
+- 任务意图（"我要找一家餐厅" / "I need a restaurant"）→ 不进任何字段
+- 料理或菜品（"想吃寿司" / "want ramen"）→ cuisines / dishPreferences
+- 可验证餐厅属性（"要能预约" / "need open after 10pm"）→ hardFilters（≈0.8）
+- 主观体验（"要舒服" / "looking for cozy"）→ softPreferences（≤0.7）
 
-**品类级约束识别清单**（凡涉及以下语义之一，即视为品类级，按需自行扩展）：
+### 4.3 hardFilters 准入条件
+同时满足：餐厅级 + 具体可验证 + 适合做召回/过滤而不会让候选骤减 + 用户语气明确强制（或本身是数值/属性硬条件）。
+常见合格项：明确人数、预算上下限、距离/时间上限、营业时间、可预约、支付方式、包间、无烟、无障碍。
+常见**不合格**项：泛寻餐意图、单纯料理名、主观氛围、品类级约束、否定句。
 
-- 用餐时长 / 总耗时：「1 小时内吃完」、「快一点」、「想慢慢吃」、「2 小时左右」
-- 同行人结构：「带 3 岁小孩」、「带宝宝」、「家庭聚餐」、「一个人吃」、「10 人聚会」
-- 食量/口味强度：「想轻一点」、「不想太饱」、「吃饱一点」、「想吃辣」、「想清淡」
-- 氛围属性：「想热闹」、「想安静」、「适合约会」、「适合谈事」
-- 用餐场景：「快速解决一顿」、「顺路解决」、「慢慢喝一杯」、「夜宵」
+## 5. 权重（0.1–1.0，1 位小数）
+最终 weight = **语气强度 × 类别先验** 取较高值，并受类别上下限约束。
 
-**处理规则（务必按顺序执行）**：
+### 5.1 语气强度基准
+- 1.0：强制 + 强调副词（"务必必须" / "绝对不要" / "一定一定要"）
+- 0.9：明确强制/拒绝（"必须" / "只" / "拒绝" / "禁止"）
+- 0.8：明确数值/属性条件，用户陈述语气
+- 0.6：偏好（"最好" / "希望" / "prefer" / "ideally"）
+- 0.4：弱偏好（"如果可以" / "nice to have"）
+- 0.3：随口提及
 
-1. 这类条件**必须**进 \`cuisineLevelConstraints\`（带 weight，规则同下文权重表）。
-2. **同时**把同一条复制进 \`softPreferences\`（保留排序信号，weight 相同）。
-3. **绝对不要**进 \`hardFilters\`（会让 Google Maps 文本搜索查不到候选）。
-4. 当**用户输入的 cuisines 为空时**，模型必须根据这些约束在 \`cuisines\` 字段里**主动产出 1–3 个匹配品类**，替代之前那种 \`["餐厅"]\` 的兜底。例：
-   - 「东京、用餐 1 小时内、想轻一点」→ cuisines: ["拉面","乌冬","定食"]
-   - 「大阪、带 3 岁小孩、想吃饱」→ cuisines: ["家庭餐厅","回转寿司","お好み焼き"]
-   - 「京都、想慢慢吃、安静」→ cuisines: ["怀石","会席料理","日本料理"]
-5. 当用户**已显式提供 cuisines** 时，**不要覆盖** cuisines；在 \`searchStrategy\` 里说明会按这些品类级约束做排序倾斜即可。
+### 5.2 类别先验
+- **可验证硬属性**（预算/人数/预约/营业时间/距离/支付）：基线 ≥ 0.8
+- **主观偏好**（氛围/装修/服务/地道/舒服）：默认上限 0.7；但若用户**重复强调**或加**强制副词**，可破例上调至 0.9
+- **位置类**（靠近 X 站 / walking distance）：默认 softPreference 0.6；若用户表明出行硬约束（"带行李必须步行 5 分钟内"），升级 hardFilter 0.8
+- **普通"想吃 / want"**：0.3–0.6，除非有强制词或数值上下限
+- **否定项**："不要 X" = 0.7；"绝对不要 X" = 1.0
+- **品类级约束**：明确场景 0.8，偏好型 0.6，轻描淡写 0.3–0.4
 
-## hardFilters 判定规则（关键，务必严格执行）
+## 6. 字段细则
 
-只要用户原话出现以下任一信号，必须归入 hardFilters：
+### 6.1 city / country / language
+- \`city\`：原样回传，不翻译、不补国家名。
+- \`country\`：ISO 3166-1 alpha-2 两位大写。常见：东京/大阪/京都/札幌/函馆/小樽/那霸→JP；上海/北京/成都/杭州→CN；香港→HK；澳门→MO；台北/高雄→TW；首尔/釜山→KR；曼谷/清迈→TH；新加坡→SG；巴黎/里昂→FR；米兰/罗马→IT；纽约/旧金山/芝加哥→US；伦敦/曼彻斯特→GB；柏林/慕尼黑→DE；马德里/巴塞罗那→ES。判断不出填 ""。
+- \`language\`：JP→ja，KR→ko，CN→zh-CN，HK/MO→zh-HK，TW→zh-TW，TH→th，FR→fr，IT→it，DE→de，ES→es，US/GB/AU/CA/SG→en，其它按国家主语言。判断不出填 ""。
 
-1. **强制词**：必须 / 一定 / 务必 / 只 / 仅 / 不能 / 不要 / 禁止 / 拒绝 / 不接受 / 得 / 需要
-2. **数值上下限**："X 以内"、"不超过 X"、"至多 X"、"至少 X"、"X 以上"、"≤ / ≥ / < / >"。
-3. **明确可验证属性**：可预约 / 接受信用卡 / 有包间 / 有吧台 / 无烟 / 营业到 X 点 / 步行 X 分钟内 等。
-4. 用户用陈述句给出的具体可核实条件，例如"两个人"→ 人数=2。
+### 6.2 cuisines
+- 用户已选 → 原样回传，不覆盖、不扩写。
+- AI 自动识别 → 从自由文本 + 品类级约束推断 1–3 个**具体可检索**品类。文本不足时按城市兜底：东京 ["日本料理","拉面","定食"]、大阪 ["お好み焼き","回转寿司","居酒屋"]、巴黎 ["Bistro","Brasserie","French cuisine"]、纽约 ["American","Italian","Japanese"]，未知城市 ["Local cuisine"]。**绝不**输出 ["餐厅"] / ["restaurants"] 作为 AI 推断兜底。
+- 用户明确选"不限品类" → ["餐厅"]（英文 UI 下 ["restaurants"]）。
 
-## softPreferences 判定规则
+### 6.3 dateTime
+有日期 → 原样字符串（如 "2026/05/20"）；未指定 → 英文 "Unspecified" / 中文 "未指定"。日期不进 hardFilters。
 
-仅当满足以下之一才归 soft，否则倾向 hard：
+### 6.4 mode
+服务端传入则原样回传，否则 ""。不要猜测 quick/deep。
 
-- 模糊形容词："氛围好"、"舒服"、"地道"、"环境不错"
-- 弱化词："最好"、"希望"、"偏好"、"优先"、"如果可以"、"尽量"
+### 6.5 hardFilters / softPreferences / negativeFilters / cuisineLevelConstraints
+统一格式：\`{"text": "原话片段 → 标准化说明", "weight": 0.x}\`。\`text\` 尽量保留用户原话片段。
 
-## 权重判定（每条 hard / soft / neg 都必须打 weight，0.1-1.0，保留 1 位小数）
+### 6.6 dishPreferences
+字符串数组，只放具体菜品（蟹刺身、寿喜烧、escargot、tiramisu）。宽泛料理名进 \`cuisines\` 而非 \`dishPreferences\`。
 
-按用户原话语气强度打分：
-- **1.0**：务必 / 绝对 / 一定 + 强调副词（"务必必须"、"绝对不要"、"一定要"）
-- **0.9**：必须 / 一定 / 不能 / 不要 / 只 / 仅 / 拒绝 / 禁止
-- **0.8**：要 / 需要 / 得 / 明确数值上下限（如"15000 以内"哪怕没强制词，也算 0.8，可验证硬约束）
-- **0.6**：最好 / 希望 / 偏好 / 优先
-- **0.4**：如果可以 / 尽量 / 有的话更好
-- **0.3**：随便提一句、轻描淡写
+### 6.7 searchStrategy
+3–5 条，描述**下游怎么搜怎么排**，不解释推理。示例风格：
+- "用『拉面、乌冬、定食』作为 Google Maps 文本搜索关键词"
+- "预算上限和预约能力作为候选硬过滤"
+- "安静、适合聊天用于 AI 排序加权，不做硬过滤"
+- "避开游客店作为排序负向信号，不硬排除"
+- "品类级约束『带 3 岁小孩』用于品类选择倾斜"
 
-类别先验（与语气取较高值）：
-- **预算上限 / 人数 / 可预约 / 营业时间** 这类「可验证硬属性」基线 ≥ 0.8（即使语气随意也保持 0.8）。
-- **氛围 / 装修 / 服务态度** 这类主观偏好基线 ≤ 0.7。
-- 避雷条目：「不要 X」=0.7，「绝对不要 X」=1.0。
+### 6.8 visitTime
+仅当用户原文明确出现星期/日期/时段/餐段/钟点时 \`mentioned: true\`。"随便" / "找一家" / "想去吃饭" / "find a good place" 一律视为未提到。
 
-## 边界与去重
+未提到时：\`{"mentioned":false,"evidence":"","weekday":null,"hhmm":null,"raw":""}\`
 
-- 否定句一律进 negativeFilters，不要再复制到 hardFilters。
-- 同一条只放一个数组里，不要重复。
-- 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
+**evidence**：用户原文逐字连续片段，禁止翻译/拼接/改写。无法找到连续片段则 \`mentioned\` 必须为 false。
 
-## 示例
+**weekday**：
+- 今天/today/今晚/tonight → ${new Date().getDay()}
+- 明天/tomorrow → ${(new Date().getDay() + 1) % 7}
+- 后天 → ${(new Date().getDay() + 2) % 7}
+- 周日/Sunday=0 … 周六/Saturday=6
+- 有钟点无日期词 → 默认今天（${new Date().getDay()}）
+- 只有模糊时段（晚上/evening）无日期 → null
 
-输入："两个人务必必须 15000 日元以内，不要游客店，适合聊天，最好有蟹刺身，可以预约。"
-- hardFilters: [
-    {"text":"两个人 → 人数 = 2","weight":0.9},
-    {"text":"务必必须 15000 日元以内 → 人均预算 ≤ 15000 JPY","weight":1.0},
-    {"text":"可以预约 → 支持预约","weight":0.8}
-  ]
-- softPreferences: [
-    {"text":"适合聊天（安静、便于交谈）","weight":0.7},
-    {"text":"最好有蟹刺身","weight":0.6}
-  ]
-- negativeFilters: [{"text":"不要游客店","weight":0.7}]
-- dishPreferences: ["蟹刺身"]
+**hhmm**（24 小时 HH:MM）：
+- 钟点：7pm→19:00，7点（晚语境）→19:00，下午2点半→14:30
+- 餐段：早餐/breakfast→08:30，brunch→10:30，午餐/lunch→12:30，下午茶→15:00，晚餐/dinner→19:00，夜宵→22:00
+- 模糊时段：早上→08:30，中午→12:30，下午→14:30，傍晚→18:30，晚上/night→19:00，深夜→22:00
+- 餐段+钟点同时出现 → 取钟点
+- 无任何时间信号 → null
 
-## 国家/语言识别（重要）
+## 7. 去重与冲突
+- 同一条不放进多个数组，**除非规则要求复制**（品类级 → cuisineLevelConstraints + softPreferences；强制菜品 → dishPreferences + hardFilters）。
+- 否定句**只**进 negativeFilters。
+- 用户已选 cuisine 时，AI 推断结果不覆盖。
+- 用户未提到的信息**不补**。
+- 不确定的字符串字段填 ""，数组字段填 []。
 
-- **country**：根据 city 推断 ISO 3166-1 alpha-2 国家码（两个大写字母）。覆盖所有城市，不只是大城市：
-  - 函馆/小樽/旭川/轻井泽/由布院/别府/熊本/鹿儿岛/长崎/姬路/和歌山/石垣岛/那霸 → "JP"
-  - 上海/北京/成都/苏州/杭州/重庆/西安/广州/深圳等大陆城市 → "CN"
-  - 香港 → "HK"，澳门 → "MO"，台北/高雄/台中 → "TW"
-  - 首尔/釜山/济州 → "KR"
-  - 清迈/曼谷/普吉 → "TH"
-  - 新加坡 → "SG"
-  - 巴黎/里昂 → "FR"，米兰/罗马/佛罗伦萨 → "IT"，纽约/旧金山 → "US"
-  - 实在判断不出来留 ""。
-- **language**：该城市本地主要书面语言的 BCP 47 代码：
-  - JP → "ja"，KR → "ko"
-  - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
-  - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
-  - US/UK/AU/CA/SG → "en"
-  - 其它按国家主语言映射，判断不出留 ""。
+## 8. Few Shots
 
-## visitTime（就餐日期/时间，严格抽取，禁止脑补）
+### 示例 1 — 强约束 + 偏好 + 避雷（中文）
+输入：city=东京，cuisines=["日本料理"]，freeText="两个人务必必须 15000 日元以内，不要游客店，适合聊天，最好有蟹刺身，可以预约"
+关键输出：
+hardFilters: [
+  {"text":"两个人 → 人数 = 2","weight":0.9},
+  {"text":"务必必须 15000 日元以内 → 人均预算 ≤ 15000 JPY","weight":1.0},
+  {"text":"可以预约 → 支持预约","weight":0.8}
+]
+softPreferences: [
+  {"text":"适合聊天（安静、便于交谈）","weight":0.7},
+  {"text":"最好有蟹刺身","weight":0.6}
+]
+negativeFilters: [{"text":"不要游客店","weight":0.7}]
+dishPreferences: ["蟹刺身"]
 
-服务端今天的本地 weekday 是 **${new Date().getDay()}**（0=周日..6=周六），今天日期 ${new Date().toISOString().slice(0, 10)}。
+### 示例 2 — 用户已选 cuisine 不覆盖（英文）
+输入：city=Paris，cuisines=["Bistro"]，freeText="quiet place for two, must accept reservations, budget around 60 EUR"
+cuisines: ["Bistro"]
+hardFilters: [
+  {"text":"for two → party size = 2","weight":0.9},
+  {"text":"must accept reservations → reservation available","weight":0.9},
+  {"text":"budget around 60 EUR → per-person budget ≈ 60 EUR","weight":0.8}
+]
+softPreferences: [{"text":"quiet atmosphere","weight":0.7}]
 
-**只有当用户原文「其它需求」里明确提到了具体的星期/日期/时段/钟点，才填 visitTime。模糊词如「随便」「找一家」「想去吃饭」一律视为未提到。**
+### 示例 3 — 品类级约束 + AI 推断品类（中文）
+输入：city=大阪，cuisines=[]（autoInfer），freeText="带 3 岁小孩，想吃饱一点"
+cuisines: ["家庭餐厅","回转寿司","お好み焼き"]
+cuisineLevelConstraints: [
+  {"text":"带 3 岁小孩 → 适合家庭/儿童友好的品类","weight":0.8},
+  {"text":"想吃饱一点 → 分量足、主食型品类","weight":0.6}
+]
+softPreferences: [
+  {"text":"带 3 岁小孩 → 适合家庭/儿童友好的品类","weight":0.8},
+  {"text":"想吃饱一点 → 分量足、主食型品类","weight":0.6}
+]
+hardFilters: []
 
-字段规则：
-- \`mentioned\`：用户是否真的提到了。没提到 → false，且其它字段全部填 null / 空串。
-- \`evidence\`：必须是原文「其它需求」里**逐字出现**的连续片段（不得改写、不得翻译、不得拼接）。后端会做子串校验，对不上就整条作废。
-- \`weekday\`：0=周日, 1=周一, ..., 6=周六。
-  - "今天/today/今晚/tonight" → ${new Date().getDay()}
-  - "明天/tomorrow/明晚" → ${(new Date().getDay() + 1) % 7}
-  - "后天" → ${(new Date().getDay() + 2) % 7}
-  - "周六/周日/周一" / "Saturday/Sunday/Monday..." → 直接对应
-  - **有具体钟点（原文出现明确的钟表数字，如 "12:00"、"7 点"、"7pm"、"14:30"）但没有任何星期/日期词 → 默认填今天的 weekday = ${new Date().getDay()}**
-  - 只有模糊时段词（"晚上"/"中午"/"tonight"/"evening" 等，没有具体钟点）且没有日期词 → null
-- \`hhmm\`：24 小时制 "HH:MM"。用户提到餐段就是明确的时间信号，必须推断对应锚点，不得因为没有钟表数字而遗漏。
-  - 具体钟点："7 点"→"19:00"（晚上语境）/"07:00"（早上语境）；"7pm"→"19:00"；"12:30"→"12:30"；"下午 2 点半"→"14:30"
-  - 餐段锚点：早餐/breakfast→"08:30"，早午餐/brunch→"10:30"，午餐/午饭/lunch→"12:30"，下午茶/afternoon tea→"15:00"，晚餐/晚饭/dinner/supper→"19:00"，夜宵/宵夜/late-night meal→"22:00"
-  - 其它模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
-  - 同时出现餐段和具体钟点时，始终以用户的具体钟点为准，例如 "brunch at 11:30"→"11:30"
-  - 没有时间信号 → null
-- \`raw\`：原话直接抄过来，用于 UI 展示，例如 "周六晚上 7 点"。
+### 示例 4 — "want" 不等于 hardFilter（英文）
+输入：city=Tokyo，cuisines=[]（autoInfer），freeText="I want a cozy ramen place, not touristy, ideally near Shinjuku station"
+cuisines: ["Ramen"]
+hardFilters: []
+softPreferences: [
+  {"text":"cozy atmosphere","weight":0.6},
+  {"text":"near Shinjuku station","weight":0.6}
+]
+negativeFilters: [{"text":"not touristy","weight":0.7}]
+searchStrategy: [
+  "Use 'Ramen' as the Google Maps text search keyword",
+  "Cozy atmosphere and proximity to Shinjuku station are AI ranking signals, not hard filters",
+  "Tourist-trap places are down-weighted in ranking"
+]
 
-### 示例
-- 输入「两个人预算 15000，不要游客店」→ \`{"mentioned":false,"evidence":"","weekday":null,"hhmm":null,"raw":""}\`
-- 输入「find a good ramen place」→ \`{"mentioned":false,...}\`
-- 输入「周六晚上 7 点去」→ \`{"mentioned":true,"evidence":"周六晚上 7 点","weekday":6,"hhmm":"19:00","raw":"周六晚上 7 点"}\`
-- 输入「this Saturday 7pm」→ \`{"mentioned":true,"evidence":"this Saturday 7pm","weekday":6,"hhmm":"19:00","raw":"this Saturday 7pm"}\`
-- 输入「晚上去」→ \`{"mentioned":true,"evidence":"晚上","weekday":null,"hhmm":"19:00","raw":"晚上"}\`（只有模糊时段，不过滤）
-- 输入「12:00 去吃」→ \`{"mentioned":true,"evidence":"12:00","weekday":${new Date().getDay()},"hhmm":"12:00","raw":"12:00"}\`（具体钟点无日期 → 默认今天）
-- 输入「7pm sushi」→ \`{"mentioned":true,"evidence":"7pm","weekday":${new Date().getDay()},"hhmm":"19:00","raw":"7pm"}\`
-- 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\`
-- 输入「Saturday brunch」→ \`{"mentioned":true,"evidence":"Saturday brunch","weekday":6,"hhmm":"10:30","raw":"Saturday brunch"}\`
-- 输入「dinner tomorrow」→ \`{"mentioned":true,"evidence":"dinner tomorrow","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"19:00","raw":"dinner tomorrow"}\`
-- 输入「周日早午餐」→ \`{"mentioned":true,"evidence":"周日早午餐","weekday":0,"hhmm":"10:30","raw":"周日早午餐"}\`
-- 输入「brunch place」→ \`{"mentioned":true,"evidence":"brunch","weekday":null,"hhmm":"10:30","raw":"brunch"}\`（保留餐段意图，但不虚构日期、不做指定星期硬过滤）`;
+### 示例 5 — 可验证属性才进 hardFilter（英文）
+输入：city=New York，cuisines=["Sushi"]，freeText="need a sushi place that takes credit cards and is open after 10pm, preferably quiet"
+cuisines: ["Sushi"]
+hardFilters: [
+  {"text":"takes credit cards → accepts credit cards","weight":0.8},
+  {"text":"open after 10pm → open after 22:00","weight":0.8}
+]
+softPreferences: [{"text":"preferably quiet atmosphere","weight":0.6}]
+
+## 9. 最终任务
+将用户需求结构化为符合下游 schema 的 JSON。只返回 JSON 对象本体，不要解释、不要 Markdown、不要代码围栏、不要推理过程。`;
 
     const runOnce = async (modelId: string, opts?: { forceInfer?: boolean }) => {
       const model = gateway(modelId);
