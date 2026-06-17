@@ -222,7 +222,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 城市：${data.city}
 - 料理类型：${data.cuisines.length ? data.cuisines.join("、") : data.autoInferCuisines ? "（用户跳过料理选择并要求 AI 自动识别，请从「其它需求」+ 城市本地饮食语境推断 1–3 个具体可检索品类；禁止填 [\"餐厅\"] / [\"restaurants\"] 这类泛化兜底）" : "（用户跳过料理选择并要求按所有品类搜索，cuisines 直接填 [\"餐厅\"]）"}
 - 日期：${data.date || (data.uiLanguage === "en" ? "（未指定，dateTime 填 \"Unspecified\"）" : "（未指定，dateTime 填 \"未指定\"）")}
-- 搜索模式：${data.mode || "（未指定）"}
+- 搜索模式：（未指定）
 - 其它需求：${data.freeText || "（无）"}
 - UI 语言：${data.uiLanguage === "en" ? "English" : "简体中文"}
 
