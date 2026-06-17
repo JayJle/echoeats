@@ -1,30 +1,34 @@
-# 落地 V3 精简版 prompt
+# 语音转写节点 · 模型选型
 
-## 改动
+## 场景定位（基于现状代码 `src/routes/api/transcribe.ts`）
 
-替换 `src/lib/echo.functions.ts` 中 `parseRequirements` server function 的提示词字符串（当前位于 L213–L360 区间），用上方给出的 V3 完整版本（含 §0–§9 共 9 个章节、5 个 Few Shots、最终 schema）。
+该节点位于"需求采集第三页"的语音输入分支：用户在需求框旁点击麦克风 → 录一段中文 / 英文 / 中英混合的自然语言需求（≤ 25MB，一般 5–30 秒）→ 录完上传到 `/api/transcribe` → 服务端转写成文本 → 文本合并进 `freeText` 交给节点二。
 
-将 `${data.city}` / `${data.cuisines}` / `${data.date}` / `${data.mode}` / `${data.freeText}` / `${data.uiLanguage}` / `${data.autoInferCuisines}` / `${new Date().getDay()}` / `${new Date().toISOString().slice(0, 10)}` 等服务端注入位保持模板字符串语法不变。
+**交互模式：录完再说，一次性出结果**，没有边说边出字的需求；用户能接受 1–3 秒的转写等待，但**不能接受识别错品类 / 错地名**（错了会污染下游 `parseRequirements` 的硬过滤）。
 
-## 不动
+## 本场景核心指标（只挑两个）
 
-- `runOnce` / `forceInfer` 重试逻辑
-- Zod schema 与 fallback 解析代码（L380+）
-- 模型选择（主 `gemini-2.5-flash`，fallback `gpt-5-mini`）
-- 调用链路、错误处理、日志
+1. **准确率（含中英混合识别）** — 主要指标。错一个"猪肉"识别成"竹卤"会导致检索结果全错，这是最贵的失败。
+2. **成本 / 小时** — 次要指标。日活语音用量不高（单次 ≤ 30s），但需要在准确率相近时选便宜的。
 
-## 预期效果
+延迟不作为决策指标（录完再传，用户预期就是"等一下"，秒级差异感知不到）。
 
-- token 比 V2 减少约 35%、比 V1 增加约 15%
-- 「我要/want/need」误判 hardFilter 显著下降
-- 品类级约束不再泄漏到 hardFilters
-- AI 推断品类不再回退到 `["餐厅"]`
-- 权重抖动收敛（双轨判定）
+## 候选方案对比（按本场景两项指标）
 
-## 验证
+| 方案 | 准确率（中英混合）★主要 | 成本 / 小时 ★次要 | 延迟（参考） | 结论 |
+|---|---|---|---|---|
+| **ElevenLabs `scribe_v2`** | 高，自动检测语种、中英混说稳定 | $0.15 – 0.30 | 秒级 | ✅ **当前采用**。准确率与本场景最贵失败匹配，成本也是最低 |
+| ElevenLabs `scribe_v2_realtime` | 中高，实时流式略低于批量版 | $0.40 – 0.80 | 毫秒级 | ❌ 实时能力对"录完再传"无收益，单价 2–3 倍 |
+| OpenAI Whisper API | 高，与 scribe_v2 相当 | $0.36 | 秒级 | 🟡 **备选**。准确率相当但贵 1.5–2 倍，留作 ElevenLabs 不可用时的回退 |
+| 浏览器 Web Speech API | 中，需手动切 `lang`，中英混说差 | 免费 | 毫秒级 | 🟡 **仅降级兜底**。`ELEVENLABS_API_KEY` 缺失或 503 时给 Chrome 用户最后一条路 |
 
-落地后建议跑下列回归用例：
-1. "I want a cozy ramen place, not touristy"（预期 hardFilters 为空）
-2. "带 3 岁小孩想吃饱"（预期 cuisines 推出具体品类、hardFilters 为空）
-3. "两个人务必必须 15000 日元以内，可以预约"（预期 weight=1.0/0.9/0.8 三条 hard）
-4. "周六晚上 7 点"（预期 visitTime.evidence 为原文连续片段）
+## 结论 & 切换策略
+
+- **默认**：`scribe_v2`（批量，`tag_audio_events=false`，`diarize=false`，无需说话人/事件标签）。
+- **上游故障切换**：当 `/api/transcribe` 返回 503（`withRetry` 1 次重试后仍失败）或 429 时，前端降级到 Web Speech API（仅 Chrome / Edge），并提示用户"语音服务繁忙，已切换到浏览器识别，识别可能不准，建议手动校对"。
+- **成本失控切换**：若月度账单超阈值，整体切到 Whisper API（同为"录完再传"模型，接口替换成本低），不要切到 `scribe_v2_realtime`（贵且无收益）。
+- **不切换**：不会因"延迟"原因切到 realtime —— 本节点交互模式不要求边说边出字。
+
+## 这版仅交付选型段落
+
+本计划只产出上面这段 PRD 文本，不改任何代码（现有实现已是 `scribe_v2`）。如需，我下一轮再补"节点埋点 / 异常处理表 / 完成标准"。
