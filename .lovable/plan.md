@@ -1,34 +1,72 @@
-# 语音转写节点 · 模型选型
+# 模型选型方案（基于当前代码实测）
 
-## 场景定位（基于现状代码 `src/routes/api/transcribe.ts`）
+本方案不改动任何业务代码，只更新 `.lovable/plan.md` 中"模型选型"小节，把内容收敛到代码里**真实在跑**的模型，区别于"仅供未来评估的备选项"。
 
-该节点位于"需求采集第三页"的语音输入分支：用户在需求框旁点击麦克风 → 录一段中文 / 英文 / 中英混合的自然语言需求（≤ 25MB，一般 5–30 秒）→ 录完上传到 `/api/transcribe` → 服务端转写成文本 → 文本合并进 `freeText` 交给节点二。
+---
 
-**交互模式：录完再说，一次性出结果**，没有边说边出字的需求；用户能接受 1–3 秒的转写等待，但**不能接受识别错品类 / 错地名**（错了会污染下游 `parseRequirements` 的硬过滤）。
+## 来源核对
 
-## 本场景核心指标（只挑两个）
+| 节点 | 源文件 | 行号 | 实际模型 |
+|---|---|---|---|
+| 语音转写 | `src/routes/api/transcribe.ts` | L67 | `scribe_v2`（ElevenLabs，batch、`tag_audio_events=false`、`diarize=false`） |
+| 结构化解析（首轮） | `src/lib/echo.functions.ts` | L488 | `google/gemini-2.5-flash` |
+| 结构化解析（跨厂兜底 / forceInfer 重试） | `src/lib/echo.functions.ts` | L493、L418 | `openai/gpt-5-mini` |
+| AI 排序 | `src/lib/echo.functions.ts` | L1476、L1646 | `google/gemini-2.5-flash`（raw + slim 同模型重试） |
 
-1. **准确率（含中英混合识别）** — 主要指标。错一个"猪肉"识别成"竹卤"会导致检索结果全错，这是最贵的失败。
-2. **成本 / 小时** — 次要指标。日活语音用量不高（单次 ≤ 30s），但需要在准确率相近时选便宜的。
+> 之前误写的 `gemini-2.5-flash-lite`、`gemini-3-flash-preview` 在代码里均未接入，本次从"在跑模型"里删掉，仅保留在"未来可选"。
 
-延迟不作为决策指标（录完再传，用户预期就是"等一下"，秒级差异感知不到）。
+---
 
-## 候选方案对比（按本场景两项指标）
+## 节点 1 · 语音转写（`/api/transcribe`）
 
-| 方案 | 准确率（中英混合）★主要 | 成本 / 小时 ★次要 | 延迟（参考） | 结论 |
-|---|---|---|---|---|
-| **ElevenLabs `scribe_v2`** | 高，自动检测语种、中英混说稳定 | $0.15 – 0.30 | 秒级 | ✅ **当前采用**。准确率与本场景最贵失败匹配，成本也是最低 |
-| ElevenLabs `scribe_v2_realtime` | 中高，实时流式略低于批量版 | $0.40 – 0.80 | 毫秒级 | ❌ 实时能力对"录完再传"无收益，单价 2–3 倍 |
-| OpenAI Whisper API | 高，与 scribe_v2 相当 | $0.36 | 秒级 | 🟡 **备选**。准确率相当但贵 1.5–2 倍，留作 ElevenLabs 不可用时的回退 |
-| 浏览器 Web Speech API | 中，需手动切 `lang`，中英混说差 | 免费 | 毫秒级 | 🟡 **仅降级兜底**。`ELEVENLABS_API_KEY` 缺失或 503 时给 Chrome 用户最后一条路 |
+**关键指标**：中英混合识别准确率（主） + 单位时长成本（次）。当前交互是"录完再传"，不需要边说边出字，所以延迟不是决策因素。
 
-## 结论 & 切换策略
+| 模型 | 角色 | 准确率 | 中英混合 | 延迟 | 成本 | 选/不选的理由 |
+|---|---|---|---|---|---|---|
+| **ElevenLabs `scribe_v2`** | ✅ 当前在用 | 高 | 支持 | 秒级 | $0.15–0.30/小时 | 录完再传场景的成本/质量最优；与现有代码完全吻合 |
+| ElevenLabs `scribe_v2_realtime` | ❌ 未来可选 | 中高 | 支持 | 毫秒级 | $0.40–0.80/小时 | 当前不做边说边出字，多花 2–3× 成本无收益 |
+| OpenAI Whisper API | 🟡 未来可选（成本兜底） | 高 | 支持 | 秒级 | $0.36/小时 | 同为"录完再传"模型，未来若 ElevenLabs 涨价或额度受限可平移 |
+| 浏览器 Web Speech API | 🟡 未来可选（可用性兜底） | 中 | 差，需手动切 `lang` | 毫秒级 | 免费 | 仅 Chrome/Edge；未来在 `ELEVENLABS_API_KEY` 缺失或 503 时提示用户降级使用 |
 
-- **默认**：`scribe_v2`（批量，`tag_audio_events=false`，`diarize=false`，无需说话人/事件标签）。
-- **上游故障切换**：当 `/api/transcribe` 返回 503（`withRetry` 1 次重试后仍失败）或 429 时，前端降级到 Web Speech API（仅 Chrome / Edge），并提示用户"语音服务繁忙，已切换到浏览器识别，识别可能不准，建议手动校对"。
-- **成本失控切换**：若月度账单超阈值，整体切到 Whisper API（同为"录完再传"模型，接口替换成本低），不要切到 `scribe_v2_realtime`（贵且无收益）。
-- **不切换**：不会因"延迟"原因切到 realtime —— 本节点交互模式不要求边说边出字。
+**当前代码兜底行为**：`src/routes/api/transcribe.ts` L85–L98 只做单次 retry + 上游错误码透传（429/402/500/503），**没有跨模型 fallback**。Whisper / Web Speech 都还没接入。
 
-## 这版仅交付选型段落
+---
 
-本计划只产出上面这段 PRD 文本，不改任何代码（现有实现已是 `scribe_v2`）。如需，我下一轮再补"节点埋点 / 异常处理表 / 完成标准"。
+## 节点 2 · 结构化解析（`parseRequirements`）
+
+**关键指标**：Schema 可靠性 + 证据保真度（主） + 单位 token 成本（次）。3–8s 延迟在搜索 loading 内可吸收，不作为决策因素。
+
+| 模型 | 角色 | Schema 可靠性 | 中英混合 | 成本（输入/输出，每 1M token） | 选/不选的理由 |
+|---|---|---|---|---|---|
+| **`google/gemini-2.5-flash`** | ✅ 首轮主模型（L488、L1476） | 高 | 好 | $0.30 / $2.50 | 与 `Output.object({ schema: LooseParsedSchema })`、`maxOutputTokens: 8000` 兼容良好；AI 排序也用同一模型保持一致 |
+| **`openai/gpt-5-mini`** | ✅ 跨厂兜底 + `forceInfer` 重试（L493、L418） | 高 | 好 | $0.25 / $2.00 | 与首轮跨厂商，规避同时段单家 429/5xx；`forceInfer=true` 修复"用户要求 AI 推断但返回兜底词（餐厅/Restaurants）"的情况 |
+| `google/gemini-2.5-pro` | ❌ 未来可选 | 高 | 好 | ~4–5× flash 成本 | 节点复杂度撑不起该价位；留给"高级搜索"等未来场景 |
+| `google/gemini-3-flash-preview` | 🟡 观察中，未来可选 | 待验证（注释 L1474 明确说当前 Gateway 下**不支持** JSON Schema responseFormat） | 好 | 待定 | Schema 兼容前不能进主链；待 Gateway 支持后再评估 |
+| `google/gemini-2.5-flash-lite` | ❌ 未来可选 | 偏弱，易丢字段 | 一般 | 更便宜 | 字段缺失会污染下游硬过滤，省下的成本不抵召回损失；本次从对比中删除 |
+
+**当前代码兜底行为（L408–L425、L487–L495）**：
+1. 首轮 `gemini-2.5-flash`
+2. 失败 / schema 解析失败 → `gpt-5-mini`
+3. 用户勾选"AI 推断品类"但首轮返回兜底词（`餐厅` / `Restaurants`）→ `gpt-5-mini` 带 `forceInfer=true` 再跑一次
+4. 两轮都失败 → 降级返回最小结构 `{city, cuisines, dateTime, country, language, visitTime, uiLanguage}` + `degraded=true`
+
+---
+
+## 切换/不切换的硬规则
+
+- ❌ **不因延迟切换**：转写不上 realtime、解析不下放 flash-lite。
+- ❌ **不因"想更强"切换**：解析不升 2.5-pro，除非未来出现明确质量不足的 case。
+- ✅ **因可靠性切换**：首轮 schema/网络失败 → 跨厂 `gpt-5-mini`。
+- ✅ **因语义保真切换**：`forceInfer` 触发 → `gpt-5-mini` 重试。
+- ✅ **未来兼容性切换**：等 `gemini-3-flash-preview` 在 Gateway 支持 JSON Schema 后，再考虑替换 2.5-flash。
+
+---
+
+## 落地动作（plan，仅文档）
+
+1. 改写 `.lovable/plan.md` 中"语音转写节点 · 模型选型"段：候选只列上表 4 个，明确"在跑"= `scribe_v2`，其余标"未来可选"。
+2. 改写"结构化解析节点 · 模型选型"段：候选只列上表 5 个，明确"在跑"= `gemini-2.5-flash` + `gpt-5-mini`，flash-lite 从对比表移到"未来可选/不推荐"。
+3. 末尾追加"切换/不切换的硬规则"小节（即本文档第 3 节）。
+4. **不改动 `src/routes/api/transcribe.ts`、`src/lib/echo.functions.ts`、`src/lib/ai-gateway.ts` 任何一行代码。**
+
+确认后我进入 build 模式只动 `.lovable/plan.md` 一个文件。
