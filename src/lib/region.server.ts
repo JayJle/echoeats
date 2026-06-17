@@ -1,30 +1,27 @@
-// 中国大陆城市判定（用于第一页拦截）：含中文字符 + 不在港澳台/日韩英文/中文白名单中。
+// 中国大陆城市判定（用于第一页拦截）：仅在文本中明确出现中国大陆地名/省份关键词时才命中。
+// 不再以"含中文字符"作为兜底，避免把"纽约/伦敦/巴黎/洛杉矶"这类中文写法的外国城市误判为大陆。
 // 纯函数，零外部依赖。
 
-const NON_MAINLAND_CITY_PATTERNS = [
-  // 港澳台
-  /香港|澳门|澳門|台湾|台灣|台北|高雄|台中|台南|新北|桃园|桃園/i,
-  /hong\s*kong|macau|macao|taipei|taiwan|kaohsiung/i,
-  // 日本
-  /日本|东京|東京|京都|大阪|名古屋|札幌|福冈|福岡|横滨|橫濱|神户|神戶|奈良|冲绳|沖繩/i,
-  /tokyo|kyoto|osaka|nagoya|sapporo|fukuoka|yokohama|kobe|nara|okinawa|japan/i,
-  // 韩国
-  /韩国|韓國|首尔|首爾|釜山|济州|濟州/i,
-  /korea|seoul|busan|jeju/i,
-  // 新加坡 / 东南亚常见中文表达
-  /新加坡|吉隆坡|曼谷|马来西亚|馬來西亞|泰国|泰國|越南|河内|河內|胡志明/i,
-  /singapore|kuala\s*lumpur|bangkok|thailand|vietnam|hanoi|ho\s*chi\s*minh/i,
+const MAINLAND_CHINA_CITY_PATTERNS = [
+  // 直辖市（中文）
+  /北京|上海|天津|重庆/,
+  // 省份与自治区（中文，台湾不在此列）
+  /河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|内蒙古|广西|西藏|宁夏|新疆/,
+  // 主要地级市（中文）
+  /广州|深圳|成都|杭州|南京|武汉|西安|苏州|青岛|长沙|郑州|东莞|佛山|宁波|无锡|合肥|厦门|福州|济南|大连|沈阳|哈尔滨|长春|昆明|南宁|贵阳|兰州|银川|乌鲁木齐|拉萨|呼和浩特|太原|石家庄|南昌|海口|三亚|珠海|中山|惠州|温州|嘉兴|绍兴|金华|台州|烟台|潍坊|临沂|洛阳|唐山|保定|廊坊|秦皇岛|徐州|常州|南通|扬州|镇江|盐城|泰州|淮安|连云港|宿迁/,
+  // 显式"中国大陆 / 中华人民共和国 / 中国"
+  /中国大陆|中國大陸|中华人民共和国|中華人民共和國/,
+  // 英文（拼音 / 常见英文写法）
+  /\b(beijing|peking|shanghai|tianjin|chongqing|chungking)\b/i,
+  /\b(guangzhou|canton|shenzhen|chengdu|hangzhou|nanjing|wuhan|xi'?an|suzhou|qingdao|tsingtao|changsha|zhengzhou|dongguan|foshan|ningbo|wuxi|hefei|xiamen|amoy|fuzhou|jinan|dalian|shenyang|harbin|changchun|kunming|nanning|guiyang|lanzhou|yinchuan|urumqi|lhasa|hohhot|taiyuan|shijiazhuang|nanchang|haikou|sanya|zhuhai|wenzhou|jiaxing|shaoxing|jinhua|taizhou|yantai|weifang|linyi|luoyang|tangshan|baoding)\b/i,
+  /\bmainland\s*china\b/i,
+  /\bp\.?\s*r\.?\s*c\.?\b/i,
 ];
 
 export function isMainlandChinaCity(city: string): boolean {
-  const trimmed = city.trim();
-  if (!trimmed) return false;
-  // 必须含中文字符，否则不算（北京 ✓ / Tokyo ✗）
-  if (!/[\u4e00-\u9fff]/.test(trimmed)) return false;
-  for (const pat of NON_MAINLAND_CITY_PATTERNS) {
-    if (pat.test(trimmed)) return false;
-  }
-  return true;
+  const s = city.trim();
+  if (!s) return false;
+  return MAINLAND_CHINA_CITY_PATTERNS.some((p) => p.test(s));
 }
 
 // 基于 Google Places 候选项的 countryOrRegion 字符串判断是否为中国大陆（排除港澳台）。
