@@ -860,19 +860,51 @@ function reconcileEvidenceStatus(
   status: "ok" | "unknown" | "fail",
   evidence: string | undefined,
 ): "ok" | "unknown" | "fail" {
-  if (status !== "unknown" || !evidence?.trim()) return status;
+  if (!evidence?.trim()) return status;
   const text = evidence.trim();
+
+  // 否定/未提及（中英文双语）
+  const saysNegated =
+    /(未(?:明确|具体|直接|特别)?(?:提及|说明|提到|强调|确认|涉及|涵盖|体现)|没(?:有)?(?:具体|明确|特别|直接)?(?:提及|说明|提到|涉及|体现)|暂无(?:相关)?(?:资料|信息|证据|提及|评论|描述)|未?找到(?:相关|具体|明确)?(?:资料|信息|证据|描述)|缺(?:乏|少)(?:相关|具体|明确)?(?:资料|信息|证据|描述)|但(?:是)?\s*[^。.!?]{0,20}(?:没|未|不|无)\s*(?:有|能|够|到|明确)?(?:提及|说明|提到|涉及|强调)?|do(?:es)?(?:n't|\s+not)\s+(?:specifically|directly|clearly|explicitly|particularly|really)?\s*(?:mention|state|confirm|note|reference|address|discuss|cover|highlight|specify)|no\s+(?:specific|direct|clear|explicit|particular)\s+(?:mention|reference|evidence|information|confirmation)|but\s+[^.!?]{0,40}\b(?:do(?:es)?\s+not|don't|doesn't|did(?:n't| not)|no(?:t)?)\b|however[^.!?]{0,40}\b(?:do(?:es)?\s+not|don't|doesn't|not|no)\b|fails?\s+to\s+(?:mention|specify|address|confirm)|without\s+(?:specific|clear|direct|explicit)\s+(?:mention|reference)|nothing\s+(?:specifically|directly)?\s*(?:mentions?|states?|confirms?))/i.test(
+      text,
+    );
+
+  // 不确定（中英文双语）
   const saysUncertain =
-    /(可能|很可能|大概|推测|或许|无(?:法|从|相关)?(?:资料|信息|证据|评论)|未(?:知|明确提及|说明|确认|找到)|没有(?:资料|信息|证据|评论|提及)|资料不足|信息不足|待核实|无法确认|不(?:能|足以)确认|unknown|unclear|unavailable|insufficient|possibly|probably|likely|may\b|might\b|no (?:relevant )?(?:data|information|evidence|review)|not (?:mentioned|confirmed|verified)|cannot (?:confirm|verify|determine))/i.test(
+    /(可能|很可能|大概|推测|或许|似乎|貌似|疑似|资料不足|信息不足|待核实|无法(?:确认|核实|判断)|不(?:能|足以)(?:确认|核实|判断)|unknown|unclear|unavailable|insufficient|possibly|probably|likely|presumably|maybe|may\b|might\b|could\s+be|appears?\s+to|seems?\s+to|cannot\s+(?:confirm|verify|determine|tell)|hard\s+to\s+(?:tell|confirm))/i.test(
       text,
     );
-  if (saysUncertain) return "unknown";
+
+  // 明确反例 / 不符合
+  const saysContradicts =
+    /(明显不符合|明确不符合|不符合(?:要求|条件|标准|定位)|与.{0,10}不符|与.{0,10}相悖|与.{0,10}冲突|与.{0,10}矛盾|与要求相反|命中反例|属于反例|does\s+not\s+match|doesn'?t\s+match|contradict(?:s|ed)?|conflicts?\s+with|opposite\s+of|fails?\s+(?:the\s+)?requirement|violates?\s+the\s+(?:requirement|criteria))/i.test(
+      text,
+    );
+
+  // 明确正向
   const citesPositiveEvidence =
-    /(明确(?:指出|提到|显示|表明|支持|强调|符合)|评论(?:指出|提到|显示|表明|称|强调|赞扬)|证据(?:显示|表明|支持)|资料(?:显示|表明|支持)|实际(?:为|有|达到)|符合(?:.{0,16})?(?:定位|要求|条件)?|满足|达标|支持该条件|命中(?:主词|同义词|正向)|(?:没有|未)(?:命中|发现)(?:任何)?(?:反例|负面)(?:关键词)?|explicitly (?:states?|mentions?|shows?|supports?|confirms?|matches?)|reviews? (?:state|mention|note|say|show|confirm|praise|highlight)|evidence (?:shows?|supports?|confirms?)|is confirmed|requirements? (?:is |are )?met|matches?|satisf(?:y|ies|ied)|supports?|no (?:negative|counterexample) (?:keyword )?(?:hit|found))/i.test(
+    /(明确(?:指出|提到|显示|表明|支持|强调|符合)|评论(?:指出|提到|显示|表明|称|强调|赞扬|盛赞|好评)|证据(?:显示|表明|支持)|资料(?:显示|表明|支持)|实际(?:为|有|达到)|符合(?:.{0,16})?(?:定位|要求|条件)?|满足(?:要求|条件)?|达标|支持该条件|命中(?:主词|同义词|正向)|(?:没有|未)(?:命中|发现)(?:任何)?(?:反例|负面)(?:关键词)?|explicitly\s+(?:states?|mentions?|shows?|supports?|confirms?|matches?)|reviews?\s+(?:state|mention|note|say|show|confirm|praise|highlight|emphasi[sz]e)|evidence\s+(?:shows?|supports?|confirms?)|is\s+confirmed|requirements?\s+(?:is\s+|are\s+)?met|clearly\s+(?:matches?|satisf(?:y|ies|ied)))/i.test(
       text,
     );
-  return citesPositiveEvidence ? "ok" : "unknown";
+
+  // 反例优先级最高
+  if (saysContradicts) return "fail";
+
+  if (status === "ok") {
+    // ok 但文案否定/不确定 → 降级
+    if (saysNegated || saysUncertain) return "unknown";
+    return "ok";
+  }
+  if (status === "unknown") {
+    if (saysNegated || saysUncertain) return "unknown";
+    if (citesPositiveEvidence) return "ok";
+    return "unknown";
+  }
+  // status === "fail": 保留 AI 的负面判断（除非文案完全正向，且无任何否定信号 — 罕见，留作保险）
+  if (citesPositiveEvidence && !saysNegated && !saysUncertain) return "unknown";
+  return "fail";
 }
+
 
 function priceLevelLabel(level: string | null): string | null {
   switch (level) {
