@@ -69,6 +69,47 @@ function uniqueDisplayStrings(items: string[]): string[] {
   });
 }
 
+const RECALL_TAG_LABELS_ZH: Record<string, string> = {
+  primary: "主词",
+  recommend: "推荐词",
+  synonym: "同义词",
+  dish: "菜品",
+  "scene:private-room": "包间",
+  "scene:solo": "一人食",
+  "scene:date": "约会",
+  "scene:family": "家庭",
+  "scene:group": "聚会",
+  "scene:quiet": "安静",
+  "time:late-night": "深夜",
+  "time:brunch": "早午餐",
+  "budget:high": "高端",
+  "budget:low": "平价",
+};
+const RECALL_TAG_LABELS_EN: Record<string, string> = {
+  primary: "primary",
+  recommend: "recommended",
+  synonym: "synonym",
+  dish: "dish",
+  "scene:private-room": "private room",
+  "scene:solo": "solo",
+  "scene:date": "date",
+  "scene:family": "family",
+  "scene:group": "group",
+  "scene:quiet": "quiet",
+  "time:late-night": "late night",
+  "time:brunch": "brunch",
+  "budget:high": "high-end",
+  "budget:low": "budget",
+};
+function formatRecallTag(tag: string, lang: "zh" | "en"): string {
+  const table = lang === "en" ? RECALL_TAG_LABELS_EN : RECALL_TAG_LABELS_ZH;
+  if (table[tag]) return table[tag];
+  const [prefix, ...rest] = tag.split(":");
+  const value = rest.join(":");
+  if (value && table[prefix]) return `${table[prefix]}：${value}`;
+  return tag;
+}
+
 function ResultsPage() {
   const navigate = useNavigate();
   const { lang, t } = useT();
@@ -645,7 +686,7 @@ function DataSourcesStrip({ r }: { r: Restaurant }) {
 }
 
 function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: Restaurant; tierLabel: Record<Restaurant["matchTier"], string>; tierClass: Record<Restaurant["matchTier"], string> }) {
-  const { t } = useT();
+  const { t, lang } = useT();
   const visitTime = useQueryStore((s) => s.parsed?.visitTime ?? null);
   const showVisitBadge = Boolean(visitTime && r.visitTimeMatch);
   const displayName = r.localName?.trim() || r.name;
@@ -868,7 +909,7 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
               <span>{t("results.scoreBreakdown.show")}</span>
               {r.recallSources && r.recallSources.length > 0 && (
                 <span className="ml-2 text-[10px] opacity-70">
-                  · {t("results.recallSources")}: {r.recallSources.join(", ")}
+                  · {t("results.recallSources")}: {r.recallSources.map((s) => formatRecallTag(s, lang)).join(lang === "en" ? ", " : "、")}
                 </span>
               )}
             </summary>
