@@ -882,7 +882,7 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
                 </li>
               ))}
               <li className="flex justify-between pt-1 font-semibold">
-                <span>{isFinalLabel(t)}</span>
+                <span>{t("results.matchScore")}</span>
                 <span>{r.matchScore}</span>
               </li>
             </ul>
