@@ -1194,31 +1194,103 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             apiKey: aiKey,
           });
           cuisineExpansions.set(cuisine, expansion);
-          const synQueries = expansion.synonyms
-            .slice(0, 2)
-            .map((s) => `${s} ${data.city}`);
+
+          // Build up to 8 recall routes per cuisine; each route is { tag, query }.
+          // tag is stored on each candidate as recallSources for downstream scoring.
+          const routes: { tag: string; query: string }[] = [];
+          const pushRoute = (tag: string, query: string) => {
+            if (routes.length >= 8) return;
+            if (routes.some((r) => r.query === query)) return;
+            routes.push({ tag, query });
+          };
+          pushRoute("primary", `${expansion.primary} ${data.city}`);
+          pushRoute("recommend", `${expansion.primary} ${data.city} ${semanticSuffix}`);
+          for (const syn of expansion.synonyms.slice(0, 2)) {
+            pushRoute(`synonym:${syn}`, `${syn} ${data.city}`);
+          }
+
+          if (data.mode !== "quick") {
+            // dish routes (one per dish, capped by remaining slots)
+            for (const dish of data.dishPreferences) {
+              pushRoute(`dish:${dish}`, `${dish} ${data.city}`);
+            }
+
+            // scene route (detect scene keywords across hard/soft)
+            const allCondText = [...data.hardFilters, ...data.softPreferences]
+              .map((c) => c.text).join(" ");
+            const sceneMatches: Array<[RegExp, string, Record<string, string>]> = [
+              [/包间|个室|個室|private\s*room/i, "private-room", { ja: "個室", "zh-CN": "包间", "zh-TW": "包廂", en: "private room" }],
+              [/一个人|一人|独自|一人飯|solo|alone/i, "solo", { ja: "一人飯", "zh-CN": "一个人", "zh-TW": "一人", en: "solo dining" }],
+              [/约会|約會|date\s*night|romantic/i, "date", { ja: "デート", "zh-CN": "约会", "zh-TW": "約會", en: "date night" }],
+              [/家庭|带(?:小孩|宝宝|娃|孩子)|family|kid/i, "family", { ja: "ファミリー", "zh-CN": "家庭", "zh-TW": "家庭", en: "family friendly" }],
+              [/聚会|聚餐|group|party/i, "group", { ja: "宴会", "zh-CN": "聚会", "zh-TW": "聚會", en: "group dining" }],
+              [/安静|安靜|quiet/i, "quiet", { ja: "静かな", "zh-CN": "安静", "zh-TW": "安靜", en: "quiet" }],
+            ];
+            for (const [pattern, tagSuffix, words] of sceneMatches) {
+              if (pattern.test(allCondText)) {
+                const word = words[language] ?? words.en;
+                pushRoute(`scene:${tagSuffix}`, `${expansion.primary} ${data.city} ${word}`);
+              }
+            }
+
+            // time route (brunch / late-night) when visitTime hhmm is at edge hours
+            const hh = data.visitTime?.hhmm ? parseInt(data.visitTime.hhmm.split(":")[0], 10) : null;
+            if (hh != null) {
+              if (hh >= 22 || hh < 5) {
+                const word = language === "ja" ? "深夜営業" : language.startsWith("zh") ? "深夜营业" : "late night";
+                pushRoute("time:late-night", `${expansion.primary} ${data.city} ${word}`);
+              } else if (hh >= 10 && hh <= 11) {
+                const word = language === "ja" ? "ブランチ" : language.startsWith("zh") ? "早午餐" : "brunch";
+                pushRoute("time:brunch", `${expansion.primary} ${data.city} ${word}`);
+              }
+            }
+
+            // budget route (high / low) — detect from hard filters
+            const hardText = data.hardFilters.map((c) => c.text).join(" ").toLowerCase();
+            const highBudget = /(高级|高端|高級|奢华|fine\s*dining|expensive|高档|高檔|米其林|michelin|omakase)/i.test(hardText)
+              || /(?:>=|≥|>|超过|以上|至少)\s*(?:\$|¥|€|hk\$|nt\$|s\$|£)?\s*(\d{4,})/.test(hardText);
+            const lowBudget = /(便宜|平价|平價|学生价|cheap|budget|inexpensive|安い|安価|gasa)/i.test(hardText)
+              || /(?:<=|≤|<|不超过|以内|至多)\s*(?:\$|¥|€|hk\$|nt\$|s\$|£)?\s*([1-9]\d{0,3})\b/.test(hardText);
+            if (highBudget) {
+              const word = language === "ja" ? "高級" : language.startsWith("zh") ? "高级" : "fine dining";
+              pushRoute("budget:high", `${expansion.primary} ${data.city} ${word}`);
+            } else if (lowBudget) {
+              const word = language === "ja" ? "安い" : language.startsWith("zh") ? "便宜" : "cheap eats";
+              pushRoute("budget:low", `${expansion.primary} ${data.city} ${word}`);
+            }
+          }
+
           const queries = data.mode === "quick"
-            ? [`${expansion.primary} ${data.city}`]
-            : Array.from(
-                new Set([
-                  `${expansion.primary} ${data.city}`,
-                  ...synQueries,
-                  `${expansion.primary} ${data.city} ${semanticSuffix}`,
-                ]),
-              );
+            ? [{ tag: "primary", query: `${expansion.primary} ${data.city}` }]
+            : routes;
+
+          console.log(`[recall] cuisine="${cuisine}" routes=${queries.length} tags=[${queries.map((q) => q.tag).join(", ")}]`);
+
           const settled = await Promise.allSettled(
-            queries.map((query) =>
-              searchPlaces({ query, language, region, maxResults: 20 }),
+            queries.map((q) =>
+              searchPlaces({ query: q.query, language, region, maxResults: 20 }),
             ),
           );
+          // recallSourcesMap: placeId -> set of route tags that returned it
+          const recallSourcesMap = new Map<string, Set<string>>();
           const merged = new Map<string, PlaceCandidate>();
           let firstError: string | null = null;
-          for (const s of settled) {
+          for (let i = 0; i < settled.length; i++) {
+            const s = settled[i];
+            const tag = queries[i].tag;
             if (s.status === "fulfilled") {
-              for (const p of s.value) if (!merged.has(p.placeId)) merged.set(p.placeId, p);
+              for (const p of s.value) {
+                if (!merged.has(p.placeId)) merged.set(p.placeId, p);
+                if (!recallSourcesMap.has(p.placeId)) recallSourcesMap.set(p.placeId, new Set());
+                recallSourcesMap.get(p.placeId)!.add(tag);
+              }
             } else if (!firstError) {
               firstError = s.reason instanceof Error ? s.reason.message : String(s.reason);
             }
+          }
+          // attach recallSources to each PlaceCandidate via a side-map (kept on outer scope)
+          for (const [pid, tags] of recallSourcesMap) {
+            recallSourcesById.set(pid, Array.from(tags));
           }
           const allPlaces = Array.from(merged.values());
           const inRegionPlaces = allPlaces.filter((place) => {
@@ -1235,6 +1307,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         }),
       );
     }
+
 
     const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
     yield { type: "stage", stage: "places-done", count: totalCandidates };
