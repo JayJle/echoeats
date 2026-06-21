@@ -1378,6 +1378,48 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
     }
 
+    // 规则初筛：只用 Google Places 直接返回的字段
+    // 1) businessStatus 非 OPERATIONAL → 剔除
+    // 2) 高/低预算明显 → 用 priceLevel 剔除 mismatch（无数据不剔除）
+    // 3) 评分硬门槛 (weight >= 0.85 且评论数 >= 30) → 剔除明显不达标
+    const PRICE_RANK: Record<string, number> = {
+      PRICE_LEVEL_FREE: 0,
+      PRICE_LEVEL_INEXPENSIVE: 1,
+      PRICE_LEVEL_MODERATE: 2,
+      PRICE_LEVEL_EXPENSIVE: 3,
+      PRICE_LEVEL_VERY_EXPENSIVE: 4,
+    };
+    const hardTextLower = data.hardFilters.map((c) => c.text).join(" ").toLowerCase();
+    const wantsHighEnd = /(高级|高端|高級|奢华|fine\s*dining|expensive|高档|高檔|米其林|michelin|omakase|高価)/i.test(hardTextLower);
+    const wantsLowBudget = /(便宜|平价|平價|学生价|cheap|budget|inexpensive|安い|安価)/i.test(hardTextLower);
+    const ratingThresholdFilter = data.hardFilters.find(
+      (f) => f.weight >= 0.85 && verifyGoogleRatingFilter(f.text, 5, isEn) !== null,
+    );
+
+    let rulesRemoved = { businessStatus: 0, price: 0, rating: 0 };
+    placeResults = placeResults.map((r) => {
+      if (!r.places.length) return r;
+      const kept: PlaceCandidate[] = [];
+      for (const p of r.places) {
+        if (p.businessStatus && p.businessStatus !== "OPERATIONAL") {
+          rulesRemoved.businessStatus++;
+          continue;
+        }
+        if (p.priceLevel && p.priceLevel in PRICE_RANK) {
+          const rank = PRICE_RANK[p.priceLevel];
+          if (wantsHighEnd && rank <= 1) { rulesRemoved.price++; continue; }
+          if (wantsLowBudget && rank >= 4) { rulesRemoved.price++; continue; }
+        }
+        if (ratingThresholdFilter && p.rating != null && (p.userRatingCount ?? 0) >= 30) {
+          const check = verifyGoogleRatingFilter(ratingThresholdFilter.text, p.rating, isEn);
+          if (check?.status === "fail") { rulesRemoved.rating++; continue; }
+        }
+        kept.push(p);
+      }
+      return { ...r, places: kept };
+    });
+    console.log(`[rules-prefilter] removed businessStatus=${rulesRemoved.businessStatus} price=${rulesRemoved.price} rating=${rulesRemoved.rating}; candidate-pool=${placeResults.reduce((s, r) => s + r.places.length, 0)}`);
+
     // 把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
     for (const r of placeResults) {
       for (const p of r.places) {
