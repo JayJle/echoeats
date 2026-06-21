@@ -81,6 +81,8 @@ export type PlaceCandidate = {
   websiteUri: string | null;
   googleMapsUri: string;
   primaryType: string | null;
+  types: string[];
+  businessStatus: string | null;
   editorialSummary: string | null;
   location: { lat: number; lng: number } | null;
   reviews: { text: string; rating: number | null; authorName: string | null }[];
