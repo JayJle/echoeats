@@ -409,6 +409,10 @@ export const dict: Record<Lang, Dict> = {
     "results.hardCheckFail": "✗ Constraint not met: {text}{suffix}",
     "results.hardCheckUnknown": "？ Constraint to verify: {text}{suffix}",
     "results.cuisineRecommended": "Recommended for you",
+    "results.scoreBreakdown": "Score breakdown",
+    "results.scoreBreakdown.show": "Show score breakdown",
+    "results.scoreBreakdown.hide": "Hide",
+    "results.recallSources": "Recall routes hit",
 
     "feedback.thanks": "Thanks for the feedback ✓ It helps us improve search quality.",
     "feedback.title": "Help us improve search quality",
