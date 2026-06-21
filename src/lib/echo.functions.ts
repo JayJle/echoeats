@@ -1169,6 +1169,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
+    const recallSourcesById = new Map<string, string[]>();
     let placeResults: Array<{
       cuisine: string;
       places: PlaceCandidate[];
