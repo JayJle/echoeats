@@ -247,6 +247,8 @@ export async function searchPlaces(opts: {
       rating?: number;
       userRatingCount?: number;
       priceLevel?: string;
+      businessStatus?: string;
+      types?: string[];
       currentOpeningHours?: { openNow?: boolean };
       websiteUri?: string;
       googleMapsUri?: string;
@@ -277,6 +279,8 @@ export async function searchPlaces(opts: {
     rating: p.rating ?? null,
     userRatingCount: p.userRatingCount ?? null,
     priceLevel: p.priceLevel ?? null,
+    businessStatus: p.businessStatus ?? null,
+    types: Array.isArray(p.types) ? p.types : [],
     openNow: p.currentOpeningHours?.openNow ?? null,
     websiteUri: p.websiteUri ?? null,
     googleMapsUri:
