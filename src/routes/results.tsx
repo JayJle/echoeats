@@ -909,7 +909,7 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
               <span>{t("results.scoreBreakdown.show")}</span>
               {r.recallSources && r.recallSources.length > 0 && (
                 <span className="ml-2 text-[10px] opacity-70">
-                  · {t("results.recallSources")}: {r.recallSources.join(", ")}
+                  · {t("results.recallSources")}: {r.recallSources.map((s) => formatRecallTag(s, lang)).join(lang === "en" ? ", " : "、")}
                 </span>
               )}
             </summary>
