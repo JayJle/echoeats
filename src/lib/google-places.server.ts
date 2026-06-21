@@ -101,6 +101,8 @@ const FIELD_MASK = [
   "places.rating",
   "places.userRatingCount",
   "places.priceLevel",
+  "places.businessStatus",
+  "places.types",
   "places.currentOpeningHours.openNow",
   "places.websiteUri",
   "places.googleMapsUri",
