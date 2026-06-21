@@ -656,6 +656,8 @@ const RestaurantSchema = z.object({
     .default(null),
   weekdayDescriptions: z.array(z.string()).nullable().optional().default(null),
   visitTimeMatch: z.enum(["open", "unknown"]).nullable().optional().default(null),
+  scoreBreakdown: z.array(z.object({ label: z.string(), delta: z.number() })).optional().default([]),
+  recallSources: z.array(z.string()).optional().default([]),
 });
 
 const ResultsSchema = z.object({
