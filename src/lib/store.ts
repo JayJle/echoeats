@@ -66,6 +66,8 @@ export type Restaurant = {
   } | null;
   weekdayDescriptions?: string[] | null;
   visitTimeMatch?: "open" | "unknown" | null;
+  scoreBreakdown?: { label: string; delta: number }[];
+  recallSources?: string[];
 };
 
 export type ResultsGroup = {
