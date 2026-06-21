@@ -656,6 +656,8 @@ const RestaurantSchema = z.object({
     .default(null),
   weekdayDescriptions: z.array(z.string()).nullable().optional().default(null),
   visitTimeMatch: z.enum(["open", "unknown"]).nullable().optional().default(null),
+  scoreBreakdown: z.array(z.object({ label: z.string(), delta: z.number() })).optional().default([]),
+  recallSources: z.array(z.string()).optional().default([]),
 });
 
 const ResultsSchema = z.object({
@@ -1169,6 +1171,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
+    const recallSourcesById = new Map<string, string[]>();
     let placeResults: Array<{
       cuisine: string;
       places: PlaceCandidate[];
@@ -1194,31 +1197,103 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             apiKey: aiKey,
           });
           cuisineExpansions.set(cuisine, expansion);
-          const synQueries = expansion.synonyms
-            .slice(0, 2)
-            .map((s) => `${s} ${data.city}`);
+
+          // Build up to 8 recall routes per cuisine; each route is { tag, query }.
+          // tag is stored on each candidate as recallSources for downstream scoring.
+          const routes: { tag: string; query: string }[] = [];
+          const pushRoute = (tag: string, query: string) => {
+            if (routes.length >= 8) return;
+            if (routes.some((r) => r.query === query)) return;
+            routes.push({ tag, query });
+          };
+          pushRoute("primary", `${expansion.primary} ${data.city}`);
+          pushRoute("recommend", `${expansion.primary} ${data.city} ${semanticSuffix}`);
+          for (const syn of expansion.synonyms.slice(0, 2)) {
+            pushRoute(`synonym:${syn}`, `${syn} ${data.city}`);
+          }
+
+          if (data.mode !== "quick") {
+            // dish routes (one per dish, capped by remaining slots)
+            for (const dish of data.dishPreferences) {
+              pushRoute(`dish:${dish}`, `${dish} ${data.city}`);
+            }
+
+            // scene route (detect scene keywords across hard/soft)
+            const allCondText = [...data.hardFilters, ...data.softPreferences]
+              .map((c) => c.text).join(" ");
+            const sceneMatches: Array<[RegExp, string, Record<string, string>]> = [
+              [/包间|个室|個室|private\s*room/i, "private-room", { ja: "個室", "zh-CN": "包间", "zh-TW": "包廂", en: "private room" }],
+              [/一个人|一人|独自|一人飯|solo|alone/i, "solo", { ja: "一人飯", "zh-CN": "一个人", "zh-TW": "一人", en: "solo dining" }],
+              [/约会|約會|date\s*night|romantic/i, "date", { ja: "デート", "zh-CN": "约会", "zh-TW": "約會", en: "date night" }],
+              [/家庭|带(?:小孩|宝宝|娃|孩子)|family|kid/i, "family", { ja: "ファミリー", "zh-CN": "家庭", "zh-TW": "家庭", en: "family friendly" }],
+              [/聚会|聚餐|group|party/i, "group", { ja: "宴会", "zh-CN": "聚会", "zh-TW": "聚會", en: "group dining" }],
+              [/安静|安靜|quiet/i, "quiet", { ja: "静かな", "zh-CN": "安静", "zh-TW": "安靜", en: "quiet" }],
+            ];
+            for (const [pattern, tagSuffix, words] of sceneMatches) {
+              if (pattern.test(allCondText)) {
+                const word = words[language] ?? words.en;
+                pushRoute(`scene:${tagSuffix}`, `${expansion.primary} ${data.city} ${word}`);
+              }
+            }
+
+            // time route (brunch / late-night) when visitTime hhmm is at edge hours
+            const hh = data.visitTime?.hhmm ? parseInt(data.visitTime.hhmm.split(":")[0], 10) : null;
+            if (hh != null) {
+              if (hh >= 22 || hh < 5) {
+                const word = language === "ja" ? "深夜営業" : language.startsWith("zh") ? "深夜营业" : "late night";
+                pushRoute("time:late-night", `${expansion.primary} ${data.city} ${word}`);
+              } else if (hh >= 10 && hh <= 11) {
+                const word = language === "ja" ? "ブランチ" : language.startsWith("zh") ? "早午餐" : "brunch";
+                pushRoute("time:brunch", `${expansion.primary} ${data.city} ${word}`);
+              }
+            }
+
+            // budget route (high / low) — detect from hard filters
+            const hardText = data.hardFilters.map((c) => c.text).join(" ").toLowerCase();
+            const highBudget = /(高级|高端|高級|奢华|fine\s*dining|expensive|高档|高檔|米其林|michelin|omakase)/i.test(hardText)
+              || /(?:>=|≥|>|超过|以上|至少)\s*(?:\$|¥|€|hk\$|nt\$|s\$|£)?\s*(\d{4,})/.test(hardText);
+            const lowBudget = /(便宜|平价|平價|学生价|cheap|budget|inexpensive|安い|安価|gasa)/i.test(hardText)
+              || /(?:<=|≤|<|不超过|以内|至多)\s*(?:\$|¥|€|hk\$|nt\$|s\$|£)?\s*([1-9]\d{0,3})\b/.test(hardText);
+            if (highBudget) {
+              const word = language === "ja" ? "高級" : language.startsWith("zh") ? "高级" : "fine dining";
+              pushRoute("budget:high", `${expansion.primary} ${data.city} ${word}`);
+            } else if (lowBudget) {
+              const word = language === "ja" ? "安い" : language.startsWith("zh") ? "便宜" : "cheap eats";
+              pushRoute("budget:low", `${expansion.primary} ${data.city} ${word}`);
+            }
+          }
+
           const queries = data.mode === "quick"
-            ? [`${expansion.primary} ${data.city}`]
-            : Array.from(
-                new Set([
-                  `${expansion.primary} ${data.city}`,
-                  ...synQueries,
-                  `${expansion.primary} ${data.city} ${semanticSuffix}`,
-                ]),
-              );
+            ? [{ tag: "primary", query: `${expansion.primary} ${data.city}` }]
+            : routes;
+
+          console.log(`[recall] cuisine="${cuisine}" routes=${queries.length} tags=[${queries.map((q) => q.tag).join(", ")}]`);
+
           const settled = await Promise.allSettled(
-            queries.map((query) =>
-              searchPlaces({ query, language, region, maxResults: 20 }),
+            queries.map((q) =>
+              searchPlaces({ query: q.query, language, region, maxResults: 20 }),
             ),
           );
+          // recallSourcesMap: placeId -> set of route tags that returned it
+          const recallSourcesMap = new Map<string, Set<string>>();
           const merged = new Map<string, PlaceCandidate>();
           let firstError: string | null = null;
-          for (const s of settled) {
+          for (let i = 0; i < settled.length; i++) {
+            const s = settled[i];
+            const tag = queries[i].tag;
             if (s.status === "fulfilled") {
-              for (const p of s.value) if (!merged.has(p.placeId)) merged.set(p.placeId, p);
+              for (const p of s.value) {
+                if (!merged.has(p.placeId)) merged.set(p.placeId, p);
+                if (!recallSourcesMap.has(p.placeId)) recallSourcesMap.set(p.placeId, new Set());
+                recallSourcesMap.get(p.placeId)!.add(tag);
+              }
             } else if (!firstError) {
               firstError = s.reason instanceof Error ? s.reason.message : String(s.reason);
             }
+          }
+          // attach recallSources to each PlaceCandidate via a side-map (kept on outer scope)
+          for (const [pid, tags] of recallSourcesMap) {
+            recallSourcesById.set(pid, Array.from(tags));
           }
           const allPlaces = Array.from(merged.values());
           const inRegionPlaces = allPlaces.filter((place) => {
@@ -1235,6 +1310,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         }),
       );
     }
+
 
     const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
     yield { type: "stage", stage: "places-done", count: totalCandidates };
@@ -1303,6 +1379,48 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       });
       console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
     }
+
+    // 规则初筛：只用 Google Places 直接返回的字段
+    // 1) businessStatus 非 OPERATIONAL → 剔除
+    // 2) 高/低预算明显 → 用 priceLevel 剔除 mismatch（无数据不剔除）
+    // 3) 评分硬门槛 (weight >= 0.85 且评论数 >= 30) → 剔除明显不达标
+    const PRICE_RANK: Record<string, number> = {
+      PRICE_LEVEL_FREE: 0,
+      PRICE_LEVEL_INEXPENSIVE: 1,
+      PRICE_LEVEL_MODERATE: 2,
+      PRICE_LEVEL_EXPENSIVE: 3,
+      PRICE_LEVEL_VERY_EXPENSIVE: 4,
+    };
+    const hardTextLower = data.hardFilters.map((c) => c.text).join(" ").toLowerCase();
+    const wantsHighEnd = /(高级|高端|高級|奢华|fine\s*dining|expensive|高档|高檔|米其林|michelin|omakase|高価)/i.test(hardTextLower);
+    const wantsLowBudget = /(便宜|平价|平價|学生价|cheap|budget|inexpensive|安い|安価)/i.test(hardTextLower);
+    const ratingThresholdFilter = data.hardFilters.find(
+      (f) => f.weight >= 0.85 && verifyGoogleRatingFilter(f.text, 5, isEn) !== null,
+    );
+
+    let rulesRemoved = { businessStatus: 0, price: 0, rating: 0 };
+    placeResults = placeResults.map((r) => {
+      if (!r.places.length) return r;
+      const kept: PlaceCandidate[] = [];
+      for (const p of r.places) {
+        if (p.businessStatus && p.businessStatus !== "OPERATIONAL") {
+          rulesRemoved.businessStatus++;
+          continue;
+        }
+        if (p.priceLevel && p.priceLevel in PRICE_RANK) {
+          const rank = PRICE_RANK[p.priceLevel];
+          if (wantsHighEnd && rank <= 1) { rulesRemoved.price++; continue; }
+          if (wantsLowBudget && rank >= 4) { rulesRemoved.price++; continue; }
+        }
+        if (ratingThresholdFilter && p.rating != null && (p.userRatingCount ?? 0) >= 30) {
+          const check = verifyGoogleRatingFilter(ratingThresholdFilter.text, p.rating, isEn);
+          if (check?.status === "fail") { rulesRemoved.rating++; continue; }
+        }
+        kept.push(p);
+      }
+      return { ...r, places: kept };
+    });
+    console.log(`[rules-prefilter] removed businessStatus=${rulesRemoved.businessStatus} price=${rulesRemoved.price} rating=${rulesRemoved.rating}; candidate-pool=${placeResults.reduce((s, r) => s + r.places.length, 0)}`);
 
     // 把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
     for (const r of placeResults) {
@@ -1697,14 +1815,24 @@ ${JSON.stringify(group.candidates, null, 2)}
       groups: Array.from(mergedGroups, ([cuisine, picks]) => ({ cuisine, picks })),
     };
 
-    // 3. 全量候选按 ok → unknown → fail 分级，再依次补足至 5 家。
+    // 3. 三层综合打分：Layer1 准入 + Layer2 贝叶斯基础(满分40) + Layer3 匹配(满分60)
     const placeByRestaurantId = new Map<string, PlaceCandidate>();
+    const BAYES_C = 20;
+    const BAYES_GLOBAL_MEAN = 3.8;
+    const softCount = data.softPreferences.length;
+    const negCount = data.negativeFilters.length;
+    const dishCount = nonHardFilters.length - softCount - negCount;
+
     const groups = data.cuisines.map((cuisine) => {
       const pool = placeResults.find((r) => r.cuisine === cuisine)?.places ?? [];
       const aiGroup = ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase());
       const pickById = new Map((aiGroup?.picks ?? []).map((pick) => [pick.placeId, pick]));
-      type Built = { restaurant: z.infer<typeof RestaurantSchema>; failedWeight: number; failedCount: number };
-      const buckets: Record<"ok" | "unknown" | "fail", Built[]> = { ok: [], unknown: [], fail: [] };
+      type Built = {
+        restaurant: z.infer<typeof RestaurantSchema>;
+        finalScore: number;
+        admitted: boolean;
+      };
+      const builtList: Built[] = [];
 
       for (const [idx, p] of pool.entries()) {
         const pick = pickById.get(p.placeId);
@@ -1732,18 +1860,11 @@ ${JSON.stringify(group.candidates, null, 2)}
         );
         const hasUnknown = checks.some(({ check }) => check.status === "unknown");
         const verificationStatus = hasBlockingFail ? "fail" : hasUnknown ? "unknown" : "ok";
-        const failedWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "fail" ? filter.weight : 0), 0);
-        const failedCount = checks.filter(({ check }) => check.status === "fail").length;
-        const unknownWeight = checks.reduce((sum, { filter, check }) => sum + (check.status === "unknown" ? filter.weight : 0), 0);
-        const baseScore = pick?.matchScore ?? (p.rating != null ? p.rating * 14 : 50);
-        const score = Math.max(0, Math.min(100, Math.round(baseScore - failedWeight * 25 - unknownWeight * 4)));
+
         const hardDetails = checks.map(({ filter, check }) => {
           const condition = conciseCondition(filter.text);
           const evidence = conciseEvidence(check.note, condition, isEn);
-          return {
-            label: `${condition}：${evidence}`,
-            status: check.status,
-          };
+          return { label: `${condition}：${evidence}`, status: check.status };
         });
         const aiDetails = pick?.matchDetails ?? [];
         const nonHardDetails = nonHardFilters.map((condition, conditionIndex) => {
@@ -1753,14 +1874,120 @@ ${JSON.stringify(group.candidates, null, 2)}
           const status = detail
             ? reconcileEvidenceStatus(detail.status, evidence)
             : "unknown" as const;
-          return {
-            label: `${conditionLabel}：${evidence}`,
-            status,
-          };
+          return { label: `${conditionLabel}：${evidence}`, status };
         });
-        // User conditions are intentionally not topic-deduplicated: every parsed filter
-        // must remain visible in matching details, in its original category order.
         const matchDetails = [...hardDetails, ...nonHardDetails];
+
+        // ============ 三层打分 ============
+        const recallSources = recallSourcesById.get(p.placeId) ?? [];
+        const breakdown: { label: string; delta: number }[] = [];
+
+        // Layer 1 准入层
+        const negStatuses = nonHardDetails.slice(softCount, softCount + negCount).map((d) => d.status);
+        const negFailHeavy = data.negativeFilters.some(
+          (n, i) => n.weight >= 0.85 && negStatuses[i] === "fail",
+        );
+        const reviewCount = p.userRatingCount ?? 0;
+        const adjRating = p.rating != null
+          ? (p.rating * reviewCount + BAYES_GLOBAL_MEAN * BAYES_C) / (reviewCount + BAYES_C)
+          : BAYES_GLOBAL_MEAN;
+        const failsBayesRating = p.rating != null && reviewCount >= 50 && adjRating < 3.5;
+        const closedPermanent = p.businessStatus != null && p.businessStatus !== "OPERATIONAL";
+        const admitted = !hasBlockingFail && !negFailHeavy && !failsBayesRating && !closedPermanent;
+
+        // Layer 2 基础分 (贝叶斯, 0..40)
+        const baseScore = Math.max(0, Math.min(40, adjRating * 8));
+        breakdown.push({
+          label: isEn
+            ? `Bayesian rating ${adjRating.toFixed(2)} × 8`
+            : `贝叶斯评分 ${adjRating.toFixed(2)} × 8`,
+          delta: Math.round(baseScore),
+        });
+
+        // Layer 3 匹配分 (0..60)
+        let matchScore = 0;
+        const aiBase = (pick?.matchScore ?? 0) * 0.35;
+        matchScore += aiBase;
+        if (aiBase > 0) {
+          breakdown.push({
+            label: isEn ? `AI match ${pick?.matchScore ?? 0} × 0.35` : `AI 匹配 ${pick?.matchScore ?? 0} × 0.35`,
+            delta: Math.round(aiBase),
+          });
+        }
+        let hardDeduct = 0;
+        for (const { filter, check } of checks) {
+          if (check.status === "fail") hardDeduct += filter.weight * 8;
+          else if (check.status === "unknown") hardDeduct += filter.weight * 2;
+        }
+        if (hardDeduct > 0) {
+          matchScore -= hardDeduct;
+          breakdown.push({
+            label: isEn ? "Hard filter penalties" : "硬条件扣分",
+            delta: -Math.round(hardDeduct),
+          });
+        }
+        // Soft bonuses/penalties (cap +15 for ok)
+        let softBonus = 0, softPenalty = 0;
+        for (let i = 0; i < softCount; i++) {
+          const w = data.softPreferences[i].weight;
+          const st = nonHardDetails[i].status;
+          if (st === "ok") softBonus += w * 5;
+          else if (st === "fail") softPenalty += w * 3;
+        }
+        softBonus = Math.min(softBonus, 15);
+        if (softBonus > 0) {
+          matchScore += softBonus;
+          breakdown.push({ label: isEn ? "Soft preference hits" : "软偏好命中", delta: Math.round(softBonus) });
+        }
+        if (softPenalty > 0) {
+          matchScore -= softPenalty;
+          breakdown.push({ label: isEn ? "Soft preference fails" : "软偏好未中", delta: -Math.round(softPenalty) });
+        }
+        // Negative fails
+        let negPenalty = 0;
+        for (let i = 0; i < negCount; i++) {
+          if (negStatuses[i] === "fail") negPenalty += data.negativeFilters[i].weight * 10;
+        }
+        if (negPenalty > 0) {
+          matchScore -= negPenalty;
+          breakdown.push({ label: isEn ? "Avoidance hits" : "命中避雷", delta: -Math.round(negPenalty) });
+        }
+        // Dish hits (cap +12)
+        let dishBonus = 0;
+        for (let i = 0; i < dishCount; i++) {
+          if (nonHardDetails[softCount + negCount + i].status === "ok") dishBonus += 4;
+        }
+        dishBonus = Math.min(dishBonus, 12);
+        if (dishBonus > 0) {
+          matchScore += dishBonus;
+          breakdown.push({ label: isEn ? "Dish matches" : "菜品命中", delta: dishBonus });
+        }
+        // Recall bonus non-linear
+        const recallTable = [0, 0, 3, 6, 10];
+        const recallBonus = recallTable[Math.min(recallSources.length, 4)];
+        if (recallBonus > 0) {
+          matchScore += recallBonus;
+          breakdown.push({
+            label: isEn ? `Multi-route recall (${recallSources.length})` : `多路召回 (${recallSources.length} 路)`,
+            delta: recallBonus,
+          });
+        }
+        matchScore = Math.max(0, Math.min(60, matchScore));
+
+        let finalScore = Math.max(0, Math.min(100, Math.round(baseScore + matchScore)));
+        if (!admitted) {
+          breakdown.push({
+            label: isEn ? "Admission rule (forced fail)" : "准入层一票否决",
+            delta: 0,
+          });
+          finalScore = Math.min(finalScore, 30);
+        }
+
+        const tier: "perfect" | "high" | "partial" =
+          admitted && finalScore >= 80 ? "perfect"
+            : admitted && finalScore >= 65 ? "high"
+              : "partial";
+
         const review = reviewById.get(p.placeId) ?? null;
         const tabelogInfo = tabelogById.get(p.placeId) ?? null;
         const yelpInfo = yelpById.get(p.placeId) ?? null;
@@ -1773,11 +2000,11 @@ ${JSON.stringify(group.candidates, null, 2)}
           googleMapsUri: p.googleMapsUri,
           websiteUri: p.websiteUri,
           primaryType: p.primaryType,
-          matchScore: score,
-          matchTier: verificationStatus === "ok" ? tierFromScore(score) : "partial",
+          matchScore: finalScore,
+          matchTier: tier,
           openNow: p.openNow ?? true,
           reservable: false,
-          needsReview: verificationStatus !== "ok" || p.rating == null,
+          needsReview: !admitted || verificationStatus !== "ok" || p.rating == null,
           verificationStatus,
           ratings: candidateRatings(p, review, tabelogInfo, isEn, country, yelpInfo),
           aiSummary: pick?.aiSummary?.trim() || (isEn
@@ -1792,20 +2019,34 @@ ${JSON.stringify(group.candidates, null, 2)}
           yelp: yelpInfo,
           weekdayDescriptions: p.weekdayDescriptions ?? null,
           visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
+          scoreBreakdown: breakdown,
+          recallSources,
         };
         placeByRestaurantId.set(restaurant.id, p);
-        buckets[verificationStatus].push({ restaurant, failedWeight, failedCount });
+        builtList.push({ restaurant, finalScore, admitted });
       }
 
-      buckets.ok.sort((a, b) => b.restaurant.matchScore - a.restaurant.matchScore);
-      buckets.unknown.sort((a, b) => b.restaurant.matchScore - a.restaurant.matchScore);
-      buckets.fail.sort((a, b) => a.failedWeight - b.failedWeight || a.failedCount - b.failedCount || b.restaurant.matchScore - a.restaurant.matchScore);
-      let remaining = 5;
-      const restaurants = buckets.ok.slice(0, remaining).map(({ restaurant }) => restaurant);
-      remaining -= restaurants.length;
-      const partialRestaurants = buckets.unknown.slice(0, remaining).map(({ restaurant }) => restaurant);
-      remaining -= partialRestaurants.length;
-      const failedRestaurants = buckets.fail.slice(0, remaining).map(({ restaurant }) => restaurant);
+      // 排序：先 admitted 后非 admitted，组内按 finalScore 降序
+      builtList.sort((a, b) => {
+        if (a.admitted !== b.admitted) return a.admitted ? -1 : 1;
+        return b.finalScore - a.finalScore;
+      });
+      const top5 = builtList.slice(0, 5);
+      const restaurants = top5
+        .filter((b) => b.admitted && b.restaurant.verificationStatus === "ok")
+        .map((b) => b.restaurant);
+      const partialRestaurants = top5
+        .filter((b) => b.admitted && b.restaurant.verificationStatus === "unknown")
+        .map((b) => b.restaurant);
+      const failedRestaurants = top5
+        .filter((b) => !b.admitted || b.restaurant.verificationStatus === "fail")
+        .map((b) => b.restaurant);
+
+      const avgFinal = top5.length
+        ? Math.round(top5.reduce((s, b) => s + b.finalScore, 0) / top5.length)
+        : 0;
+      console.log(`[score] cuisine="${cuisine}" pool=${pool.length} admitted=${builtList.filter((b) => b.admitted).length} top5-avg=${avgFinal}`);
+
       return {
         cuisine: cuisinesAutoFilled ? (isEn ? "Recommended for you" : "为你推荐") : cuisine,
         restaurants,
@@ -1813,6 +2054,7 @@ ${JSON.stringify(group.candidates, null, 2)}
         ...(failedRestaurants.length ? { failedRestaurants } : {}),
       };
     }).filter((group) => group.restaurants.length + (group.partialRestaurants?.length ?? 0) + (group.failedRestaurants?.length ?? 0) > 0);
+
 
     yield { type: "stage", stage: "photos" };
     const allRestaurants = groups.flatMap((group) => [

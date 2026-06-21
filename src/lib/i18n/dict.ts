@@ -183,6 +183,10 @@ export const dict: Record<Lang, Dict> = {
     "results.hardCheckFail": "✗ 硬条件未满足：{text}{suffix}",
     "results.hardCheckUnknown": "？ 硬条件待核实：{text}{suffix}",
     "results.cuisineRecommended": "为你推荐",
+    "results.scoreBreakdown": "评分依据",
+    "results.scoreBreakdown.show": "查看评分依据",
+    "results.scoreBreakdown.hide": "收起",
+    "results.recallSources": "命中召回路径",
 
     "feedback.thanks": "感谢反馈 ✓ 你的意见会用来改进我们的搜索质量。",
     "feedback.title": "帮我们改进搜索质量",
@@ -405,6 +409,10 @@ export const dict: Record<Lang, Dict> = {
     "results.hardCheckFail": "✗ Constraint not met: {text}{suffix}",
     "results.hardCheckUnknown": "？ Constraint to verify: {text}{suffix}",
     "results.cuisineRecommended": "Recommended for you",
+    "results.scoreBreakdown": "Score breakdown",
+    "results.scoreBreakdown.show": "Show score breakdown",
+    "results.scoreBreakdown.hide": "Hide",
+    "results.recallSources": "Recall routes hit",
 
     "feedback.thanks": "Thanks for the feedback ✓ It helps us improve search quality.",
     "feedback.title": "Help us improve search quality",

@@ -81,6 +81,8 @@ export type PlaceCandidate = {
   websiteUri: string | null;
   googleMapsUri: string;
   primaryType: string | null;
+  types: string[];
+  businessStatus: string | null;
   editorialSummary: string | null;
   location: { lat: number; lng: number } | null;
   reviews: { text: string; rating: number | null; authorName: string | null }[];
@@ -99,6 +101,8 @@ const FIELD_MASK = [
   "places.rating",
   "places.userRatingCount",
   "places.priceLevel",
+  "places.businessStatus",
+  "places.types",
   "places.currentOpeningHours.openNow",
   "places.websiteUri",
   "places.googleMapsUri",
@@ -243,6 +247,8 @@ export async function searchPlaces(opts: {
       rating?: number;
       userRatingCount?: number;
       priceLevel?: string;
+      businessStatus?: string;
+      types?: string[];
       currentOpeningHours?: { openNow?: boolean };
       websiteUri?: string;
       googleMapsUri?: string;
@@ -273,6 +279,8 @@ export async function searchPlaces(opts: {
     rating: p.rating ?? null,
     userRatingCount: p.userRatingCount ?? null,
     priceLevel: p.priceLevel ?? null,
+    businessStatus: p.businessStatus ?? null,
+    types: Array.isArray(p.types) ? p.types : [],
     openNow: p.currentOpeningHours?.openNow ?? null,
     websiteUri: p.websiteUri ?? null,
     googleMapsUri:

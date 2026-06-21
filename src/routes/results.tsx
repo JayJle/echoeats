@@ -861,6 +861,33 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
             </li>
           ))}
         </ul>
+        {r.scoreBreakdown && r.scoreBreakdown.length > 0 && (
+          <details className="mt-3 group">
+            <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground list-none flex items-center gap-1">
+              <span className="group-open:rotate-90 inline-block transition-transform">›</span>
+              <span>{t("results.scoreBreakdown.show")}</span>
+              {r.recallSources && r.recallSources.length > 0 && (
+                <span className="ml-2 text-[10px] opacity-70">
+                  · {t("results.recallSources")}: {r.recallSources.join(", ")}
+                </span>
+              )}
+            </summary>
+            <ul className="mt-2 space-y-0.5 text-xs">
+              {r.scoreBreakdown.map((b, i) => (
+                <li key={i} className="flex justify-between border-b border-border/50 py-0.5">
+                  <span className="text-muted-foreground">{b.label}</span>
+                  <span className={b.delta > 0 ? "text-success font-medium" : b.delta < 0 ? "text-destructive font-medium" : "text-muted-foreground"}>
+                    {b.delta > 0 ? "+" : ""}{b.delta}
+                  </span>
+                </li>
+              ))}
+              <li className="flex justify-between pt-1 font-semibold">
+                <span>{t("results.matchScore")}</span>
+                <span>{r.matchScore}</span>
+              </li>
+            </ul>
+          </details>
+        )}
       </div>
 
       <div className="px-6 py-4 border-t border-border grid sm:grid-cols-2 gap-4">
