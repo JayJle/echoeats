@@ -686,7 +686,7 @@ function DataSourcesStrip({ r }: { r: Restaurant }) {
 }
 
 function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: Restaurant; tierLabel: Record<Restaurant["matchTier"], string>; tierClass: Record<Restaurant["matchTier"], string> }) {
-  const { t } = useT();
+  const { t, lang } = useT();
   const visitTime = useQueryStore((s) => s.parsed?.visitTime ?? null);
   const showVisitBadge = Boolean(visitTime && r.visitTimeMatch);
   const displayName = r.localName?.trim() || r.name;
