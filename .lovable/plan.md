@@ -1,160 +1,85 @@
+## 问题定位
 
-# 餐厅召回与筛选流程升级（最终版）
+你截图里两个问题是不同的根因，分开修。
 
-```text
-多路召回（8 路/品类）
-   ↓
-规则初筛（仅用 Google Places 直接字段）
-   ↓
-候选池（不设上限）
-   ↓
-AI 详筛（逻辑完全不变：12 家/批 并行，三级降级）
-   ↓
-三层综合打分（准入 / 基础 40 / 匹配 60）
-   ↓
-每个品类各取 Top 5，前端按品类 Tab 展示
-```
+### 问题 A：matching detail 全英文（中文模式下）
+
+每条 matching detail 长这样：`{条件}：{证据}`。
+- **条件**（"Google rating 4.0+"、"thick cut beef"）来自最初解析需求时存下来的 `hardFilters/dishPreferences` 文本。这些是你最初输入里就带的英文片段（或解析阶段没翻译），先按"用户原始输入"对待，不强行翻译。
+- **证据**（"Reviews emphasize..."、"The address in Chuo Ward..."）来自 AI 详筛阶段的 `matchDetails[].label` 和 `hardFilterChecks[].note`。**这一段必须是中文，AI 现在没按要求翻译，是 prompt 不够严格的问题。**
+
+对比中英两条语言指令：
+- 英文（`isEn=true`）：写得很严，明令"零容忍 / 禁止 CJK 字符 / 给出 Bad vs Good 示例"。
+- 中文（`isEn=false`）：只有一句"必须用简体中文撰写"——AI 看到候选里有大量日文/英文评论，就顺手照搬了原文。
+
+### 问题 B：明明不符合，却显示 ✓（状态与文案不一致）
+
+例：`thick cut beef：Reviews praise various aspects of meat but do not specifically mention thick-cut beef`，AI 给了 `status=ok`。
+
+代码里有个 `reconcileEvidenceStatus` 函数本来是用来修正这种情况的，但它**只在 `status === "unknown"` 时才会触发**。也就是说：
+- AI 说 unknown，但文案明确支持 → 修正为 ok ✓ （现在能修）
+- AI 说 ok，但文案明确没提到/否定 → **不会被修**（当前 bug） ✗
+- AI 说 ok，但文案表达不确定（"可能、未明确提及"）→ **不会被修** ✗
+
+所以"显示 ✓ 但文案是否定/不确定"的组合一直漏掉。
 
 ---
 
-## 一、多路召回
+## 修复方案
 
-每个品类根据用户结构化 JSON 动态生成查询，并发跑（`Promise.allSettled`），每路最多 20 家，去重合并。
+### 1. 加强中文模式的 langDirective（echo.functions.ts）
 
-最多 8 路/品类，按优先级触发：
+把中文版本改成跟英文版本同等严格的版本，包含：
+- 强制语言："**所有人类可读字符串字段**（aiSummary、pros、cons、matchDetails[].label、hardFilterChecks[].note）必须用简体中文"
+- 零容忍规则：禁止整段拉丁字符堆砌；如果原始评论是日文/英文，**必须转写为简体中文**，不要保留原文再翻译
+- 给出 Bad vs Good 示例，告诉它"Reviews emphasize... → 评论强调..."、"The address in Chuo Ward... → 地址位于札幌中央区..."
+- Rule of thumb：如果 matchDetails[].label 或 hardFilterChecks[].note 整句没有任何 CJK 字符，输出无效，必须重写
 
-| 路名 | 触发条件 | 示例（东京拉面）|
+效果：让 AI 在中文模式下产出的证据稳定是中文。
+
+### 2. 双向修正 `reconcileEvidenceStatus`（echo.functions.ts）
+
+扩展逻辑，覆盖三种漏修方向：
+
+| AI 给的 status | 文案模式 | 应修正为 |
 |---|---|---|
-| 主词 | 必跑 | `ラーメン 东京` |
-| 推荐后缀 | 必跑 | `ラーメン 东京 おすすめ` |
-| 同义词 1/2 | 已有 expansion | `豚骨ラーメン 东京` / `家系ラーメン 东京` |
-| 菜品路 | `dishPreferences` 非空 | 每个菜品独立一路 |
-| 场景路 | hard/soft 命中场景词（包间/一人/约会/家庭/聚会/安静） | `ラーメン 东京 個室` |
-| 时段路 | `visitTime` 命中 brunch/late-night | `ラーメン 东京 深夜営業` |
-| 预算路 | hardFilters 含预算 | 高预算 `高級`/`fine dining`；低预算 `安い`/`cheap eats` |
+| ok | 包含否定（"do not mention"、"未提及"、"没有提到"、"but...not"、"但...没"）→ **新增** | unknown |
+| ok | 包含不确定（"可能/maybe/likely/未明确"）→ **新增** | unknown |
+| ok | 包含明确反例（"does not match"、"明显不符合"、"contradicts"）→ **新增** | fail |
+| unknown | 包含明确正向（已有逻辑） | ok |
+| unknown | 包含否定/不确定（已有逻辑） | unknown（保持） |
+| fail | 文案完全正向（"明确符合"）→ **新增**（罕见，作保险） | unknown |
 
-负向词不进 query，留给规则初筛和 AI。
-每家店挂 `recallSources: string[]` 记录命中路。
+核心改动：新增**否定/不确定关键词识别**，能从 `ok` 向 `unknown/fail` 降级。
+中英文双语模式：
+- 中文："未(明确|具体|直接|特别)?(提及|说明|提到|强调|确认)"、"没有(具体|明确|特别)?(提及|说明|提到)"、"但.{0,15}(没|未|不|无)"、"暂无"、"无法确认"
+- 英文：`do(es)?(n't| not)\s+(specifically|directly|clearly|explicitly|particularly)?\s*(mention|state|confirm|note|reference)`、`no (specific|direct|clear|explicit)\s+(mention|reference)`、`but\s+.{0,20}\b(not|no)\b`、`however\s+.{0,20}\b(not|no)\b`、`fail(s)? to`、`without (specific|clear|direct)`
 
----
+### 3. 应用到所有写入点
 
-## 二、规则初筛（仅 Google Places 直接字段）
-
-| 规则 | 用到的字段 | 触发条件 |
-|---|---|---|
-| 区域筛 | `formattedAddress` / `location` | 复用现有逻辑 |
-| 料理保真筛 | `displayName` / `primaryType` / `types` | 复用现有逻辑 |
-| 营业时间筛 | `regularOpeningHours` / `currentOpeningHours` | 复用现有 `isOpenAt` |
-| 评分硬门槛 | `rating` / `userRatingCount` | hardFilters 含「评分 ≥ X」且 weight ≥ 0.85，评论数 ≥ 30 时执行 |
-| 价位档次筛 | `priceLevel` | 用户预算明显低 → 剔除 VERY_EXPENSIVE；用户要求高档 → 剔除 INEXPENSIVE。无字段不剔除 |
-| 营业状态筛 | `businessStatus` | `CLOSED_PERMANENTLY` / `CLOSED_TEMPORARILY` 剔除 |
-
-Google Places 无直接字段可判断的需求（包间/一人/约会氛围/避雷/菜单）全部交给 AI。
+`hardFilterChecks` 在 1850 行已经调用了 reconcileEvidenceStatus，`matchDetails` 在 1875 行也调用了——只要把函数本身改强，两个入口都会一起修好，不需要改调用点。
 
 ---
 
-## 三、候选池
+## 文件改动
 
-不设上限。规则初筛后剩多少全部送 AI。日志记录候选池大小，便于后续观察成本/耗时。
+仅 1 个文件：
 
----
-
-## 四、AI 详筛
-
-**逻辑完全不变**：
-- 每品类候选 `Promise.all` 并行
-- 每批 12 家 `Promise.all` 并发调 Gemini 2.5 Flash
-- 三级降级（structured → raw JSON → slim cards）
-- 输出 `hardFilterChecks[]` / `matchDetails[]` / `verificationStatus` / `matchScore`
-- 评分确定性覆盖、unknown 降级等现有规则保留
+**`src/lib/echo.functions.ts`**
+- 改 `langDirective`（约 1615-1617 行）：中文版重写为严格版（带 Bad/Good 示例 + 零容忍规则）
+- 改 `reconcileEvidenceStatus`（约 859-875 行）：双向修正，新增否定/不确定/反例的关键词集合，允许从 `ok` 向 `unknown/fail` 降级
 
 ---
 
-## 五、综合打分（三层结构 · 满分 100）
+## 不在本次修复范围
 
-### Layer 1 · 准入层（一票否决，不进 Top 5）
+- **条件文本里残留的英文**（"thick cut beef"、"Google rating 4.0+"）：这些是解析阶段就存下来的原始输入，属于"用户原话"的范畴。如果你也希望在中文模式下把这些条件文本也强制翻译成中文，可以另开一个任务，在 parseRequirements 的 prompt 里加一条"hardFilters/softPreferences/dishPreferences 内的中英文/日文混杂表达必须统一翻译为简体中文"。
 
-任一触发即踢出，扔进「更多候选」折叠区：
-
-- 任一 hardFilter `weight ≥ 0.85` 且 status=fail
-- 任一 negativeFilter `weight ≥ 0.85` 且 status=fail
-- 贝叶斯调整评分 < 3.5 且 `userRatingCount ≥ 50`
-- `businessStatus` 非 OPERATIONAL
-
-### Layer 2 · 基础分（满分 40，店本身质量）
-
-**贝叶斯平均评分**（防止小样本高分刷榜）：
-
-```text
-C = 20
-globalMean = 3.8
-adjustedRating = (rating × userRatingCount + globalMean × C) / (userRatingCount + C)
-baseScore = clamp(0, 40, adjustedRating × 8)
-```
-
-效果：
-- 评分 4.8 / 5 条评论 → 调整后 ≈4.0 → 基础分 32
-- 评分 4.5 / 500 条评论 → 调整后 ≈4.48 → 基础分 35.8
-
-### Layer 3 · 匹配分（满分 60，对你合不合适）
-
-```text
-matchScore =
-   AI matchScore × 0.35                         (0..35，AI 总判断)
- - Σ(hardFilter.weight × 8)   status=fail        硬条件违反重扣
- - Σ(hardFilter.weight × 2)   status=unknown
- + Σ(soft.weight × 5)         status=ok          软偏好命中加分，上限 +15
- - Σ(soft.weight × 3)         status=fail
- - Σ(negative.weight × 10)    status=fail        避雷命中重扣
- + dishHit × 4               每个菜品命中，上限 +12
- + recallBonus               多路召回非线性加分
-
-recallBonus = [0, 0, 3, 6, 10][min(recallSources.length, 4)]
-```
-
-### 最终分
-
-```text
-finalScore = clamp(0, 100, baseScore + matchScore)
-```
-
-每家店保留 `scoreBreakdown[]` 记录每一项加减来源（前端卡片可展开看依据）。
+- **AI 完全幻觉的状态判定**（证据正确但结论本身错）：本次只修"状态 vs 文案不一致"的机械性 bug；如果 AI 本身就误判了证据强度（比如把模糊评论当成强支持），属于模型判断力问题，得靠模型升级或多轮校验，不在这里处理。
 
 ---
 
-## 六、出结果
+## 验收
 
-- **每个品类**独立排序：按 `finalScore` 降序
-- 每个品类取 Top 5
-- 准入层踢出的 + Top 5 之外的进「更多候选」折叠区
-- 前端按品类 Tab 展示（结构不变）
-
----
-
-## 七、改动文件
-
-- `src/lib/echo.functions.ts`：召回 query 构造、规则初筛新字段、综合打分函数、重排
-- `src/lib/store.ts`：`Restaurant` 类型加 `scoreBreakdown?` 和 `recallSources?`
-- `src/routes/results.tsx`：卡片新增打分明细展开区
-
----
-
-## 八、可观测性
-
-每次搜索打日志：
-- 每路召回命中数 + 去重后总数
-- 规则初筛剔除数（按规则分类）
-- 候选池大小
-- AI 调用批次数
-- 每品类 Top 5 平均 finalScore
-- 准入层踢出数（按原因分类）
-
----
-
-## 九、打分核心原则（PM 视角）
-
-1. **不踩雷 > 最对题**：硬条件违反 + 避雷命中扣分极重，宁可少推不可推错
-2. **加分扣分混合**：硬条件违反扣分，软偏好命中加分（不命中不影响）
-3. **后悔成本驱动权重**：用户后悔成本越高，扣分越重（包间没有 -8/单位权重 > 安静度不够 -3）
-4. **贝叶斯防刷榜**：小样本高分不冲顶
-5. **多路命中非线性**：防 SEO 强但内容平庸的店刷分
+- 中文模式下重跑一次烤肉搜索，所有 matching detail 的证据部分应该是中文；
+- 截图里 `thick cut beef：... do not specifically mention thick-cut beef` 这类条目应该显示为 ⚠（unknown）而不是 ✓。

@@ -860,19 +860,51 @@ function reconcileEvidenceStatus(
   status: "ok" | "unknown" | "fail",
   evidence: string | undefined,
 ): "ok" | "unknown" | "fail" {
-  if (status !== "unknown" || !evidence?.trim()) return status;
+  if (!evidence?.trim()) return status;
   const text = evidence.trim();
+
+  // 否定/未提及（中英文双语）
+  const saysNegated =
+    /(未(?:明确|具体|直接|特别)?(?:提及|说明|提到|强调|确认|涉及|涵盖|体现)|没(?:有)?(?:具体|明确|特别|直接)?(?:提及|说明|提到|涉及|体现)|暂无(?:相关)?(?:资料|信息|证据|提及|评论|描述)|未?找到(?:相关|具体|明确)?(?:资料|信息|证据|描述)|缺(?:乏|少)(?:相关|具体|明确)?(?:资料|信息|证据|描述)|但(?:是)?\s*[^。.!?]{0,20}(?:没|未|不|无)\s*(?:有|能|够|到|明确)?(?:提及|说明|提到|涉及|强调)?|do(?:es)?(?:n't|\s+not)\s+(?:specifically|directly|clearly|explicitly|particularly|really)?\s*(?:mention|state|confirm|note|reference|address|discuss|cover|highlight|specify)|no\s+(?:specific|direct|clear|explicit|particular)\s+(?:mention|reference|evidence|information|confirmation)|but\s+[^.!?]{0,40}\b(?:do(?:es)?\s+not|don't|doesn't|did(?:n't| not)|no(?:t)?)\b|however[^.!?]{0,40}\b(?:do(?:es)?\s+not|don't|doesn't|not|no)\b|fails?\s+to\s+(?:mention|specify|address|confirm)|without\s+(?:specific|clear|direct|explicit)\s+(?:mention|reference)|nothing\s+(?:specifically|directly)?\s*(?:mentions?|states?|confirms?))/i.test(
+      text,
+    );
+
+  // 不确定（中英文双语）
   const saysUncertain =
-    /(可能|很可能|大概|推测|或许|无(?:法|从|相关)?(?:资料|信息|证据|评论)|未(?:知|明确提及|说明|确认|找到)|没有(?:资料|信息|证据|评论|提及)|资料不足|信息不足|待核实|无法确认|不(?:能|足以)确认|unknown|unclear|unavailable|insufficient|possibly|probably|likely|may\b|might\b|no (?:relevant )?(?:data|information|evidence|review)|not (?:mentioned|confirmed|verified)|cannot (?:confirm|verify|determine))/i.test(
+    /(可能|很可能|大概|推测|或许|似乎|貌似|疑似|资料不足|信息不足|待核实|无法(?:确认|核实|判断)|不(?:能|足以)(?:确认|核实|判断)|unknown|unclear|unavailable|insufficient|possibly|probably|likely|presumably|maybe|may\b|might\b|could\s+be|appears?\s+to|seems?\s+to|cannot\s+(?:confirm|verify|determine|tell)|hard\s+to\s+(?:tell|confirm))/i.test(
       text,
     );
-  if (saysUncertain) return "unknown";
+
+  // 明确反例 / 不符合
+  const saysContradicts =
+    /(明显不符合|明确不符合|不符合(?:要求|条件|标准|定位)|与.{0,10}不符|与.{0,10}相悖|与.{0,10}冲突|与.{0,10}矛盾|与要求相反|命中反例|属于反例|does\s+not\s+match|doesn'?t\s+match|contradict(?:s|ed)?|conflicts?\s+with|opposite\s+of|fails?\s+(?:the\s+)?requirement|violates?\s+the\s+(?:requirement|criteria))/i.test(
+      text,
+    );
+
+  // 明确正向
   const citesPositiveEvidence =
-    /(明确(?:指出|提到|显示|表明|支持|强调|符合)|评论(?:指出|提到|显示|表明|称|强调|赞扬)|证据(?:显示|表明|支持)|资料(?:显示|表明|支持)|实际(?:为|有|达到)|符合(?:.{0,16})?(?:定位|要求|条件)?|满足|达标|支持该条件|命中(?:主词|同义词|正向)|(?:没有|未)(?:命中|发现)(?:任何)?(?:反例|负面)(?:关键词)?|explicitly (?:states?|mentions?|shows?|supports?|confirms?|matches?)|reviews? (?:state|mention|note|say|show|confirm|praise|highlight)|evidence (?:shows?|supports?|confirms?)|is confirmed|requirements? (?:is |are )?met|matches?|satisf(?:y|ies|ied)|supports?|no (?:negative|counterexample) (?:keyword )?(?:hit|found))/i.test(
+    /(明确(?:指出|提到|显示|表明|支持|强调|符合)|评论(?:指出|提到|显示|表明|称|强调|赞扬|盛赞|好评)|证据(?:显示|表明|支持)|资料(?:显示|表明|支持)|实际(?:为|有|达到)|符合(?:.{0,16})?(?:定位|要求|条件)?|满足(?:要求|条件)?|达标|支持该条件|命中(?:主词|同义词|正向)|(?:没有|未)(?:命中|发现)(?:任何)?(?:反例|负面)(?:关键词)?|explicitly\s+(?:states?|mentions?|shows?|supports?|confirms?|matches?)|reviews?\s+(?:state|mention|note|say|show|confirm|praise|highlight|emphasi[sz]e)|evidence\s+(?:shows?|supports?|confirms?)|is\s+confirmed|requirements?\s+(?:is\s+|are\s+)?met|clearly\s+(?:matches?|satisf(?:y|ies|ied)))/i.test(
       text,
     );
-  return citesPositiveEvidence ? "ok" : "unknown";
+
+  // 反例优先级最高
+  if (saysContradicts) return "fail";
+
+  if (status === "ok") {
+    // ok 但文案否定/不确定 → 降级
+    if (saysNegated || saysUncertain) return "unknown";
+    return "ok";
+  }
+  if (status === "unknown") {
+    if (saysNegated || saysUncertain) return "unknown";
+    if (citesPositiveEvidence) return "ok";
+    return "unknown";
+  }
+  // status === "fail": 保留 AI 的负面判断（除非文案完全正向，且无任何否定信号 — 罕见，留作保险）
+  if (citesPositiveEvidence && !saysNegated && !saysUncertain) return "unknown";
+  return "fail";
 }
+
 
 function priceLevelLabel(level: string | null): string | null {
   switch (level) {
@@ -1614,7 +1646,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     const langDirective = isEn
       ? `\n## OUTPUT LANGUAGE (MANDATORY, ZERO TOLERANCE)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English only**. **No CJK characters are allowed in any of those fields**, not even as quoted source snippets. If the source review is in Chinese, paraphrase it into concise English and DROP the original Chinese — do NOT include the Chinese phrase in quotes followed by a translation.\n\nBad (forbidden):\n  - "Reviews mention '氛围复古有特色' (retro and unique atmosphere)"\n  - "高峰期可能要等位 (may have to wait during peak hours)"\nGood:\n  - "Diners praise the retro, characterful atmosphere"\n  - "May involve a wait during peak hours"\n\nRule of thumb: if any character matches /[\\u4e00-\\u9fff]/ in those fields, the output is invalid — rewrite it in pure English. Keep \`placeId\` and any enum/status values exactly as specified.\n`
-      : `\n## 输出语言（强制）\n你产出的所有人类可读字符串字段（aiSummary、pros、cons、matchDetails[].label、hardFilterChecks[].note）必须用**简体中文**撰写。\n`;
+      : `\n## 输出语言（强制，零容忍）\n你产出的**所有人类可读字符串字段** — aiSummary、pros、cons、matchDetails[].label、hardFilterChecks[].note — **必须用简体中文撰写**。**这些字段里禁止整句堆砌英文/日文/拉丁字符**，即使候选数据里的评论是英文或日文，也必须**转写为简体中文**，不要原文照搬，也不要"原文 + 括号翻译"的写法。\n\n禁止（错误示例）：\n  - "Reviews emphasize the deliciousness and 'obsession with meat' by the chef"\n  - "The address in Chuo Ward, Sapporo, is a central location."\n  - "肉への こだわり (chef's obsession with meat) is highly praised"\n正确：\n  - "评论强调食材新鲜，盛赞主厨对肉品质的执着"\n  - "地址位于札幌中央区，属于市中心区域"\n  - "多条评论提到主厨对肉品质的执着"\n\n判定铁律：matchDetails[].label 与 hardFilterChecks[].note 任意一条若整句不含任何 CJK 汉字（即整段都是拉丁字母/英文单词），即视为违规输出，必须重写为简体中文。专有名词（店名、地铁站名、人名）可保留原文，但句子主体必须是中文。\\\`placeId\\\` 和 enum/status 值按规范原样保留。\n`;
+
 
     type GroupForPrompt = (typeof candidatesForPrompt)[number];
 
