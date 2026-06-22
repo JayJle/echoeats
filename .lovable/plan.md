@@ -1,152 +1,54 @@
-## 先把现状说清楚
+## 现状
 
-你说得对：当前实现不是最理想的。现在代码里去重分成两层：
+文件：`src/lib/echo.functions.ts`，候选池构建段（约 L1358–1480）。
 
-1. **结构化解析后的服务端兜底去重**：`src/lib/echo.functions.ts`
-   - 位置：AI 输出 JSON 后，`ParsedSchema.parse(output)` 之后，`return dedupeParsedConditions(parsed)`。
-   - 也就是说它确实属于「结构化解析阶段的后处理」，在候选搜索/打分之前。
-   - 但目前它不是纯语义去重，而是 `TOPIC_RULES` 正则关键词 + 文本 normalize。
+每个品类独立调用 `searchPlaces` 召回，每条召回路由的命中集合存在 `recallSourcesMap`。返回结构是：
 
-2. **前端展示去重**：`src/routes/results.tsx`
-   - 位置：渲染结果页时又做了一次 `uniqueDisplayItems`。
-   - 这个确实应该移除；前端不应该再修数据，只应该展示结构化解析后的唯一结果。
+```
+placeResults: Array<{ cuisine: string; places: PlaceCandidate[]; error: string | null }>
+```
 
-当前问题为什么反复出现：因为服务端去重依赖关键词 topic，没覆盖到「环境好/环境要好一点/环境稍微好/环境精美」这种语义等价表达；而且关键词维护会一直漏，所以你说“不应该靠关键词”是对的。
+不同品类之间没有去重。一家店同时属于「日本料理 / 寿司 / 怀石」时会被三个分组各召回一次，后续打分、Tabelog 调用、AI 排序都会重复处理。
 
 ## 目标
 
-把所有条件去重都放在**结构化解析阶段**完成，前端不再做任何 hard/soft/negative/dish 的二次去重。
+同一家餐厅在 `placeResults` 里**只能出现在一个品类分组**，且**不能因为去重导致候选丢失**（即被去重那一家整体仍保留，只是归到"最合适"那个品类里）。
 
-最终规则：
+## 设计原则
 
-1. **跨区域重复**：同一个语义条件如果同时出现在 `negativeFilters / hardFilters / softPreferences`，只保留更高等级区域。
-2. **同一区域重复**：同一个语义条件只保留一条，weight 取最高。
-3. **权重合并**：无论同区还是跨区，只要语义等价，保留下来的那条 weight 使用所有重复项里的最高 weight。
-4. **前端只展示**：前端不再根据关键词、文本或 topic 去重。
+1. 跨品类去重必须在 `placeResults` 构建完成后、所有后续昂贵步骤（visitTime 过滤、规则初筛、Tabelog、AI 排序）之前进行，避免重复算力。
+2. "最合适品类" 按可信度排序的判定（依次走，前一档分不出胜负才用下一档）：
+   - **召回路由命中数**：本品类在召回阶段被多少条路由独立命中（`recallSourcesMap.get(placeId).size`）；越多越能代表这家店核心是这个品类。
+   - **品类关键词命中数**：把这家店的 `name + primaryType + editorialSummary` 拿来匹配该品类 `CuisineExpansion` 的 `primary + synonyms`，命中条数越多越合适。
+   - **原始品类顺序**：仍打平则按 `data.cuisines` 数组里的先后顺序，先出现的优先。
+3. 选中归属品类后，从其它品类的 `places` 数组里移除这家店；place 本身**绝不丢弃**。
+4. 整个过程只搬家，不删数据 —— 去重前后 `unique placeId 总数 == 去重后所有 places 拼起来的 placeId 数`，并打日志校验。
 
-等级优先级沿用当前逻辑：
+## 改动
 
-```text
-negativeFilters > hardFilters > softPreferences
-```
+文件：`src/lib/echo.functions.ts`
 
-## 改动方案
+1. 在 `placeResults` 内部并行 map 的返回值里，**额外带出每个 placeId 在本品类下的召回命中数**：把 `recallSourcesMap` 转成 `Map<string, number>` 一并返回，例如 `{ cuisine, places, recallHits, error }`。
+2. 在第 1478 行 `for` 循环之后、L1481 `totalCandidates` 之前，新增 `dedupeAcrossCuisines(placeResults, cuisineExpansions, data.cuisines)` 函数：
+   - 收集所有 placeId → 出现在哪些品类、对应 recallHits、对应 expansion。
+   - 对每个跨品类 placeId 按上面三档比较选出 winner cuisine。
+   - 重新生成 `placeResults`：只在 winner cuisine 的 places 里保留该 place，其它品类移除。
+   - 返回新 `placeResults`，并打印日志：
+     - `[dedup-cross-cuisine] place="X" placeId=... candidates=[ramen(hits=3,kw=2), izakaya(hits=1,kw=0)] kept=ramen`
+     - 汇总：`[dedup-cross-cuisine] uniquePlaces=N beforeTotal=M afterTotal=N removedDuplicates=M-N`
+   - 兜底断言：`afterTotal === uniquePlaces`，不等就 `console.error` 并退回去重前的 `placeResults`，**永不丢店**。
+3. 紧接着保留现有 `totalCandidates` 计算 —— 它会自然变成去重后的数字，下游不需要改。
 
-### 1. 改结构化解析 prompt，让模型直接输出语义去重后的结果
+## 不在本次范围
 
-更新 `src/lib/echo.functions.ts` 里 `## 边界与去重` prompt，从现在的三条短规则升级为明确规则：
+- 不改召回逻辑、不改品类扩展规则、不动 AI 排序与 Tabelog 调用。
+- 不改 cuisine 分组在 UI 上的呈现顺序。
+- 不引入新接口或新依赖。
 
-- 输出前必须先做语义合并，而不是逐句抽取。
-- 表达相同诉求的条件只能出现一次。
-- 如果同一诉求有多种说法，例如：
-  - “环境好一点”
-  - “环境精美”
-  - “环境好”
-  - “环境稍微好”
-  必须合并成一条，例如“环境好”。
-- 如果同一诉求跨 hard/soft/negative 出现，只保留最高等级数组。
-- 保留项的 weight 取所有同义重复项中的最高值。
-- 不要因为用户重复说了多次就重复输出。
+## 验证
 
-### 2. 新增一次 AI 语义去重后处理，替换关键词 topic 去重
-
-在 `parseRequirements` 的结构化解析内部新增一个小的 dedupe pass：
-
-- 输入：第一次结构化解析得到的 `hardFilters / softPreferences / negativeFilters`。
-- 调用同一个 Lovable AI Gateway，让模型只做一件事：判断这些条件里哪些是语义重复，并输出合并后的三个数组。
-- 明确要求它：
-  - 不新增用户没说过的条件。
-  - 不删除语义独立的条件。
-  - 不改 `city/cuisines/dateTime/visitTime/searchStrategy` 等其它字段。
-  - 只合并 hard/soft/negative 条件。
-  - 每组重复条件按最高等级区域保留，weight 取最高。
-
-这样“环境好/环境精美/环境稍微好”不靠关键词，而由模型按语义判断。
-
-### 3. 保留一个极小的确定性兜底，但不再用 topic 关键词
-
-移除 `TOPIC_RULES` 这套关键词归类。
-
-服务端只保留：
-
-- 完全相同文本 normalize 后去重。
-- 完全相同菜品名 normalize 后去重。
-
-真正的近义/同义判断交给 AI 语义 dedupe pass。
-
-### 4. 去重接入点统一到结构化解析阶段
-
-把解析流程改成：
-
-```text
-AI 初次结构化解析
-→ schema 清洗
-→ weight >= 0.8 soft 提升 hard
-→ AI 语义去重 pass
-→ 最小文本兜底去重
-→ visitTime sanitize
-→ 返回 parsed
-→ 后续候选搜索/打分只使用已去重 parsed
-```
-
-这样候选池、筛选、排序看到的就是唯一条件集，而不是前端临时修出来的展示结果。
-
-### 5. 移除前端去重
-
-在 `src/routes/results.tsx` 删除：
-
-- `DISPLAY_TOPIC_RULES`
-- `displayConditionKey`
-- `uniqueDisplayItems`
-- `uniqueDisplayStrings`
-
-并把：
-
-```ts
-const displayedHardFilters = uniqueDisplayItems(parsed.hardFilters);
-const displayedSoftPreferences = uniqueDisplayItems(parsed.softPreferences);
-const displayedNegativeFilters = uniqueDisplayItems(parsed.negativeFilters);
-const displayedDishPreferences = uniqueDisplayStrings(parsed.dishPreferences);
-```
-
-改成：
-
-```ts
-const displayedHardFilters = parsed.hardFilters;
-const displayedSoftPreferences = parsed.softPreferences;
-const displayedNegativeFilters = parsed.negativeFilters;
-const displayedDishPreferences = parsed.dishPreferences;
-```
-
-### 6. 增加结构化解析日志，方便你下次直接看
-
-在服务端日志里打印：
-
-- semantic dedupe 前的 hard/soft/negative。
-- semantic dedupe 后的 hard/soft/negative。
-- 被合并的组，例如：
-
-```text
-环境要好一点@0.4 + 环境精美@0.7 + 环境好@0.7 + 环境稍微好@0.4 -> 环境好@0.7 in softPreferences
-```
-
-## 验证用例
-
-用你截图里的输入测试：
-
-```text
-我和我的朋友要在周六的十二点去吃这个午饭，我们想找的是一个早午餐，然后的话环境要好一点；这个定位不要高端，但是也不要低端，中高端的样子啊。菜品必须精美，然后的话环境精美，口碑要好，环境好，服务员态度要好。菜品的话最好是有班尼迪克蛋或者 French toast。然后的话最好是位于富人区或者位于一个安静的社区都可以。环境稍微好
-```
-
-期望：
-
-- hardFilters：保留“菜品必须精美”一条。
-- softPreferences：只保留一条“环境好/环境精美”类条件，weight 取 0.7。
-- dishPreferences：保留“班尼迪克蛋”“French toast”。
-- 前端不做任何去重，看到的就是结构化解析返回的唯一结果。
-
-## 不做的事
-
-- 不再继续扩充关键词规则。
-- 不让前端继续兜底去重。
-- 不改变 hard / negative 的筛选、打分、分桶逻辑。
+1. 用同一个城市跑一个含 3 个相邻品类的请求（例如东京 + 寿司/日本料理/怀石），日志应出现 `removedDuplicates > 0`，且：
+   - `afterTotal === uniquePlaces` 断言通过。
+   - 同一 placeId 在结果中只出现一次。
+2. 跑一个完全不相干的多品类请求（例如东京 + 拉面/咖啡店），`removedDuplicates` 应为 0，候选数不变。
+3. 跑一个单品类请求，函数应短路返回原 `placeResults`，无日志变化。
