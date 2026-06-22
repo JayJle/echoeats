@@ -1380,9 +1380,13 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             }
           }
           // attach recallSources to each PlaceCandidate via a side-map (kept on outer scope)
+          const perCuisine = new Map<string, string[]>();
           for (const [pid, tags] of recallSourcesMap) {
-            recallSourcesById.set(pid, Array.from(tags));
+            const arr = Array.from(tags);
+            recallSourcesById.set(pid, arr);
+            perCuisine.set(pid, arr);
           }
+          recallSourcesByCuisine.set(cuisine, perCuisine);
           const allPlaces = Array.from(merged.values());
           const inRegionPlaces = allPlaces.filter((place) => {
             const outside = isPlaceClearlyOutsideTargetRegion(place, region, data.city);
