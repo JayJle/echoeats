@@ -403,7 +403,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         !userProvidedCuisines &&
         parsed.cuisines.length > 0 &&
         !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
-      return dedupeParsedConditions(parsed);
+      return literalDedupeParsed(parsed);
     };
 
     const logParsedSummary = (label: string, p: z.infer<typeof ParsedSchema>) => {
@@ -1168,7 +1168,7 @@ function isOpenAt(
 }
 
 export const searchRestaurants = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => dedupeParsedConditions(ParsedSchema.parse(input)))
+  .inputValidator((input: unknown) => literalDedupeParsed(ParsedSchema.parse(input)))
   .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
     const uiLang: "zh" | "en" = data.uiLanguage ?? "zh";
     const isEn = uiLang === "en";
