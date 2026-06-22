@@ -1747,8 +1747,44 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
 - **来源标注**：每条 pros/cons 的 source 字段优先填上平台名（Google / Tabelog / Yelp）。
 - **宁缺毋滥**：当某家店在所有平台评论里都找不到足够支撑的口碑点（少于 2 条评论提及）时，pros 或 cons 直接返回空数组 []，不要为了凑数硬写；前端已经有"暂无可信网评 / 暂无明显差评"的兜底文案。
 
-输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
-（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
+## 输出格式（严格遵守，否则整组失败）
+只输出 JSON，第一字符必须是 "{"，最后一字符必须是 "}"。不要 markdown，不要 \`\`\`json，不要任何前后说明。
+
+picks.length 必须等于 ${group.candidates.length}（候选数），顺序与候选一致；即使 fail 也要保留。
+
+每个 pick 必填字段（缺一不可，缺失将导致整组排序失败）：
+- placeId (string，原样回传)
+- verificationStatus ("ok" | "unknown" | "fail")
+- **matchScore (0-100 的 number，不要字符串、不要带引号、不要省略)**
+- matchTier ("perfect" | "high" | "partial"，与 matchScore 阈值一致：>=92 perfect，>=80 high，否则 partial)
+- aiSummary (string，简短一句话)
+- **pros / cons 必须是对象数组 [{text: string, source?: string}]，禁止字符串数组；无证据时给 []**
+- matchDetails (长度严格 = ${nonHardFilters.length})
+- hardFilterChecks (长度严格 = ${hardFiltersList.length})
+
+输出样例（结构示意，照此形状生成）：
+{
+  "picks": [
+    {
+      "placeId": "ChIJxxx",
+      "verificationStatus": "ok",
+      "matchScore": 86,
+      "matchTier": "high",
+      "aiSummary": "炭火焼鳥口碑稳定，整体适合认真吃一顿。",
+      "pros": [
+        { "text": "评论提到炭火焼鳥表现好。", "source": "Google" },
+        { "text": "Tabelog 提到つくね和レバー表现稳定。", "source": "Tabelog" }
+      ],
+      "cons": [],
+      "matchDetails": [
+        { "label": "想吃烤鸡肉串：评论提到炭火焼鳥。", "status": "ok", "confidence": 90 }
+      ],
+      "hardFilterChecks": [
+        { "status": "ok", "note": "类型与评论均指向焼鳥店。", "confidence": 92 }
+      ]
+    }
+  ]
+}`;
 };
 
 
