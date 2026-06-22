@@ -1865,14 +1865,56 @@ ${JSON.stringify(group.candidates, null, 2)}
 ## pros / cons 写作规范（与匹配判断完全解耦）
 pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的口碑点"。这一块**只描述这家店在 Google / Tabelog / Yelp 等平台上的真实评价口碑**，与"是否符合用户需求"完全无关——匹配性判断属于 hardFilterChecks 和 matchDetails，不要在 pros/cons 里重复。
 铁律：
+- **结构铁律（最关键）**：pros / cons 数组的**每一项**必须是对象 \`{"text": "评论原话或概括", "source": "Google" | "Tabelog" | "Yelp" | null}\`。**禁止写成纯字符串数组**（例如 \`["味道好", "环境棒"]\` 是错的；\`[{"text": "味道好", "source": "Google"}]\` 才是对的）。
 - **数据源限定**：pros/cons 的每一条都必须来自候选数据里的 googleReviews / tabelog / yelp / realWorldReviews / reviewHighlights 等**真实平台评论文本**。禁止用 editorialSummary、地址、营业时间、Google 评分数值、primaryType 等**非评论字段**拼凑 pros/cons。
 - **禁止回扣用户需求**：pros/cons 的文案里**严禁**出现"符合 / 匹配 / 满足 / 命中 / 您的要求 / 用户条件 / 用户需求 / 你想要的 XX"等任何把口碑和用户输入挂钩的措辞；也禁止"评论提到 {用户偏好的菜品/场景/地段}"这种回扣句式。即使某条评论同时印证了一个匹配条件，写进 pros/cons 时也只描述"食客觉得 XX 好/不好"，不要加"因此满足你的 XX 需求"之类的尾巴。
 - **与 matchDetails 去重**：如果某个点已经在 hardFilterChecks / matchDetails 里作为匹配证据出现，pros/cons 这边换一个纯口碑角度写，或者干脆不写，避免上下两块语义重复。
 - **来源标注**：每条 pros/cons 的 source 字段优先填上平台名（Google / Tabelog / Yelp）。
 - **宁缺毋滥**：当某家店在所有平台评论里都找不到足够支撑的口碑点（少于 2 条评论提及）时，pros 或 cons 直接返回空数组 []，不要为了凑数硬写；前端已经有"暂无可信网评 / 暂无明显差评"的兜底文案。
 
-输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
-（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
+## 输出结构硬约束（生成 JSON 前最后过一遍这一段）
+
+返回顶层结构必须是：\`{ "picks": [ <每个候选一个 pick 对象> ] }\`。picks 数组长度 = 本批候选数量，**逐一覆盖**，不要遗漏也不要新增。
+
+每个 pick 对象的**必填字段清单**（任何一个缺失都会导致整组失败、需要重试，请逐字段对照检查）：
+
+1. \`placeId\` — string，原样回填候选数据里的 placeId。
+2. \`matchScore\` — **0–100 的整数**。必填、不能省、不能写成字符串。综合 hardFilterChecks 和 matchDetails 的命中情况给一个总分。**漏写 matchScore 是当前最常见的失败原因，务必每个 pick 都给。**
+3. \`matchTier\` — \`"perfect"\` / \`"high"\` / \`"partial"\` 之一。
+4. \`aiSummary\` — string，≤ 80 字的中文一句话总结。
+5. \`pros\` — 对象数组，每项 \`{"text": "...", "source": "Google"|"Tabelog"|"Yelp"|null}\`。最多 3 条；无内容写 \`[]\`。**不要写成字符串数组。**
+6. \`cons\` — 对象数组，结构同 pros。最多 3 条；无内容写 \`[]\`。**不要写成字符串数组。**
+7. \`hardFilterChecks\` — 对象数组，长度严格 = ${hardFiltersList.length}。每项含 \`label\`、\`status\`("ok"|"fail"|"unknown")、\`confidence\`(0–100 整数)、可选 \`note\`。
+8. \`matchDetails\` — 对象数组，长度严格 = ${nonHardFilters.length}。结构同 hardFilterChecks。
+
+完整 1-pick 示例（字段值仅作结构示意，请按真实候选填写）：
+
+\`\`\`json
+{
+  "picks": [
+    {
+      "placeId": "<候选数据里的 placeId 原样回填>",
+      "matchScore": 78,
+      "matchTier": "high",
+      "aiSummary": "示例：评价稳定的小店，氛围安静，适合两人慢慢吃。",
+      "pros": [
+        { "text": "示例：多位食客称赞鳗鱼饭份量足、米饭粒粒分明", "source": "Tabelog" }
+      ],
+      "cons": [
+        { "text": "示例：晚高峰需要等位 30 分钟以上", "source": "Google" }
+      ],
+      "hardFilterChecks": [
+        { "label": "示例：Google 评分 ≥ 4.2 — 实测 4.4，满足", "status": "ok", "confidence": 95 }
+      ],
+      "matchDetails": [
+        { "label": "示例：氛围安静 — 多条评论提到\\"安静、适合聊天\\"", "status": "ok", "confidence": 80 }
+      ]
+    }
+  ]
+}
+\`\`\`
+
+**返回前自检三件事**：(a) 每个 pick 都有 matchScore 且是 0–100 整数；(b) pros / cons 的每一项都是 \`{"text": ..., "source": ...}\` 对象、不是字符串；(c) hardFilterChecks 长度 = ${hardFiltersList.length}，matchDetails 长度 = ${nonHardFilters.length}。`;
 };
 
 
@@ -1883,7 +1925,7 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
       opts?: { rerank?: boolean },
     ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
       const rerankSuffix = opts?.rerank
-        ? `\n\n## 独立复核（重要）\n这是对同一批候选的**第二次独立核验**。请忽略任何先前结论，重新阅读候选资料，对每个条件**重新评估证据是否真的充分**。只在你确实能在候选数据里找到明确证据时才标 "ok"；证据模糊或间接 → 务必标 "unknown" 并把 confidence 控制在 40–70。`
+        ? `\n\n## 独立复核（重要）\n这是对同一批候选的**第二次独立核验**。请忽略任何先前结论，重新阅读候选资料，对每个条件**重新评估证据是否真的充分**。只在你确实能在候选数据里找到明确证据时才标 "ok"；证据模糊或间接 → 务必标 "unknown" 并把 confidence 控制在 40–70。\n\n**输出结构与首跑完全一致**：每个 pick 必须包含 matchScore（0–100 整数），pros/cons 每项必须是 \`{"text": "...", "source": "..."}\` 对象、不能是字符串；hardFilterChecks 和 matchDetails 长度严格不变。`
         : "";
       const prompt = buildPromptForGroup(group) + rerankSuffix;
       const startedAt = Date.now();
