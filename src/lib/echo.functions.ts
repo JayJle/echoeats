@@ -1473,7 +1473,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             return !outside;
           });
           const places = filterByCuisineRelevance(inRegionPlaces, expansion);
-          return { cuisine, places, error: places.length ? null : firstError };
+          const recallHits = new Map<string, number>();
+          for (const [pid, tags] of recallSourcesMap) recallHits.set(pid, tags.size);
+          return { cuisine, places, recallHits, error: places.length ? null : firstError };
         }),
       );
     }
