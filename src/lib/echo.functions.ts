@@ -1845,6 +1845,57 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
       }
     };
 
+    type Pick = z.infer<typeof AiPickSchema>;
+
+    // 判定一个 pick 是否"模糊" → 触发复跑
+    const isFuzzyPick = (p: Pick): boolean => {
+      const allChecks = [...(p.hardFilterChecks ?? []), ...(p.matchDetails ?? [])];
+      for (const c of allChecks) {
+        if (c.status === "unknown") return true;
+        const conf = typeof c.confidence === "number" ? c.confidence : 50;
+        if (conf >= 60 && conf <= 78) return true;
+      }
+      return false;
+    };
+
+    // 合并两次 pick：status OR-合并（ok > unknown > fail），confidence 取较大者
+    const mergeStatus = (a: "ok" | "unknown" | "fail", b: "ok" | "unknown" | "fail") => {
+      if (a === "ok" || b === "ok") return "ok" as const;
+      if (a === "unknown" || b === "unknown") return "unknown" as const;
+      return "fail" as const;
+    };
+    const mergeChecks = <T extends { status: "ok" | "unknown" | "fail"; confidence: number }>(
+      first: T[],
+      second: T[],
+    ): T[] => {
+      const out: T[] = [];
+      const len = Math.max(first.length, second.length);
+      for (let i = 0; i < len; i++) {
+        const a = first[i];
+        const b = second[i];
+        if (!a) { out.push(b); continue; }
+        if (!b) { out.push(a); continue; }
+        const status = mergeStatus(a.status, b.status);
+        const winner = a.status === status ? a : b;
+        out.push({
+          ...winner,
+          status,
+          confidence: Math.max(a.confidence ?? 50, b.confidence ?? 50),
+        });
+      }
+      return out;
+    };
+    const mergePicks = (first: Pick, second: Pick): Pick => ({
+      ...first,
+      matchScore: Math.max(first.matchScore, second.matchScore),
+      matchTier: first.matchScore >= second.matchScore ? first.matchTier : second.matchTier,
+      aiSummary: second.aiSummary?.trim() ? second.aiSummary : first.aiSummary,
+      pros: second.pros?.length ? second.pros : first.pros,
+      cons: second.cons?.length ? second.cons : first.cons,
+      hardFilterChecks: mergeChecks(first.hardFilterChecks ?? [], second.hardFilterChecks ?? []),
+      matchDetails: mergeChecks(first.matchDetails ?? [], second.matchDetails ?? []),
+    });
+
     yield { type: "stage", stage: "rank" };
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
@@ -1856,13 +1907,30 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           batches.push(group.candidates.slice(i, i + BATCH_SIZE));
         }
         const batchPicks = await Promise.all(batches.map(async (batch) => {
-          const res = await rankOneGroup({ ...group, candidates: batch });
-          return res.picks;
+          const first = await rankOneGroup({ ...group, candidates: batch });
+          const fuzzyIds = new Set(first.picks.filter(isFuzzyPick).map((p) => p.placeId));
+          if (fuzzyIds.size === 0) return first.picks;
+
+          const fuzzyCandidates = batch.filter((c) => fuzzyIds.has(c.placeId));
+          const rerunStart = Date.now();
+          const second = await rankOneGroup(
+            { ...group, candidates: fuzzyCandidates },
+            { rerank: true },
+          );
+          console.log(
+            `[Echo/AI-rank] "${group.cuisine}" fuzzy=${fuzzyIds.size}/${first.picks.length} reran in ${Date.now() - rerunStart}ms`,
+          );
+          const secondById = new Map(second.picks.map((p) => [p.placeId, p]));
+          return first.picks.map((p) => {
+            const s = secondById.get(p.placeId);
+            return s ? mergePicks(p, s) : p;
+          });
         }));
         return { cuisine: group.cuisine, picks: batchPicks.flat() };
       })),
       "rank",
     );
+
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
     );
