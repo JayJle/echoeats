@@ -80,29 +80,7 @@ const ParsedSchema = z.object({
 
 type WeightedCondition = z.infer<typeof WeightedConditionSchema>;
 
-// 语义主题归一：把同义/近义的条件归并到同一个 topic key，避免
-// "菜品精致 / 摆盘精致 / 出品精致 / 精美" 这种近义文本在 hard/soft 里同时出现。
-// 只对常见的主观/可枚举维度做归一；硬指标（"预算 ≤ X"、人数、营业到 X 点）走文本 key，不会被误并。
-const TOPIC_RULES: Array<{ topic: string; pattern: RegExp }> = [
-  { topic: "fine-plating", pattern: /(精致|精美|摆盘|盛盘|出品|卖相|plating|presentation|exquisite|refined)/i },
-  { topic: "quiet", pattern: /(安静|清静|不吵|quiet|peaceful)/i },
-  { topic: "lively", pattern: /(热闹|气氛热|lively|bustling|vibrant)/i },
-  { topic: "date", pattern: /(约会|适合情侣|romantic|浪漫|date[-\s]?night)/i },
-  { topic: "business", pattern: /(谈事|商务|business\s*(?:meal|meeting))/i },
-  { topic: "reservable", pattern: /(可预约|可预订|支持预约|接受预约|reservation|reservable|takes?\s*booking|book(?:able)?)/i },
-  { topic: "private-room", pattern: /(包间|包房|包厢|private\s*room|private\s*dining)/i },
-  { topic: "non-smoking", pattern: /(无烟|禁烟|non[-\s]?smoking|smoke[-\s]?free)/i },
-  { topic: "tourist-trap", pattern: /(游客店|游客陷阱|tourist\s*trap|touristy)/i },
-  { topic: "english-menu", pattern: /(英文菜单|english\s*menu)/i },
-  { topic: "vegetarian", pattern: /(素食|纯素|vegetarian|vegan|plant[-\s]?based)/i },
-  { topic: "kid-friendly", pattern: /(带小孩|带宝宝|儿童友好|亲子|kid[-\s]?friendly|child[-\s]?friendly|family[-\s]?friendly)/i },
-  { topic: "credit-card", pattern: /(信用卡|刷卡|credit\s*card|accepts?\s*card)/i },
-  { topic: "counter-seat", pattern: /(吧台|counter\s*seat)/i },
-  { topic: "view", pattern: /(景观|view|scenic|海景|夜景)/i },
-  { topic: "fresh-ingredients", pattern: /(食材新鲜|新鲜食材|fresh\s*ingredients)/i },
-  { topic: "authentic", pattern: /(地道|正宗|authentic|traditional)/i },
-];
-
+// 文本归一（仅用于"完全相同条件"的兜底去重；不做语义判断）
 function normalizeText(text: string): string {
   return text
     .normalize("NFKC")
@@ -110,21 +88,16 @@ function normalizeText(text: string): string {
     .replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
-function conditionKey(text: string): string {
-  // 把 "原话 → 标准化" 两侧都纳入主题判定，避免只看左边漏判。
-  const both = text.replace(/\s*(?:→|->|=>)\s*/g, " ");
-  for (const { topic, pattern } of TOPIC_RULES) {
-    if (pattern.test(both)) return `topic:${topic}`;
-  }
-  // 退化到标准化全文 key（取右侧标准化条件为主，覆盖不到时用原文）
+// 取条件文本的右侧（"原话 → 标准化条件"中的标准化部分）做 key
+function literalConditionKey(text: string): string {
   const right = text.split(/\s*(?:→|->|=>)\s*/).slice(-1)[0] || text;
   return normalizeText(right) || normalizeText(text);
 }
 
-function uniqueConditions(items: WeightedCondition[]): WeightedCondition[] {
+function uniqueByLiteral(items: WeightedCondition[]): WeightedCondition[] {
   const unique = new Map<string, WeightedCondition>();
   for (const item of items) {
-    const key = conditionKey(item.text);
+    const key = literalConditionKey(item.text);
     if (!key) continue;
     const existing = unique.get(key);
     if (!existing) unique.set(key, item);
@@ -143,34 +116,22 @@ function uniqueStrings(items: string[]): string[] {
   return [...unique.values()];
 }
 
-function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
-  // 优先级：negative > hard > soft（同一语义主题只保留最高优先级一处）
-  const negativeFilters = uniqueConditions(parsed.negativeFilters);
-  const negativeKeys = new Set(negativeFilters.map((item) => conditionKey(item.text)));
-  const hardFilters = uniqueConditions(parsed.hardFilters).filter(
-    (item) => !negativeKeys.has(conditionKey(item.text)),
-  );
-  const hardKeys = new Set(hardFilters.map((item) => conditionKey(item.text)));
-  const softPreferences = uniqueConditions(parsed.softPreferences).filter((item) => {
-    const key = conditionKey(item.text);
-    return !negativeKeys.has(key) && !hardKeys.has(key);
-  });
-  // 菜品名仅按字面去重；不走主题归一（"鳗鱼饭"、"刺身" 是独立菜品，不应合并）。
-  const dishPreferences = [...new Map(
-    parsed.dishPreferences
-      .map((dish) => [normalizeText(dish), dish.trim()] as const)
-      .filter(([key, dish]) => key && dish),
-  ).values()];
-
+// 仅做"完全相同文本"的最小兜底去重；语义去重交给 AI dedupe pass。
+function literalDedupeParsed(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
   return {
     ...parsed,
     cuisines: uniqueStrings(parsed.cuisines),
-    negativeFilters,
-    hardFilters,
-    softPreferences,
-    dishPreferences,
+    negativeFilters: uniqueByLiteral(parsed.negativeFilters),
+    hardFilters: uniqueByLiteral(parsed.hardFilters),
+    softPreferences: uniqueByLiteral(parsed.softPreferences),
+    dishPreferences: [...new Map(
+      parsed.dishPreferences
+        .map((dish) => [normalizeText(dish), dish.trim()] as const)
+        .filter(([key, dish]) => key && dish),
+    ).values()],
   };
 }
+
 
 const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
   { pattern: /afternoon\s+tea|下午茶/i, hhmm: "15:00" },
