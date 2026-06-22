@@ -13,7 +13,8 @@ export type TabelogInfo = {
   url: string | null; // tabelog 店铺页 URL（必须包含 tabelog.com）
   priceRange: string | null; // 例 "￥6,000〜￥7,999"（原文）
   priceJPY: TabelogPriceJPY | null; // 解析后的数字区间（JPY）
-  summary: string | null; // 1-2 句中文摘要
+  summary: string | null; // 1 句中文短摘要，前端展示
+  signals: string[]; // 后台隐藏评论信号，最多 8 条，每条 ≤35 字
 };
 
 const cache = new Map<string, TabelogInfo | null>();
