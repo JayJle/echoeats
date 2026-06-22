@@ -1823,8 +1823,10 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             const slimFb = await generateText({
               model,
               prompt: buildSlimPrompt(),
+              temperature: 0,
               maxOutputTokens: 20000,
             });
+
             const slimFinish = (slimFb as { finishReason?: string }).finishReason;
             if (slimFinish === "length" || slimFinish === "max-tokens") {
               throw new Error(`slim truncated (finishReason=${slimFinish})`);
