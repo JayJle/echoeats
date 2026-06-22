@@ -2038,10 +2038,25 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
                   },
           };
         });
-        const hasBlockingFail = checks.some(
+        // 先算 negStatuses 以便纳入 verificationStatus（与 hard 同档）
+        const negStatusesPre = (() => {
+          const aiDetailsPre = pick?.matchDetails ?? [];
+          return data.negativeFilters.map((_, i) => {
+            const detail = aiDetailsPre[softCount + i];
+            if (!detail) return "unknown" as const;
+            return (detail.confidence ?? 50) >= 70 ? detail.status : ("unknown" as const);
+          });
+        })();
+        const hardBlockingFail = checks.some(
           ({ filter, check }) => check.status === "fail" && filter.weight >= 0.85,
         );
-        const hasUnknown = checks.some(({ check }) => check.status === "unknown");
+        const negBlockingFail = data.negativeFilters.some(
+          (n, i) => n.weight >= 0.85 && negStatusesPre[i] === "fail",
+        );
+        const hasBlockingFail = hardBlockingFail || negBlockingFail;
+        const hardUnknown = checks.some(({ check }) => check.status === "unknown");
+        const negUnknown = negStatusesPre.some((s) => s === "unknown");
+        const hasUnknown = hardUnknown || negUnknown;
         const verificationStatus = hasBlockingFail ? "fail" : hasUnknown ? "unknown" : "ok";
 
         const hardDetails = checks.map(({ filter, check }) => {
@@ -2067,10 +2082,8 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         const breakdown: { label: string; delta: number }[] = [];
 
         // Layer 1 准入层
-        const negStatuses = nonHardDetails.slice(softCount, softCount + negCount).map((d) => d.status);
-        const negFailHeavy = data.negativeFilters.some(
-          (n, i) => n.weight >= 0.85 && negStatuses[i] === "fail",
-        );
+        const negStatuses = negStatusesPre;
+        const negFailHeavy = negBlockingFail;
         const reviewCount = p.userRatingCount ?? 0;
         const adjRating = p.rating != null
           ? (p.rating * reviewCount + BAYES_GLOBAL_MEAN * BAYES_C) / (reviewCount + BAYES_C)
@@ -2127,14 +2140,16 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           matchScore -= softPenalty;
           breakdown.push({ label: isEn ? "Soft preference fails" : "软偏好未中", delta: -Math.round(softPenalty) });
         }
-        // Negative fails
-        let negPenalty = 0;
+        // Negative fails / unknowns — 与 hard 同档（fail × 10.7，unknown × 2.7）
+        let negDeduct = 0;
         for (let i = 0; i < negCount; i++) {
-          if (negStatuses[i] === "fail") negPenalty += data.negativeFilters[i].weight * 13.3;
+          const w = data.negativeFilters[i].weight;
+          if (negStatuses[i] === "fail") negDeduct += w * 10.7;
+          else if (negStatuses[i] === "unknown") negDeduct += w * 2.7;
         }
-        if (negPenalty > 0) {
-          matchScore -= negPenalty;
-          breakdown.push({ label: isEn ? "Avoidance hits" : "命中避雷", delta: -Math.round(negPenalty) });
+        if (negDeduct > 0) {
+          matchScore -= negDeduct;
+          breakdown.push({ label: isEn ? "Avoidance penalties" : "避雷扣分", delta: -Math.round(negDeduct) });
         }
         // Dish hits (cap +16)
         let dishBonus = 0;
