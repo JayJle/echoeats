@@ -1766,10 +1766,24 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
 - picks 数组必须逐一覆盖本批所有候选（本批最多 8 条）；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
 
       const extractJson = (text: string): string => {
-        const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-        if (fenced) return fenced[1].trim();
-        const m = text.match(/\{[\s\S]*\}/);
-        return m ? m[0] : text;
+        let s = (text || "").trim();
+        // 剥所有 markdown 围栏变体
+        s = s.replace(/^```(?:json|JSON)?\s*/i, "").replace(/```\s*$/i, "");
+        // 抓首 { 到末 }
+        const first = s.indexOf("{");
+        const last = s.lastIndexOf("}");
+        if (first !== -1 && last > first) s = s.slice(first, last + 1);
+        // 修复带引号的数字字段（matchScore / confidence 偶尔会被模型加引号）
+        s = s.replace(
+          /"(matchScore|confidence)"\s*:\s*"(-?\d+(?:\.\d+)?)"/g,
+          '"$1": $2',
+        );
+        // 修复千分位逗号数字（"1,200" → 1200）
+        s = s.replace(
+          /"(matchScore|confidence|rating|reviewCount)"\s*:\s*"(\d{1,3}(?:,\d{3})+(?:\.\d+)?)"/g,
+          (_m, k, n) => `"${k}": ${n.replace(/,/g, "")}`,
+        );
+        return s;
       };
 
       // 极简兜底：砍掉占 token 大头的 realWorldReviews + 截短 tabelog/yelp summary。
