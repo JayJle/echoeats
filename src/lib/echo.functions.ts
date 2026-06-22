@@ -2108,8 +2108,32 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
               : "partial";
 
         const review = reviewById.get(p.placeId) ?? null;
-        const tabelogInfo = tabelogById.get(p.placeId) ?? null;
-        const yelpInfo = yelpById.get(p.placeId) ?? null;
+        const rawTabelog = tabelogById.get(p.placeId) ?? null;
+        const rawYelp = yelpById.get(p.placeId) ?? null;
+
+        // 用 DeepSeek 排序时输出的 displayFields 覆盖 evidence 阶段留空的字段
+        const dfTabelog = pick?.displayFields?.tabelog ?? null;
+        const dfYelp = pick?.displayFields?.yelp ?? null;
+        const tabelogInfo: TabelogInfo | null = rawTabelog
+          ? {
+              ...rawTabelog,
+              rating: dfTabelog?.rating ?? rawTabelog.rating,
+              reviewCount: dfTabelog?.reviewCount ?? rawTabelog.reviewCount,
+              priceRange: dfTabelog?.priceRange ?? rawTabelog.priceRange,
+              priceJPY: parseTabelogPriceJPY(dfTabelog?.priceRange ?? rawTabelog.priceRange),
+              summary: dfTabelog?.summary ?? rawTabelog.summary,
+            }
+          : null;
+        const yelpInfo: YelpInfo | null = rawYelp
+          ? {
+              ...rawYelp,
+              rating: dfYelp?.rating ?? rawYelp.rating,
+              reviewCount: dfYelp?.reviewCount ?? rawYelp.reviewCount,
+              priceLevel: dfYelp?.priceLevel ?? rawYelp.priceLevel,
+              summary: dfYelp?.summary ?? rawYelp.summary,
+            }
+          : null;
+
         const restaurant: z.infer<typeof RestaurantSchema> = {
           id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
           name: p.name,
