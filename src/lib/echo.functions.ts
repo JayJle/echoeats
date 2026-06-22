@@ -1728,9 +1728,15 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
     // 这样单个 cuisine 失败不会拖垮整次搜索。
     const rankOneGroup = async (
       group: GroupForPrompt,
+      opts?: { rerank?: boolean },
     ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
-      const prompt = buildPromptForGroup(group);
+      const rerankSuffix = opts?.rerank
+        ? `\n\n## 独立复核（重要）\n这是对同一批候选的**第二次独立核验**。请忽略任何先前结论，重新阅读候选资料，对每个条件**重新评估证据是否真的充分**。只在你确实能在候选数据里找到明确证据时才标 "ok"；证据模糊或间接 → 务必标 "unknown" 并把 confidence 控制在 40–70。`
+        : "";
+      const prompt = buildPromptForGroup(group) + rerankSuffix;
       const startedAt = Date.now();
+
+
 
       const RAW_FORMAT_HARD_RULES = `\n\n**输出格式硬约束**：
 - 第一个字符必须是 "{"，最后一个字符必须是 "}"。
