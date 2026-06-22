@@ -1469,9 +1469,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
     const tabelogById = new Map<string, TabelogInfo>();
     if (pplxKey && country === "JP" && data.mode !== "quick") {
-      const allTargets: PlaceCandidate[] = [];
+      const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
       for (const r of placeResults) {
-        for (const p of r.places) allTargets.push(p);
+        for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
       }
       yield { type: "stage", stage: "tabelog", total: allTargets.length };
       const CONCURRENCY = 8;
@@ -1480,9 +1480,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         while (true) {
           const i = cursor++;
           if (i >= allTargets.length) return;
-          const p = allTargets[i];
+          const { p, cuisine } = allTargets[i];
           try {
-            const info = await fetchTabelogInfo(p.name, p.address, data.city);
+            const info = await fetchTabelogInfo(p.name, p.address, data.city, cuisine);
             if (info) tabelogById.set(p.placeId, info);
           } catch (e) {
             console.warn(`[Tabelog] ${p.name} task error:`, e instanceof Error ? e.message : e);
@@ -1512,9 +1512,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
     const yelpById = new Map<string, YelpInfo>();
     if (pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
-      const allTargets: PlaceCandidate[] = [];
+      const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
       for (const r of placeResults) {
-        for (const p of r.places) allTargets.push(p);
+        for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
       }
       yield { type: "stage", stage: "yelp", total: allTargets.length };
       const CONCURRENCY = 8;
@@ -1523,9 +1523,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         while (true) {
           const i = cursor++;
           if (i >= allTargets.length) return;
-          const p = allTargets[i];
+          const { p, cuisine } = allTargets[i];
           try {
-            const info = await fetchYelpInfo(p.name, p.address, data.city, isEn);
+            const info = await fetchYelpInfo(p.name, p.address, data.city, isEn, cuisine);
             if (info) yelpById.set(p.placeId, info);
           } catch (e) {
             console.warn(`[Yelp] ${p.name} task error:`, e instanceof Error ? e.message : e);
