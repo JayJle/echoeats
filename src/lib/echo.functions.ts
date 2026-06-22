@@ -80,29 +80,7 @@ const ParsedSchema = z.object({
 
 type WeightedCondition = z.infer<typeof WeightedConditionSchema>;
 
-// 语义主题归一：把同义/近义的条件归并到同一个 topic key，避免
-// "菜品精致 / 摆盘精致 / 出品精致 / 精美" 这种近义文本在 hard/soft 里同时出现。
-// 只对常见的主观/可枚举维度做归一；硬指标（"预算 ≤ X"、人数、营业到 X 点）走文本 key，不会被误并。
-const TOPIC_RULES: Array<{ topic: string; pattern: RegExp }> = [
-  { topic: "fine-plating", pattern: /(精致|精美|摆盘|盛盘|出品|卖相|plating|presentation|exquisite|refined)/i },
-  { topic: "quiet", pattern: /(安静|清静|不吵|quiet|peaceful)/i },
-  { topic: "lively", pattern: /(热闹|气氛热|lively|bustling|vibrant)/i },
-  { topic: "date", pattern: /(约会|适合情侣|romantic|浪漫|date[-\s]?night)/i },
-  { topic: "business", pattern: /(谈事|商务|business\s*(?:meal|meeting))/i },
-  { topic: "reservable", pattern: /(可预约|可预订|支持预约|接受预约|reservation|reservable|takes?\s*booking|book(?:able)?)/i },
-  { topic: "private-room", pattern: /(包间|包房|包厢|private\s*room|private\s*dining)/i },
-  { topic: "non-smoking", pattern: /(无烟|禁烟|non[-\s]?smoking|smoke[-\s]?free)/i },
-  { topic: "tourist-trap", pattern: /(游客店|游客陷阱|tourist\s*trap|touristy)/i },
-  { topic: "english-menu", pattern: /(英文菜单|english\s*menu)/i },
-  { topic: "vegetarian", pattern: /(素食|纯素|vegetarian|vegan|plant[-\s]?based)/i },
-  { topic: "kid-friendly", pattern: /(带小孩|带宝宝|儿童友好|亲子|kid[-\s]?friendly|child[-\s]?friendly|family[-\s]?friendly)/i },
-  { topic: "credit-card", pattern: /(信用卡|刷卡|credit\s*card|accepts?\s*card)/i },
-  { topic: "counter-seat", pattern: /(吧台|counter\s*seat)/i },
-  { topic: "view", pattern: /(景观|view|scenic|海景|夜景)/i },
-  { topic: "fresh-ingredients", pattern: /(食材新鲜|新鲜食材|fresh\s*ingredients)/i },
-  { topic: "authentic", pattern: /(地道|正宗|authentic|traditional)/i },
-];
-
+// 文本归一（仅用于"完全相同条件"的兜底去重；不做语义判断）
 function normalizeText(text: string): string {
   return text
     .normalize("NFKC")
@@ -110,21 +88,16 @@ function normalizeText(text: string): string {
     .replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
-function conditionKey(text: string): string {
-  // 把 "原话 → 标准化" 两侧都纳入主题判定，避免只看左边漏判。
-  const both = text.replace(/\s*(?:→|->|=>)\s*/g, " ");
-  for (const { topic, pattern } of TOPIC_RULES) {
-    if (pattern.test(both)) return `topic:${topic}`;
-  }
-  // 退化到标准化全文 key（取右侧标准化条件为主，覆盖不到时用原文）
+// 取条件文本的右侧（"原话 → 标准化条件"中的标准化部分）做 key
+function literalConditionKey(text: string): string {
   const right = text.split(/\s*(?:→|->|=>)\s*/).slice(-1)[0] || text;
   return normalizeText(right) || normalizeText(text);
 }
 
-function uniqueConditions(items: WeightedCondition[]): WeightedCondition[] {
+function uniqueByLiteral(items: WeightedCondition[]): WeightedCondition[] {
   const unique = new Map<string, WeightedCondition>();
   for (const item of items) {
-    const key = conditionKey(item.text);
+    const key = literalConditionKey(item.text);
     if (!key) continue;
     const existing = unique.get(key);
     if (!existing) unique.set(key, item);
@@ -143,34 +116,22 @@ function uniqueStrings(items: string[]): string[] {
   return [...unique.values()];
 }
 
-function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
-  // 优先级：negative > hard > soft（同一语义主题只保留最高优先级一处）
-  const negativeFilters = uniqueConditions(parsed.negativeFilters);
-  const negativeKeys = new Set(negativeFilters.map((item) => conditionKey(item.text)));
-  const hardFilters = uniqueConditions(parsed.hardFilters).filter(
-    (item) => !negativeKeys.has(conditionKey(item.text)),
-  );
-  const hardKeys = new Set(hardFilters.map((item) => conditionKey(item.text)));
-  const softPreferences = uniqueConditions(parsed.softPreferences).filter((item) => {
-    const key = conditionKey(item.text);
-    return !negativeKeys.has(key) && !hardKeys.has(key);
-  });
-  // 菜品名仅按字面去重；不走主题归一（"鳗鱼饭"、"刺身" 是独立菜品，不应合并）。
-  const dishPreferences = [...new Map(
-    parsed.dishPreferences
-      .map((dish) => [normalizeText(dish), dish.trim()] as const)
-      .filter(([key, dish]) => key && dish),
-  ).values()];
-
+// 仅做"完全相同文本"的最小兜底去重；语义去重交给 AI dedupe pass。
+function literalDedupeParsed(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
   return {
     ...parsed,
     cuisines: uniqueStrings(parsed.cuisines),
-    negativeFilters,
-    hardFilters,
-    softPreferences,
-    dishPreferences,
+    negativeFilters: uniqueByLiteral(parsed.negativeFilters),
+    hardFilters: uniqueByLiteral(parsed.hardFilters),
+    softPreferences: uniqueByLiteral(parsed.softPreferences),
+    dishPreferences: [...new Map(
+      parsed.dishPreferences
+        .map((dish) => [normalizeText(dish), dish.trim()] as const)
+        .filter(([key, dish]) => key && dish),
+    ).values()],
   };
 }
+
 
 const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
   { pattern: /afternoon\s+tea|下午茶/i, hhmm: "15:00" },
@@ -317,11 +278,28 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - **氛围 / 装修 / 服务态度** 这类主观偏好基线 ≤ 0.7。
 - 避雷条目：「不要 X」=0.7，「绝对不要 X」=1.0。
 
-## 边界与去重
+## 边界与去重（极重要，输出前必须自检）
 
+输出之前你必须把以下三类**语义重复**合并掉，绝不允许同一个诉求出现多次：
+
+1. **同一个数组内的语义重复**：同一个诉求只能保留一条。例如用户说了"环境要好一点 / 环境精美 / 环境好 / 环境稍微好 / 氛围不错"，这些都在表达"店内环境/氛围要好"，最终在 softPreferences 里只能出现**一条**（如"环境好"），weight 取所有同义说法里的**最高值**。
+2. **跨数组重复**：如果同一个诉求同时落到 hardFilters / softPreferences / negativeFilters，只保留**最高等级**的那一个数组（优先级：negativeFilters > hardFilters > softPreferences），其它数组里不允许再出现。weight 也取最高值。
+3. **不要因为用户在原文里重复说了多次（口语啰嗦、复述、同义改写）就重复输出**。你要做语义合并，不是逐句抽取。
+
+合并示例：
+- 用户原文："菜品必须精美，然后的话环境精美，口碑要好，环境好，服务员态度要好。环境稍微好。"
+  - hardFilters: [{"text":"菜品必须精美","weight":0.9}]
+  - softPreferences: [
+      {"text":"环境好","weight":0.7},            ← 合并"环境精美/环境好/环境稍微好/环境要好一点"
+      {"text":"口碑要好","weight":0.7},
+      {"text":"服务员态度要好","weight":0.7}
+    ]
+  - 不要出现："环境精美" + "环境好" + "环境稍微好" 三条并列。
+
+其它约束：
 - 否定句一律进 negativeFilters，不要再复制到 hardFilters。
-- 同一条只放一个数组里，不要重复。
-- 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
+- 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。dishPreferences 之间是不同菜品（"鳗鱼饭"和"刺身"是两道菜），不要合并。
+
 
 ## 示例
 
@@ -425,7 +403,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         !userProvidedCuisines &&
         parsed.cuisines.length > 0 &&
         !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
-      return dedupeParsedConditions(parsed);
+      return literalDedupeParsed(parsed);
     };
 
     const logParsedSummary = (label: string, p: z.infer<typeof ParsedSchema>) => {
@@ -439,7 +417,106 @@ export const parseRequirements = createServerFn({ method: "POST" })
       if (p.dishPreferences.length) console.log(`[parseRequirements] dish: ${p.dishPreferences.join(" | ")}`);
     };
 
+    // ===== AI 语义去重 pass =====
+    // 把 hard/soft/neg 三个数组交给同一个 gateway，让模型按语义合并同义条目。
+    // 完全不依赖关键词；模型只能合并，不能新增/删除独立诉求；保留项 weight 取最高。
+    const DedupedArraySchema = z.array(
+      z.object({
+        text: z.string(),
+        weight: z.number().min(0).max(1),
+        mergedFrom: z.array(z.string()).optional(),
+      }),
+    );
+    const SemanticDedupeSchema = z.object({
+      hardFilters: DedupedArraySchema,
+      softPreferences: DedupedArraySchema,
+      negativeFilters: DedupedArraySchema,
+    });
+
+    const semanticDedupe = async (
+      parsed: z.infer<typeof ParsedSchema>,
+    ): Promise<z.infer<typeof ParsedSchema>> => {
+      const total =
+        parsed.hardFilters.length +
+        parsed.softPreferences.length +
+        parsed.negativeFilters.length;
+      // 少于 2 条就没什么可合并的
+      if (total < 2) return parsed;
+
+      const payload = {
+        hardFilters: parsed.hardFilters.map((x) => ({ text: x.text, weight: x.weight })),
+        softPreferences: parsed.softPreferences.map((x) => ({ text: x.text, weight: x.weight })),
+        negativeFilters: parsed.negativeFilters.map((x) => ({ text: x.text, weight: x.weight })),
+      };
+
+      const dedupePrompt = `你是条件语义去重器。下面是已结构化的餐厅搜索条件，分为 hardFilters / softPreferences / negativeFilters 三个数组。请按"语义"去重：
+
+去重规则（必须严格遵守）：
+1. **不要靠关键词**，按语义判断两条是不是在表达同一个诉求。
+2. **同一数组内的语义重复**：合并成一条，weight 取所有重复项的最大值。
+3. **跨数组的语义重复**：只保留在更高等级的数组里，其它数组里删掉；优先级 negativeFilters > hardFilters > softPreferences。weight 取所有同义条目的最大值。
+4. **绝对不能新增**用户没说过的条件；**绝对不能删除**语义独立的条件；只允许合并。
+5. 保留项的 text 选用最简洁、最能代表该诉求的一条（可以是原数组里的某一条原文，不要自己改写新概念）。
+6. 可选返回 mergedFrom 字段，列出被合并掉的原 text，便于审计。
+
+合并示例（说明语义判断的范围）：
+- "环境要好一点 / 环境精美 / 环境好 / 环境稍微好 / 氛围不错 / 装修要精致" → 都是"店内环境/氛围要好"，合并为一条。
+- "可以预约 / 接受预约 / 支持预约 / 可预订" → 合并为一条"可预约"。
+- "菜品必须精美" 和 "环境精美" 是不同诉求（一个说菜，一个说店内环境），**不要合并**。
+- "鳗鱼饭" 和 "刺身" 是不同菜品，**不要合并**（菜品名不在本次去重范围）。
+
+输入：
+${JSON.stringify(payload, null, 2)}
+
+只输出 JSON：三个数组 hardFilters / softPreferences / negativeFilters，元素形如 {"text":"...","weight":0.x,"mergedFrom":["原条目1","原条目2"]}。`;
+
+      try {
+        const { output } = await generateText({
+          model: gateway("google/gemini-2.5-flash"),
+          prompt: dedupePrompt,
+          maxOutputTokens: 4000,
+          output: Output.object({
+            schema: SemanticDedupeSchema,
+            name: "deduped_conditions",
+            description: "Semantically deduplicated condition arrays",
+          }),
+        });
+
+        // 日志：打印被合并的组
+        const logMerges = (label: string, items: z.infer<typeof DedupedArraySchema>) => {
+          for (const it of items) {
+            if (it.mergedFrom && it.mergedFrom.length > 0) {
+              console.log(
+                `[parseRequirements] semanticDedupe merged in ${label}: [${it.mergedFrom.join(" | ")}] -> ${it.text}@${it.weight.toFixed(1)}`,
+              );
+            }
+          }
+        };
+        logMerges("hard", output.hardFilters);
+        logMerges("soft", output.softPreferences);
+        logMerges("neg", output.negativeFilters);
+
+        const strip = (arr: z.infer<typeof DedupedArraySchema>): WeightedCondition[] =>
+          arr.map((x) => ({ text: x.text, weight: x.weight }));
+
+        // 再做一次字面兜底，去掉模型偶尔漏的完全相同条目
+        return literalDedupeParsed({
+          ...parsed,
+          hardFilters: strip(output.hardFilters),
+          softPreferences: strip(output.softPreferences),
+          negativeFilters: strip(output.negativeFilters),
+        });
+      } catch (e) {
+        console.warn(
+          "[parseRequirements] semanticDedupe 失败，沿用字面去重结果：",
+          e instanceof Error ? e.message : e,
+        );
+        return parsed;
+      }
+    };
+
     const FALLBACK_CUISINE_WORDS = new Set([
+
       "餐厅",
       "restaurants",
       "restaurant",
@@ -532,17 +609,22 @@ export const parseRequirements = createServerFn({ method: "POST" })
     try {
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        const final = sanitizeVisitTime(await enforceInferIfRequested(first));
+        const sanitized = sanitizeVisitTime(await enforceInferIfRequested(first));
+        logParsedSummary("pre-dedupe(gemini)", sanitized);
+        const final = await semanticDedupe(sanitized);
         logParsedSummary("final(gemini)", final);
         return final;
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        const final = sanitizeVisitTime(await enforceInferIfRequested(second));
+        const sanitized = sanitizeVisitTime(await enforceInferIfRequested(second));
+        logParsedSummary("pre-dedupe(gpt-5-mini)", sanitized);
+        const final = await semanticDedupe(sanitized);
         logParsedSummary("final(gpt-5-mini)", final);
         return final;
       }
+
 
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1190,7 +1272,7 @@ function isOpenAt(
 }
 
 export const searchRestaurants = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => dedupeParsedConditions(ParsedSchema.parse(input)))
+  .inputValidator((input: unknown) => literalDedupeParsed(ParsedSchema.parse(input)))
   .handler(async function* ({ data }): AsyncGenerator<SearchStreamChunk, void, unknown> {
     const uiLang: "zh" | "en" = data.uiLanguage ?? "zh";
     const isEn = uiLang === "en";
