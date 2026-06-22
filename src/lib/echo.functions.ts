@@ -1936,7 +1936,9 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
       }
     };
 
-    yield { type: "stage", stage: "rank" };
+    const rankTotal = candidatesForPrompt.length;
+    let rankDone = 0;
+    yield { type: "stage", stage: "rank", count: 0, total: rankTotal };
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
     const groupResults = yield* withHeartbeat(
@@ -1950,9 +1952,12 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
           const res = await rankOneGroup({ ...group, candidates: batch });
           return res.picks;
         }));
+        rankDone++;
         return { cuisine: group.cuisine, picks: batchPicks.flat() };
       })),
       "rank",
+      4000,
+      () => ({ done: rankDone, total: rankTotal }),
     );
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
