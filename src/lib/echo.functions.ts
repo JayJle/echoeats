@@ -2082,10 +2082,8 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         const breakdown: { label: string; delta: number }[] = [];
 
         // Layer 1 准入层
-        const negStatuses = nonHardDetails.slice(softCount, softCount + negCount).map((d) => d.status);
-        const negFailHeavy = data.negativeFilters.some(
-          (n, i) => n.weight >= 0.85 && negStatuses[i] === "fail",
-        );
+        const negStatuses = negStatusesPre;
+        const negFailHeavy = negBlockingFail;
         const reviewCount = p.userRatingCount ?? 0;
         const adjRating = p.rating != null
           ? (p.rating * reviewCount + BAYES_GLOBAL_MEAN * BAYES_C) / (reviewCount + BAYES_C)
