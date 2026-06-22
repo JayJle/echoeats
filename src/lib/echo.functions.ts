@@ -1829,7 +1829,12 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         return buildPromptForGroup(slim) + RAW_FORMAT_HARD_RULES;
       };
 
+      // DeepSeek 不支持 Output.object 走的 json_schema response_format（只接 json_object）。
+      // 用 DeepSeek 时直接走 raw 文本 + 解析路径，省掉一次必然失败的 Output.object 尝试。
+      const useRawFirst = Boolean(deepseekKey);
+
       try {
+        if (useRawFirst) throw new Error("skip-output-object-for-deepseek");
         const result = await generateText({
           model,
           prompt,
