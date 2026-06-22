@@ -1,25 +1,43 @@
-## 目标
-在 `src/lib/echo.functions.ts` 的 `AiPickSchema` 上加 `verificationStatus` 字段，并把 `HardFilterCheckSchema.filter` 改为可选，让 v4 prompt 的输出能被 Zod 正确接收、不再强制占位 filter token。
+## 改动目标
 
-## 改动
+把 `src/lib/yelp.server.ts` 的 `preSearchYelp` 从 4 个变体砍到 2 个，降低 Perplexity `/search` 调用量约 50%。
 
-### 1. `HardFilterCheckSchema` (L729–734)
-- `filter: z.string().catch("").default("")` → `filter: z.string().optional()`
-- preprocess 兜底 `{ filter: "", ... }` 改为 `{ status: "unknown", confidence: 50 }`（不再带 filter 占位）
+## 具体改动（单文件）
 
-### 2. `AiPickSchema` (L738–753)
-- 新增字段：
-  ```ts
-  verificationStatus: z.enum(["ok", "unknown", "fail"]).catch("unknown").default("unknown"),
-  ```
-  放在 `placeId` 之后、`matchScore` 之前。
+**文件**：`src/lib/yelp.server.ts`，函数 `preSearchYelp`（约 L197-247）
 
-## 不动
-- 下游 `rankOneGroup` 里的 `verificationStatus` 计算（L1915）这次先不动 —— 它目前是基于 hardFilterChecks 推算的。模型输出的 `verificationStatus` 这一版只是先让 schema 收下，不破坏现有兜底逻辑。下一轮再决定是"模型优先 / 兜底为辅"还是"兜底优先 / 模型作为信号"。
-- prompt 文案、minify candidates、picks 长度兜底都不在本次范围。
+**保留**：
+- `name+city`：`"${name}" ${city} site:yelp.com`
+- `name+area+city+cuisine`：`"${name}" ${area} ${city} ${cuisine} site:yelp.com`（仅 cuisine 非空）
 
-## 风险
-零。新增字段是 optional+default，老调用不受影响；filter 改 optional 后下游 `checksByFilter`（L1889）用 `check.filter` 当 key，会变成 `undefined` key —— 需要确认这里是否会塌成单一桶。
+**删除**：
+- `name+street` 变体（依赖 `extractStreetTokens`）
+- `name-only` 兜底（前 N 个变体全部 0 命中时的二次 `/search`）
 
-## 待确认
-要不要顺手修 L1889 的 `checksByFilter`（filter 变 optional 后，按 index 对齐而不是按 filter 字符串对齐）？还是这次严格只动 schema，下游下一轮再处理？
+### 调用量变化（单店 Yelp 部分）
+
+| 场景 | 改动前 | 改动后 |
+|---|---|---|
+| 有 cuisine | 3 变体 + 可能 1 兜底 = 3-4 | **2 变体** |
+| 无 cuisine | 2 变体 + 可能 1 兜底 = 2-3 | **1 变体** |
+
+整体 Yelp `/search` 调用量约降 **40-50%**。
+
+## 不动的部分
+
+- `scoreCandidates` / 打分逻辑 / 多 batch 重复加分 — 不变
+- `sonar` / `sonar-pro` 两阶段 — 不变
+- 缓存 TTL — 不变
+- Tabelog 多变体 — 不变（你只要求改 Yelp）
+- `extractStreetTokens` 函数本身保留（无其它调用方也可保留，不主动删，避免误伤）
+
+## 副作用 & 风险
+
+- **召回率轻微下降**：少数街道关键词比店名更独特的店（如同名连锁），可能从原来"靠 street 变体命中"变成"两变体都打不到 → no candidates → 跳过 Yelp"。预计影响 < 5% 的 Yelp 命中率。
+- 无 cuisine 字段的店退化为单变体，命中率下降更明显；但目前 echo 流绝大多数店都有 cuisine。
+
+## 验证
+
+改完跑一次新查询，看 worker 日志：
+- `[Yelp/search] xxx: top=... (N candidates, 1-2 variants)` 应该只看到 1 或 2 个 variant
+- `no candidates` 比例不应明显上升（前提：Perplexity 401 已修好）
