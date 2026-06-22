@@ -80,45 +80,12 @@ const ParsedSchema = z.object({
 
 type WeightedCondition = z.infer<typeof WeightedConditionSchema>;
 
-// 语义主题归一：把同义/近义的条件归并到同一个 topic key，避免
-// "菜品精致 / 摆盘精致 / 出品精致 / 精美" 这种近义文本在 hard/soft 里同时出现。
-// 只对常见的主观/可枚举维度做归一；硬指标（"预算 ≤ X"、人数、营业到 X 点）走文本 key，不会被误并。
-const TOPIC_RULES: Array<{ topic: string; pattern: RegExp }> = [
-  { topic: "fine-plating", pattern: /(精致|精美|摆盘|盛盘|出品|卖相|plating|presentation|exquisite|refined)/i },
-  { topic: "quiet", pattern: /(安静|清静|不吵|quiet|peaceful)/i },
-  { topic: "lively", pattern: /(热闹|气氛热|lively|bustling|vibrant)/i },
-  { topic: "date", pattern: /(约会|适合情侣|romantic|浪漫|date[-\s]?night)/i },
-  { topic: "business", pattern: /(谈事|商务|business\s*(?:meal|meeting))/i },
-  { topic: "reservable", pattern: /(可预约|可预订|支持预约|接受预约|reservation|reservable|takes?\s*booking|book(?:able)?)/i },
-  { topic: "private-room", pattern: /(包间|包房|包厢|private\s*room|private\s*dining)/i },
-  { topic: "non-smoking", pattern: /(无烟|禁烟|non[-\s]?smoking|smoke[-\s]?free)/i },
-  { topic: "tourist-trap", pattern: /(游客店|游客陷阱|tourist\s*trap|touristy)/i },
-  { topic: "english-menu", pattern: /(英文菜单|english\s*menu)/i },
-  { topic: "vegetarian", pattern: /(素食|纯素|vegetarian|vegan|plant[-\s]?based)/i },
-  { topic: "kid-friendly", pattern: /(带小孩|带宝宝|儿童友好|亲子|kid[-\s]?friendly|child[-\s]?friendly|family[-\s]?friendly)/i },
-  { topic: "credit-card", pattern: /(信用卡|刷卡|credit\s*card|accepts?\s*card)/i },
-  { topic: "counter-seat", pattern: /(吧台|counter\s*seat)/i },
-  { topic: "view", pattern: /(景观|view|scenic|海景|夜景)/i },
-  { topic: "fresh-ingredients", pattern: /(食材新鲜|新鲜食材|fresh\s*ingredients)/i },
-  { topic: "authentic", pattern: /(地道|正宗|authentic|traditional)/i },
-];
-
-function normalizeText(text: string): string {
-  return text
+function conditionKey(text: string): string {
+  const source = text.split(/\s*(?:→|->|=>)\s*/, 1)[0] || text;
+  return source
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[\s\p{P}\p{S}]+/gu, "");
-}
-
-function conditionKey(text: string): string {
-  // 把 "原话 → 标准化" 两侧都纳入主题判定，避免只看左边漏判。
-  const both = text.replace(/\s*(?:→|->|=>)\s*/g, " ");
-  for (const { topic, pattern } of TOPIC_RULES) {
-    if (pattern.test(both)) return `topic:${topic}`;
-  }
-  // 退化到标准化全文 key（取右侧标准化条件为主，覆盖不到时用原文）
-  const right = text.split(/\s*(?:→|->|=>)\s*/).slice(-1)[0] || text;
-  return normalizeText(right) || normalizeText(text);
 }
 
 function uniqueConditions(items: WeightedCondition[]): WeightedCondition[] {
@@ -144,7 +111,6 @@ function uniqueStrings(items: string[]): string[] {
 }
 
 function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
-  // 优先级：negative > hard > soft（同一语义主题只保留最高优先级一处）
   const negativeFilters = uniqueConditions(parsed.negativeFilters);
   const negativeKeys = new Set(negativeFilters.map((item) => conditionKey(item.text)));
   const hardFilters = uniqueConditions(parsed.hardFilters).filter(
@@ -155,10 +121,9 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
     const key = conditionKey(item.text);
     return !negativeKeys.has(key) && !hardKeys.has(key);
   });
-  // 菜品名仅按字面去重；不走主题归一（"鳗鱼饭"、"刺身" 是独立菜品，不应合并）。
   const dishPreferences = [...new Map(
     parsed.dishPreferences
-      .map((dish) => [normalizeText(dish), dish.trim()] as const)
+      .map((dish) => [conditionKey(dish), dish.trim()] as const)
       .filter(([key, dish]) => key && dish),
   ).values()];
 
@@ -428,17 +393,6 @@ export const parseRequirements = createServerFn({ method: "POST" })
       return dedupeParsedConditions(parsed);
     };
 
-    const logParsedSummary = (label: string, p: z.infer<typeof ParsedSchema>) => {
-      const fmt = (arr: WeightedCondition[]) => arr.map((x) => `${x.text}@${x.weight.toFixed(1)}`).join(" | ");
-      console.log(
-        `[parseRequirements] ${label} hard=${p.hardFilters.length} soft=${p.softPreferences.length} neg=${p.negativeFilters.length} dish=${p.dishPreferences.length}`,
-      );
-      if (p.hardFilters.length) console.log(`[parseRequirements] hard: ${fmt(p.hardFilters)}`);
-      if (p.softPreferences.length) console.log(`[parseRequirements] soft: ${fmt(p.softPreferences)}`);
-      if (p.negativeFilters.length) console.log(`[parseRequirements] neg : ${fmt(p.negativeFilters)}`);
-      if (p.dishPreferences.length) console.log(`[parseRequirements] dish: ${p.dishPreferences.join(" | ")}`);
-    };
-
     const FALLBACK_CUISINE_WORDS = new Set([
       "餐厅",
       "restaurants",
@@ -532,16 +486,12 @@ export const parseRequirements = createServerFn({ method: "POST" })
     try {
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        const final = sanitizeVisitTime(await enforceInferIfRequested(first));
-        logParsedSummary("final(gemini)", final);
-        return final;
+        return sanitizeVisitTime(await enforceInferIfRequested(first));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        const final = sanitizeVisitTime(await enforceInferIfRequested(second));
-        logParsedSummary("final(gpt-5-mini)", final);
-        return final;
+        return sanitizeVisitTime(await enforceInferIfRequested(second));
       }
 
     } catch (e) {
@@ -1778,15 +1728,9 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
     // 这样单个 cuisine 失败不会拖垮整次搜索。
     const rankOneGroup = async (
       group: GroupForPrompt,
-      opts?: { rerank?: boolean },
     ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
-      const rerankSuffix = opts?.rerank
-        ? `\n\n## 独立复核（重要）\n这是对同一批候选的**第二次独立核验**。请忽略任何先前结论，重新阅读候选资料，对每个条件**重新评估证据是否真的充分**。只在你确实能在候选数据里找到明确证据时才标 "ok"；证据模糊或间接 → 务必标 "unknown" 并把 confidence 控制在 40–70。`
-        : "";
-      const prompt = buildPromptForGroup(group) + rerankSuffix;
+      const prompt = buildPromptForGroup(group);
       const startedAt = Date.now();
-
-
 
       const RAW_FORMAT_HARD_RULES = `\n\n**输出格式硬约束**：
 - 第一个字符必须是 "{"，最后一个字符必须是 "}"。
@@ -1825,7 +1769,6 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         const result = await generateText({
           model,
           prompt,
-          temperature: 0,
           maxOutputTokens: 12000,
           output: Output.object({
             schema: AiPickGroupSchema,
@@ -1833,7 +1776,6 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             description: `AI ranking of real candidates for cuisine "${group.cuisine}"`,
           }),
         });
-
         console.log(
           `[Echo/AI-rank] "${group.cuisine}" Output.object ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
         );
@@ -1850,10 +1792,8 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
               prompt +
               `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。` +
               RAW_FORMAT_HARD_RULES,
-            temperature: 0,
             maxOutputTokens: 20000,
           });
-
           const finishReason = (fb as { finishReason?: string }).finishReason;
           if (finishReason === "length" || finishReason === "max-tokens") {
             throw new Error(`truncated (finishReason=${finishReason})`);
@@ -1873,10 +1813,8 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             const slimFb = await generateText({
               model,
               prompt: buildSlimPrompt(),
-              temperature: 0,
               maxOutputTokens: 20000,
             });
-
             const slimFinish = (slimFb as { finishReason?: string }).finishReason;
             if (slimFinish === "length" || slimFinish === "max-tokens") {
               throw new Error(`slim truncated (finishReason=${slimFinish})`);
@@ -1895,57 +1833,6 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
       }
     };
 
-    type Pick = z.infer<typeof AiPickSchema>;
-
-    // 判定一个 pick 是否"模糊" → 触发复跑
-    const isFuzzyPick = (p: Pick): boolean => {
-      const allChecks = [...(p.hardFilterChecks ?? []), ...(p.matchDetails ?? [])];
-      for (const c of allChecks) {
-        if (c.status === "unknown") return true;
-        const conf = typeof c.confidence === "number" ? c.confidence : 50;
-        if (conf >= 60 && conf <= 78) return true;
-      }
-      return false;
-    };
-
-    // 合并两次 pick：status OR-合并（ok > unknown > fail），confidence 取较大者
-    const mergeStatus = (a: "ok" | "unknown" | "fail", b: "ok" | "unknown" | "fail") => {
-      if (a === "ok" || b === "ok") return "ok" as const;
-      if (a === "unknown" || b === "unknown") return "unknown" as const;
-      return "fail" as const;
-    };
-    const mergeChecks = <T extends { status: "ok" | "unknown" | "fail"; confidence: number }>(
-      first: T[],
-      second: T[],
-    ): T[] => {
-      const out: T[] = [];
-      const len = Math.max(first.length, second.length);
-      for (let i = 0; i < len; i++) {
-        const a = first[i];
-        const b = second[i];
-        if (!a) { out.push(b); continue; }
-        if (!b) { out.push(a); continue; }
-        const status = mergeStatus(a.status, b.status);
-        const winner = a.status === status ? a : b;
-        out.push({
-          ...winner,
-          status,
-          confidence: Math.max(a.confidence ?? 50, b.confidence ?? 50),
-        });
-      }
-      return out;
-    };
-    const mergePicks = (first: Pick, second: Pick): Pick => ({
-      ...first,
-      matchScore: Math.max(first.matchScore, second.matchScore),
-      matchTier: first.matchScore >= second.matchScore ? first.matchTier : second.matchTier,
-      aiSummary: second.aiSummary?.trim() ? second.aiSummary : first.aiSummary,
-      pros: second.pros?.length ? second.pros : first.pros,
-      cons: second.cons?.length ? second.cons : first.cons,
-      hardFilterChecks: mergeChecks(first.hardFilterChecks ?? [], second.hardFilterChecks ?? []),
-      matchDetails: mergeChecks(first.matchDetails ?? [], second.matchDetails ?? []),
-    });
-
     yield { type: "stage", stage: "rank" };
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
@@ -1957,30 +1844,13 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           batches.push(group.candidates.slice(i, i + BATCH_SIZE));
         }
         const batchPicks = await Promise.all(batches.map(async (batch) => {
-          const first = await rankOneGroup({ ...group, candidates: batch });
-          const fuzzyIds = new Set(first.picks.filter(isFuzzyPick).map((p) => p.placeId));
-          if (fuzzyIds.size === 0) return first.picks;
-
-          const fuzzyCandidates = batch.filter((c) => fuzzyIds.has(c.placeId));
-          const rerunStart = Date.now();
-          const second = await rankOneGroup(
-            { ...group, candidates: fuzzyCandidates },
-            { rerank: true },
-          );
-          console.log(
-            `[Echo/AI-rank] "${group.cuisine}" fuzzy=${fuzzyIds.size}/${first.picks.length} reran in ${Date.now() - rerunStart}ms`,
-          );
-          const secondById = new Map(second.picks.map((p) => [p.placeId, p]));
-          return first.picks.map((p) => {
-            const s = secondById.get(p.placeId);
-            return s ? mergePicks(p, s) : p;
-          });
+          const res = await rankOneGroup({ ...group, candidates: batch });
+          return res.picks;
         }));
         return { cuisine: group.cuisine, picks: batchPicks.flat() };
       })),
       "rank",
     );
-
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
     );
@@ -2038,25 +1908,10 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
                   },
           };
         });
-        // 先算 negStatuses 以便纳入 verificationStatus（与 hard 同档）
-        const negStatusesPre = (() => {
-          const aiDetailsPre = pick?.matchDetails ?? [];
-          return data.negativeFilters.map((_, i) => {
-            const detail = aiDetailsPre[softCount + i];
-            if (!detail) return "unknown" as const;
-            return (detail.confidence ?? 50) >= 70 ? detail.status : ("unknown" as const);
-          });
-        })();
-        const hardBlockingFail = checks.some(
+        const hasBlockingFail = checks.some(
           ({ filter, check }) => check.status === "fail" && filter.weight >= 0.85,
         );
-        const negBlockingFail = data.negativeFilters.some(
-          (n, i) => n.weight >= 0.85 && negStatusesPre[i] === "fail",
-        );
-        const hasBlockingFail = hardBlockingFail || negBlockingFail;
-        const hardUnknown = checks.some(({ check }) => check.status === "unknown");
-        const negUnknown = negStatusesPre.some((s) => s === "unknown");
-        const hasUnknown = hardUnknown || negUnknown;
+        const hasUnknown = checks.some(({ check }) => check.status === "unknown");
         const verificationStatus = hasBlockingFail ? "fail" : hasUnknown ? "unknown" : "ok";
 
         const hardDetails = checks.map(({ filter, check }) => {
@@ -2082,8 +1937,10 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         const breakdown: { label: string; delta: number }[] = [];
 
         // Layer 1 准入层
-        const negStatuses = negStatusesPre;
-        const negFailHeavy = negBlockingFail;
+        const negStatuses = nonHardDetails.slice(softCount, softCount + negCount).map((d) => d.status);
+        const negFailHeavy = data.negativeFilters.some(
+          (n, i) => n.weight >= 0.85 && negStatuses[i] === "fail",
+        );
         const reviewCount = p.userRatingCount ?? 0;
         const adjRating = p.rating != null
           ? (p.rating * reviewCount + BAYES_GLOBAL_MEAN * BAYES_C) / (reviewCount + BAYES_C)
@@ -2140,16 +1997,14 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           matchScore -= softPenalty;
           breakdown.push({ label: isEn ? "Soft preference fails" : "软偏好未中", delta: -Math.round(softPenalty) });
         }
-        // Negative fails / unknowns — 与 hard 同档（fail × 10.7，unknown × 2.7）
-        let negDeduct = 0;
+        // Negative fails
+        let negPenalty = 0;
         for (let i = 0; i < negCount; i++) {
-          const w = data.negativeFilters[i].weight;
-          if (negStatuses[i] === "fail") negDeduct += w * 10.7;
-          else if (negStatuses[i] === "unknown") negDeduct += w * 2.7;
+          if (negStatuses[i] === "fail") negPenalty += data.negativeFilters[i].weight * 13.3;
         }
-        if (negDeduct > 0) {
-          matchScore -= negDeduct;
-          breakdown.push({ label: isEn ? "Avoidance penalties" : "避雷扣分", delta: -Math.round(negDeduct) });
+        if (negPenalty > 0) {
+          matchScore -= negPenalty;
+          breakdown.push({ label: isEn ? "Avoidance hits" : "命中避雷", delta: -Math.round(negPenalty) });
         }
         // Dish hits (cap +16)
         let dishBonus = 0;
