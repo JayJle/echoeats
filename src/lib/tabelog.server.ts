@@ -7,13 +7,23 @@
 
 export type TabelogPriceJPY = { low: number | null; high: number | null };
 
+export type TabelogEvidence = {
+  matchEvidence: string[];
+  fieldEvidence: string[];
+  reviewEvidence: string[];
+  pageSignals: string[];
+};
+
+// rating/reviewCount/priceRange/summary 默认 null：由下游 DeepSeek 排序时从 evidence 中提取。
+// 保留这些字段是为了 UI 兼容；displayFields 合并后会覆盖。
 export type TabelogInfo = {
-  rating: string | null; // 例 "3.62"
-  reviewCount: number | null; // 例 412
-  url: string | null; // tabelog 店铺页 URL（必须包含 tabelog.com）
-  priceRange: string | null; // 例 "￥6,000〜￥7,999"（原文）
-  priceJPY: TabelogPriceJPY | null; // 解析后的数字区间（JPY）
-  summary: string | null; // 1-2 句中文摘要
+  rating: string | null;
+  reviewCount: number | null;
+  url: string | null;
+  priceRange: string | null;
+  priceJPY: TabelogPriceJPY | null;
+  summary: string | null;
+  evidence: TabelogEvidence | null;
 };
 
 const cache = new Map<string, TabelogInfo | null>();
