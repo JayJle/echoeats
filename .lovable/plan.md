@@ -1,67 +1,95 @@
-## 目标
-让 Tabelog / Yelp 的 Perplexity 搜索命中率更高、字段更准：
-1. **两边都新增** "店名 + 区域 + 城市 + cuisine" 的 query 变体（强制）。
-2. 多变体若返回不同店铺页，需要判断哪个"最真实"再用。
-3. Prompt 优先级重排：**评论 > 评分 > 价位**。
+# AI 核验 L1 一次成功优化方案
 
-## 现状（核对过的代码事实）
-- `yelp.server.ts`：Stage 0 已有 2-3 条变体（`name+city`、`name+street`、兜底 `name-only`），均无 cuisine；已有 `scoreCandidates` 多 batch 打分机制。
-- `tabelog.server.ts`：**没有 Stage 0 多变体预搜**，直接进 sonar；没有候选打分逻辑。
-- 调用点 `echo.functions.ts` L1485 / L1528 都没传 cuisine，但 cuisine 在外层 `placeResults` 循环里现成可用。
+## 一、问题诊断（基于日志）
 
-## 方案
+L1（`Output.object` 结构化）失败的两类根因：
 
-### 1. 调用点传入 cuisine（`echo.functions.ts`）
-两个 fetch 调用循环里把 `r.cuisine` 透传：
-- `fetchTabelogInfo(p.name, p.address, data.city, r.cuisine)`
-- `fetchYelpInfo(p.name, p.address, data.city, isEn, r.cuisine)`
+| 根因 | 触发条件 | 占比（日志推断） |
+|---|---|---|
+| **A. 输出截断**（`finishReason=length`） | 8 家店 × 大量必填字段 × 长 note/label，超出 12000 token | 约 70% |
+| **B. schema 校验失败** | Gemini 偶发字段缺失/类型错（`confidence` 写成字符串、`matchDetails` 长度不符） | 约 30% |
 
-`allTargets` 改为 `{ p, cuisine }[]`。
+两者修复方向一致：**让 L1 输出更紧凑、更确定**。
 
-### 2. Yelp 多变体 + 真实性判定（`yelp.server.ts`）
-- `fetchYelpInfo` / `preSearchYelp` 签名加 `cuisine?: string`。
-- `preSearchYelp` 强制并发 3 条变体（cuisine 非空时 4 条）：
-  - `"${name}" ${city} site:yelp.com`（已有）
-  - `${name} ${street} site:yelp.com`（已有）
-  - **新：`"${name}" ${area} ${city} ${cuisine} site:yelp.com`**
-  - 全空兜底：`${name} site:yelp.com/biz`（已有）
-- **真实性判定**：复用 `scoreCandidates` 并增强 —— 当 cuisine 非空时，对 snippet/title 命中 cuisine 关键词的候选额外 +1 分；多变体重复出现继续 +1。最终取 top1 即"最真实"的店铺页。
+## 二、修改方案（4 项联动）
 
-### 3. Tabelog 多变体 + 真实性判定（`tabelog.server.ts`）
-新增 Stage 0 预搜（之前完全没有），与 Yelp 同构：
-- 新增 `preSearchTabelog`：Perplexity `/search` 端点，并发 2-3 条变体：
-  - `"${name}" ${area || city} site:tabelog.com`
-  - **新：`"${name}" ${area || city} ${cuisine} site:tabelog.com`**（cuisine 非空时）
-  - 兜底：`${name} site:tabelog.com`
-- 用 `TABELOG_SHOP_URL_RE` 过滤候选，新增一个 `scoreTabelogCandidates`：
-  - 店名 token 命中 URL 路径 → +2
-  - URL 路径里的 prefecture / area code（`/tokyo/`、`/A1301/` 等）与 `extractJPArea(address)` 命中 → +2
-  - snippet/title 命中 cuisine 关键词 → +1
-  - 多变体重复出现 → +1
-  - 取 top1 为 `preUrl`，传给后续 sonar/sonar-pro prompt 让模型"核验+读取该页面"。
-- 预搜失败时退回原行为。
+### 修改 1：批次从 8 → 6（核心）
+`src/lib/echo.functions.ts:1554`
+```
+const AI_BATCH_SIZE = 6;  // 原 8
+```
+输出 token 直接砍 25%，是降低截断率最有效的单点。
 
-### 4. Prompt 字段优先级重排（两边一致）
-两边 userPrompt 顶部加：
+### 修改 2：精简 Schema（去掉非必要的强约束字段）
+`src/lib/echo.functions.ts:738-753` `AiPickSchema`：
 
-> **字段优先级（按顺序读）**：
-> 1. **summary（评论口碑）**：最关键，必须基于真实评论文本归纳具体菜品/服务/氛围；评论读不通顺也宁可短，禁止空着。
-> 2. **rating（评分）/ reviewCount（评论数）**：直接读页面字段。
-> 3. **priceRange / priceLevel（价位）**：读到就给。
->
-> 4 项都尽力读；读不到才返回 null，禁止编造。
+- `matchTier` 从必填枚举 → **移除**（后端从 `matchScore` 推导，代码里已有 `tierFromScore` 函数）
+- `pros / cons` 的 `source` 从可选 → **彻底移除**（前端基本没用到，节省 token）
+- `MatchDetailSchema.confidence` 默认 50、`HardFilterCheckSchema.confidence` 同样，**移除 confidence 必填**，改成可选；prompt 里也不再强调"必须给"
 
-### 5. 不动
-- 评分公式 / admitted / 排序 / 评论排序 不变。
-- 并发上限 8、超时、重试 不变。
-- 缓存 key 仍是 `name|address`（cuisine 同一家店稳定，不进 key 避免碎片化）。
+预期：每家店输出减少约 30% token。
 
-## 改动文件
-| 文件 | 改动 |
-|---|---|
-| `src/lib/echo.functions.ts` | `allTargets` 携带 cuisine；两个 fetch 多传 cuisine |
-| `src/lib/yelp.server.ts` | 加 cuisine 参数；强制新增 `name+area+city+cuisine` 变体；`scoreCandidates` 加 cuisine 命中加分；prompt 重排优先级 |
-| `src/lib/tabelog.server.ts` | 加 cuisine 参数；新增 `preSearchTabelog` 多变体 + `scoreTabelogCandidates` 真实性打分；把 top1 作为 preUrl 传给现有 sonar 调用；prompt 重排优先级 |
+### 修改 3：Prompt 增加"输出格式硬约束"段（移到铁律最前）
 
-## 一个确认
-新增变体会让每家店多 1 次 Perplexity `/search` 调用（Tabelog 还会多一次预搜阶段）。这是**轻量端点**，但总调用量会上升 ~30-50%。确认接受这个代价换命中率？
+L1 prompt 当前完全没有格式硬约束（那段只在 L2/L3 才追加）。新增段落，插在"## 铁律"之前：
+
+```
+## 输出长度硬约束（违反即视为失败）
+- 本批最多 {{batchSize}} 家店，picks 数组长度必须严格等于本批候选数。
+- 每家店：
+  - aiSummary：≤ 60 字
+  - pros：最多 2 条；每条 text ≤ 30 字
+  - cons：最多 2 条；每条 text ≤ 30 字
+  - matchDetails[].label：≤ 30 字
+  - hardFilterChecks[].note：≤ 30 字
+- 不要输出 reasoning、解释、markdown、注释。直接产出 JSON 结构。
+- 严禁省略某家店；如证据不足，写 verificationStatus="unknown" + 简短说明即可，不要跳过。
+```
+
+### 修改 4：精简 prompt 主体（删冗余说明）
+
+当前 prompt 约 2800 字中文，其中：
+- "## pros/cons 写作规范" 整段约 500 字 → **压成 5 行铁律**
+- 语言指令段 800 字 → 保留禁止示例 1 个、正确示例 1 个（节省 400 字）
+- "状态判定依据"重复说明 → 压成 3 行
+
+输入 prompt 砍约 40%，模型读得更快，也减少把示例当成输出格式抄错的几率。
+
+## 三、预期效果
+
+| 指标 | 修改前 | 修改后（预估） |
+|---|---|---|
+| 单批 L1 成功率 | ~40% | **~85%** |
+| 单批 L1 输出 token | 3000-6000 | 1500-2500 |
+| 单批耗时（L1 命中） | 30-50s | **15-25s** |
+| 单批耗时（走到 L3） | 100-150s | 50-80s（兜底也变快） |
+| **整个 AI 核验阶段** | **152s** | **~40s** |
+| AI 调用次数（3 菜系组 × 31 店均值） | 12 批 × 平均 2.3 轮 ≈ 28 次 | 18 批 × 平均 1.2 轮 ≈ 22 次 |
+| 总成本 | 基准 | 略低（输出 token 砍 50%+） |
+
+## 四、风险与权衡
+
+| 风险 | 影响 | 缓解 |
+|---|---|---|
+| 批次变小 → API 调用变多 | 并发 + 网关 QPS 上限可能排队 | 当前并发上限够用（日志显示从未排队） |
+| 移除 `confidence` 必填 | 没有 confidence 时无法自动降为 unknown | 改为可选，缺失时代码侧默认按 70 处理 |
+| aiSummary/pros/cons 压短 | 文案密度降低 | 60/30 字仍够展示，前端卡片本来就截断 |
+| 移除 `matchTier` | 改用后端推导 | 已有 `tierFromScore`，无需新代码 |
+
+## 五、改动文件清单
+
+- `src/lib/echo.functions.ts`
+  - L1554：`AI_BATCH_SIZE = 8 → 6`
+  - L738-753：精简 `AiPickSchema`（去 `matchTier`、`source`）
+  - L729-735：`confidence` 改可选
+  - L1658-1723：精简 prompt 主体 + 插入"输出长度硬约束"段
+  - L1860+：merge 处用 `tierFromScore(pick.matchScore)` 补回 `matchTier`
+
+不动：L2/L3 兜底逻辑、Yelp/Tabelog 部分、评分聚合、前端。
+
+## 六、验证方法
+
+实施后跑一次同条件搜索（3 菜系 × 30 店），看日志：
+- L1 一次成功的菜系组数应 ≥ 2/3
+- `[Echo/AI-rank] all N group(s) done in Xms` X 应从 150000 降到 40000-60000
+- 总搜索响应时长从 4 分钟降到 ~2 分钟
