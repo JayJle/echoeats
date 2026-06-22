@@ -2038,10 +2038,25 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
                   },
           };
         });
-        const hasBlockingFail = checks.some(
+        // 先算 negStatuses 以便纳入 verificationStatus（与 hard 同档）
+        const negStatusesPre = (() => {
+          const aiDetailsPre = pick?.matchDetails ?? [];
+          return data.negativeFilters.map((_, i) => {
+            const detail = aiDetailsPre[softCount + i];
+            if (!detail) return "unknown" as const;
+            return (detail.confidence ?? 50) >= 70 ? detail.status : ("unknown" as const);
+          });
+        })();
+        const hardBlockingFail = checks.some(
           ({ filter, check }) => check.status === "fail" && filter.weight >= 0.85,
         );
-        const hasUnknown = checks.some(({ check }) => check.status === "unknown");
+        const negBlockingFail = data.negativeFilters.some(
+          (n, i) => n.weight >= 0.85 && negStatusesPre[i] === "fail",
+        );
+        const hasBlockingFail = hardBlockingFail || negBlockingFail;
+        const hardUnknown = checks.some(({ check }) => check.status === "unknown");
+        const negUnknown = negStatusesPre.some((s) => s === "unknown");
+        const hasUnknown = hardUnknown || negUnknown;
         const verificationStatus = hasBlockingFail ? "fail" : hasUnknown ? "unknown" : "ok";
 
         const hardDetails = checks.map(({ filter, check }) => {
