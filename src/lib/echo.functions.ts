@@ -532,12 +532,16 @@ export const parseRequirements = createServerFn({ method: "POST" })
     try {
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        return sanitizeVisitTime(await enforceInferIfRequested(first));
+        const final = sanitizeVisitTime(await enforceInferIfRequested(first));
+        logParsedSummary("final(gemini)", final);
+        return final;
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        return sanitizeVisitTime(await enforceInferIfRequested(second));
+        const final = sanitizeVisitTime(await enforceInferIfRequested(second));
+        logParsedSummary("final(gpt-5-mini)", final);
+        return final;
       }
 
     } catch (e) {
