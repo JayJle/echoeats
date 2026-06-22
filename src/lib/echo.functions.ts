@@ -724,10 +724,10 @@ const HardFilterCheckSchema = z.preprocess(
         undefined;
       return { ...obj, filter, note, status: obj.status ?? "unknown", confidence: obj.confidence ?? 50 };
     }
-    return { filter: "", status: "unknown", confidence: 50 };
+    return { status: "unknown", confidence: 50 };
   },
   z.object({
-    filter: z.string().catch("").default(""),
+    filter: z.string().optional(),
     status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
     note: z.string().optional(),
     confidence: z.coerce.number().min(0).max(100).catch(50).default(50),
