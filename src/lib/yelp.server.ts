@@ -12,6 +12,7 @@ export type YelpInfo = {
   url: string | null;
   priceLevel: "$" | "$$" | "$$$" | "$$$$" | null;
   summary: string | null;
+  signals: string[]; // 后台隐藏评论信号，最多 8 条
   confidence: YelpConfidence;
 };
 
