@@ -522,7 +522,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         !userProvidedCuisines &&
         parsed.cuisines.length > 0 &&
         !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
-      return dedupeParsedConditions(parsed);
+      return await semanticDedupe(dedupeParsedConditions(parsed), data.freeText ?? "", gateway);
     };
 
     const logParsedSummary = (label: string, p: z.infer<typeof ParsedSchema>) => {
