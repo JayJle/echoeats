@@ -1062,7 +1062,7 @@ export type SearchStreamChunk =
   | { type: "review-progress"; done: number; total: number }
   | { type: "tabelog-progress"; done: number; total: number }
   | { type: "yelp-progress"; done: number; total: number }
-  | { type: "heartbeat"; stage: string }
+  | { type: "heartbeat"; stage: string; done?: number; total?: number }
   | { type: "result"; payload: SearchResponse };
 
 // 把 Promise 数组按完成顺序流出。
@@ -1082,6 +1082,7 @@ async function* withHeartbeat<T>(
   p: Promise<T>,
   stage: string,
   intervalMs = 4000,
+  progress?: () => { done: number; total: number },
 ): AsyncGenerator<SearchStreamChunk, T, unknown> {
   let settled = false;
   let value: T | undefined;
@@ -1103,7 +1104,12 @@ async function* withHeartbeat<T>(
       tracked,
       new Promise<void>((r) => setTimeout(r, intervalMs)),
     ]);
-    if (!settled) yield { type: "heartbeat", stage };
+    if (!settled) {
+      const prog = progress?.();
+      yield prog
+        ? { type: "heartbeat", stage, done: prog.done, total: prog.total }
+        : { type: "heartbeat", stage };
+    }
   }
   if (isError) throw error;
   return value as T;
@@ -1540,12 +1546,22 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
     const yelpById = new Map<string, YelpInfo>();
     if (pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
+      // 只对"会进入 AI 排序"的候选做 Perplexity 富化，按 cuisine 取头部，避免给被裁掉的项目白跑。
+      // 与下游 rankOneGroup 的 BATCH_SIZE=12 对齐，留一点冗余覆盖一个 batch 用量。
+      const YELP_PER_CUISINE = 12;
       const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
       for (const r of placeResults) {
-        for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
+        const ranked = [...r.places].sort((a, b) => {
+          const sa = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
+          const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
+          return sb - sa;
+        });
+        for (const p of ranked.slice(0, YELP_PER_CUISINE)) {
+          allTargets.push({ p, cuisine: r.cuisine });
+        }
       }
       yield { type: "stage", stage: "yelp", total: allTargets.length };
-      const CONCURRENCY = 8;
+      const CONCURRENCY = 16;
       let cursor = 0;
       const runWorker = async () => {
         while (true) {
@@ -1920,7 +1936,9 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
       }
     };
 
-    yield { type: "stage", stage: "rank" };
+    const rankTotal = candidatesForPrompt.length;
+    let rankDone = 0;
+    yield { type: "stage", stage: "rank", count: 0, total: rankTotal };
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
     const groupResults = yield* withHeartbeat(
@@ -1934,9 +1952,12 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
           const res = await rankOneGroup({ ...group, candidates: batch });
           return res.picks;
         }));
+        rankDone++;
         return { cuisine: group.cuisine, picks: batchPicks.flat() };
       })),
       "rank",
+      4000,
+      () => ({ done: rankDone, total: rankTotal }),
     );
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
