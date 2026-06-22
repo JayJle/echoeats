@@ -1772,10 +1772,29 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
               ? c.editorialSummary.slice(0, 60)
               : c.editorialSummary,
             tabelog: c.tabelog
-              ? { ...c.tabelog, summary: c.tabelog.summary ? c.tabelog.summary.slice(0, 30) : null }
+              ? {
+                  ...c.tabelog,
+                  evidence: c.tabelog.evidence
+                    ? {
+                        ...c.tabelog.evidence,
+                        // slim: 减少 reviewEvidence + pageSignals
+                        reviewEvidence: c.tabelog.evidence.reviewEvidence.slice(0, 3),
+                        pageSignals: c.tabelog.evidence.pageSignals.slice(0, 2),
+                      }
+                    : null,
+                }
               : c.tabelog,
             yelp: c.yelp
-              ? { ...c.yelp, summary: c.yelp.summary ? c.yelp.summary.slice(0, 30) : null }
+              ? {
+                  ...c.yelp,
+                  evidence: c.yelp.evidence
+                    ? {
+                        ...c.yelp.evidence,
+                        reviewEvidence: c.yelp.evidence.reviewEvidence.slice(0, 3),
+                        pageSignals: c.yelp.evidence.pageSignals.slice(0, 2),
+                      }
+                    : null,
+                }
               : c.yelp,
           })),
         } as GroupForPrompt;
