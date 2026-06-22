@@ -278,11 +278,28 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - **氛围 / 装修 / 服务态度** 这类主观偏好基线 ≤ 0.7。
 - 避雷条目：「不要 X」=0.7，「绝对不要 X」=1.0。
 
-## 边界与去重
+## 边界与去重（极重要，输出前必须自检）
 
+输出之前你必须把以下三类**语义重复**合并掉，绝不允许同一个诉求出现多次：
+
+1. **同一个数组内的语义重复**：同一个诉求只能保留一条。例如用户说了"环境要好一点 / 环境精美 / 环境好 / 环境稍微好 / 氛围不错"，这些都在表达"店内环境/氛围要好"，最终在 softPreferences 里只能出现**一条**（如"环境好"），weight 取所有同义说法里的**最高值**。
+2. **跨数组重复**：如果同一个诉求同时落到 hardFilters / softPreferences / negativeFilters，只保留**最高等级**的那一个数组（优先级：negativeFilters > hardFilters > softPreferences），其它数组里不允许再出现。weight 也取最高值。
+3. **不要因为用户在原文里重复说了多次（口语啰嗦、复述、同义改写）就重复输出**。你要做语义合并，不是逐句抽取。
+
+合并示例：
+- 用户原文："菜品必须精美，然后的话环境精美，口碑要好，环境好，服务员态度要好。环境稍微好。"
+  - hardFilters: [{"text":"菜品必须精美","weight":0.9}]
+  - softPreferences: [
+      {"text":"环境好","weight":0.7},            ← 合并"环境精美/环境好/环境稍微好/环境要好一点"
+      {"text":"口碑要好","weight":0.7},
+      {"text":"服务员态度要好","weight":0.7}
+    ]
+  - 不要出现："环境精美" + "环境好" + "环境稍微好" 三条并列。
+
+其它约束：
 - 否定句一律进 negativeFilters，不要再复制到 hardFilters。
-- 同一条只放一个数组里，不要重复。
-- 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
+- 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。dishPreferences 之间是不同菜品（"鳗鱼饭"和"刺身"是两道菜），不要合并。
+
 
 ## 示例
 
