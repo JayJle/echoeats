@@ -526,7 +526,7 @@ import {
   filterByCuisineRelevance,
   type CuisineExpansion,
 } from "./cuisine-expand.server";
-import { fetchTabelogInfo, type TabelogInfo } from "./tabelog.server";
+import { fetchTabelogInfo, parseTabelogPriceJPY, type TabelogInfo } from "./tabelog.server";
 import { fetchYelpInfo, type YelpInfo } from "./yelp.server";
 
 const YELP_COUNTRIES = new Set(["US", "CA", "FR", "IT", "DE", "ES", "GB"]);
