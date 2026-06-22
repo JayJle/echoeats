@@ -1640,89 +1640,193 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       data.negativeFilters.map((n) => ({ text: n.text, weight: n.weight })),
     );
     const nonHardFilters = [
-      ...data.softPreferences.map((item) => ({ kind: "preference", text: item.text })),
-      ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: item.text })),
+      ...data.softPreferences.map((item) => ({ type: "softPreference", text: item.text, weight: item.weight })),
+      ...data.negativeFilters.map((item) => ({ type: "negativeFilter", text: item.text, weight: item.weight })),
       ...data.dishPreferences
         .filter((dish) => !data.hardFilters.some((filter) => filter.text.includes(dish)))
-        .map((text) => ({ kind: "dish", text })),
+        .map((text) => ({ type: "dishPreference", text, weight: 0.7 })),
     ];
+    const nonHardFiltersJson = JSON.stringify(nonHardFilters);
+    const HARD_COUNT = hardFiltersList.length;
+    const DETAIL_COUNT = nonHardFilters.length;
+    const humanLanguage = isEn ? "en" : "zh-CN";
 
     const langDirective = isEn
-      ? `\n## OUTPUT LANGUAGE (MANDATORY, ZERO TOLERANCE)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English only**. **No CJK characters are allowed in any of those fields**, not even as quoted source snippets. If the source review is in Chinese, paraphrase it into concise English and DROP the original Chinese — do NOT include the Chinese phrase in quotes followed by a translation.\n\nBad (forbidden):\n  - "Reviews mention '氛围复古有特色' (retro and unique atmosphere)"\n  - "高峰期可能要等位 (may have to wait during peak hours)"\nGood:\n  - "Diners praise the retro, characterful atmosphere"\n  - "May involve a wait during peak hours"\n\nRule of thumb: if any character matches /[\\u4e00-\\u9fff]/ in those fields, the output is invalid — rewrite it in pure English. Keep \`placeId\` and any enum/status values exactly as specified.\n`
-      : `\n## 输出语言（强制，零容忍）\n你产出的**所有人类可读字符串字段** — aiSummary、pros、cons、matchDetails[].label、hardFilterChecks[].note — **必须用简体中文撰写**。**这些字段里禁止整句堆砌英文/日文/拉丁字符**，即使候选数据里的评论是英文或日文，也必须**转写为简体中文**，不要原文照搬，也不要"原文 + 括号翻译"的写法。\n\n禁止（错误示例）：\n  - "Reviews emphasize the deliciousness and 'obsession with meat' by the chef"\n  - "The address in Chuo Ward, Sapporo, is a central location."\n  - "肉への こだわり (chef's obsession with meat) is highly praised"\n正确：\n  - "评论强调食材新鲜，盛赞主厨对肉品质的执着"\n  - "地址位于札幌中央区，属于市中心区域"\n  - "多条评论提到主厨对肉品质的执着"\n\n判定铁律：matchDetails[].label 与 hardFilterChecks[].note 任意一条若整句不含任何 CJK 汉字（即整段都是拉丁字母/英文单词），即视为违规输出，必须重写为简体中文。专有名词（店名、地铁站名、人名）可保留原文，但句子主体必须是中文。\\\`placeId\\\` 和 enum/status 值按规范原样保留。\n`;
+      ? `\n## OUTPUT LANGUAGE (MANDATORY, ZERO TOLERANCE)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English only**. **No CJK characters are allowed in any of those fields**, not even as quoted source snippets. If the source review is in Chinese/Japanese, paraphrase it into concise English. Keep \`placeId\` and any enum/status values exactly as specified.\n`
+      : `\n## 输出语言（强制，零容忍）\n所有人类可读字段（aiSummary、pros.text、cons.text、matchDetails[].label、hardFilterChecks[].note）必须用简体中文撰写。即使评论原文是英文/日文，也必须转写为简体中文，不要"原文 + 括号翻译"。专有名词（店名、地铁站名、人名）可保留原文。placeId 和 enum/status 值按规范原样保留。\n`;
 
 
     type GroupForPrompt = (typeof candidatesForPrompt)[number];
 
-    // 单 cuisine 的 prompt：只塞当前 cuisine 的候选 + 该 cuisine 的扩展词，输出体量约为
-    // 原来的 1/N（N = cuisine 数），从根本上避免触发 maxOutputTokens 截断。
+    // v4 prompt：picks 必须覆盖所有 candidates（含 fail/unknown），下游按 verificationStatus 分桶。
     const buildPromptForGroup = (group: GroupForPrompt) => {
-  const exp = cuisineExpansions.get(group.cuisine);
-  const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
-  const neg =
-    exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
-  const fidelity = exp
-    ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
-    : `- 「${group.cuisine}」：（无额外扩展）`;
+      const exp = cuisineExpansions.get(group.cuisine);
+      const primary = exp?.primary ?? group.cuisine;
+      const synonymsJson = JSON.stringify(exp?.synonyms ?? []);
+      const negativeExamplesJson = JSON.stringify(exp?.negativeKeywords ?? []);
+      const candidatesJson = JSON.stringify(group.candidates);
 
-  return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。${langDirective}
+      return `你是 Echo Eats 的餐厅匹配分析师。
 
-用户需求：
-- 城市：${data.city}
-- 日期/时间：${data.dateTime}
-- 硬条件（带 weight 0-1）：${hardFiltersJson}
-- 偏好（带 weight）：${softJson === "[]" ? "无" : softJson}
-- 避雷（带 weight）：${negJson === "[]" ? "无" : negJson}
-- 菜品偏好：${data.dishPreferences.join("、") || "无"}
+你的任务是：基于用户需求、料理分组规则、Google Places / Tabelog / Yelp 的真实候选数据，对当前 cuisine 分组下的所有候选餐厅进行核验、分桶、评分和解释。
 
-## 验证与分类任务
-请核验列表中的**每一个**餐厅，并将其归入以下三个桶（Buckets）之一：
-1. **ok**：满足所有 weight >= 0.85 的硬条件，且没有明显的负面网评冲突。
-2. **unknown**：没有任何 weight >= 0.85 的条件明确判定为 "fail"，但至少有一个重要条件因为信息不足被标记为 "unknown"。
-3. **fail**：至少有一个 weight >= 0.85 的硬条件被明确判定为 "fail"（不满足）。
+你不是搜索助手，不能查新网页。你只能使用输入 candidates 中已有的信息。
+${langDirective}
+## 1. 角色职责
+1. 核验每一家候选餐厅是否属于当前 cuisine 分组。
+2. 检查每一家餐厅是否满足用户硬条件。
+3. 判断每一家餐厅对非硬条件的匹配程度。
+4. 从真实评论中提取 pros / cons。
+5. 对所有候选餐厅输出核验结果。
 
-## 料理保真（最高优先级）
-${fidelity}
-判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
-- 命中反例关键词且未命中主词/同义词 → **判定为 fail**。
+**picks 必须覆盖所有 candidates，不要删除 fail 或 unknown 餐厅。下游会根据 verificationStatus 决定推荐、降级或过滤。**
 
-候选数据（JSON）：
-${JSON.stringify(group.candidates, null, 2)}
+## 2. 输入数据
 
-## 铁律
-- **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
-- **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
-- **hardFilterChecks 是硬条件的唯一输出位置**：matchDetails 不得复述、改写或重复任何硬条件（包括 Google 评分阈值）。
-- **matchDetails 必须完整覆盖所有非硬条件**：按以下数组顺序逐条返回，长度必须严格等于 ${nonHardFilters.length}，不得遗漏、合并或新增：${JSON.stringify(nonHardFilters)}。
-- 每条 matchDetails.label 必须包含对应用户条件及简短证据；没有资料也必须保留该条件并写明资料不足。
-- **禁止同义重复**：如果 hardFilterChecks 已包含某个主题，matchDetails 不得用另一种语言或近义表达再次输出；尤其禁止重复 Google 评分、靠近车站/地铁、菜品口味等条件。
-- **状态判定依据**（基于整体语义判断，不要机械匹配关键词）：
-  - "ok": 你认为有明确证据支持该条件。
-  - "fail": 你认为有明确证据表明不满足该条件。
-  - "unknown": 资料不足、无法判断、或证据模糊。
-- **必须给 confidence（0–100 整数）**：每条 hardFilterChecks 和 matchDetails 都必须返回一个 confidence 字段，表示你对自己这条判断的把握度。
-  - 85–100：证据非常明确、直接、充分。
-  - 70–84：证据合理，可以下结论。
-  - 40–69：证据模糊、需要推断、间接相关 —— **务必在此区间，不要硬给 ok**。
-  - 0–39：基本是猜测或资料严重不足。
-  - **铁律**：如果你写 "ok" 但证据其实只是"评论赞美整体但没具体提到该条件"，confidence 必须 < 70；系统会自动把它降为 unknown。诚实评估自己的把握度，不要全部给 90+。
-- **面向用户写短句**：hardFilterChecks[].note 和 matchDetails[].label 只写简短结论与依据，建议 20–40 字；禁止展示 PrimaryType、reviewHighlights、editorialSummary、realWorldReviews 等内部字段名，禁止使用"字段 = 值"或连续箭头解释推理过程。
-- **Google 评分是确定性事实**：候选中的 googleRating/rating 来自 Google Places。遇到 Google/谷歌评分阈值条件时必须直接做数值比较；有数值时禁止标为 unknown，也不要用评论文本推断评分。
-- **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
+\`\`\`json
+{
+  "cuisine": "${group.cuisine}",
+  "city": ${JSON.stringify(data.city)},
+  "dateTime": ${JSON.stringify(data.dateTime)},
+  "humanLanguage": "${humanLanguage}",
+  "cuisineExpansion": {
+    "primary": ${JSON.stringify(primary)},
+    "synonyms": ${synonymsJson},
+    "negativeExamples": ${negativeExamplesJson}
+  },
+  "hardFilters": ${hardFiltersJson},
+  "nonHardFilters": ${nonHardFiltersJson},
+  "candidates": ${candidatesJson}
+}
+\`\`\`
 
+- hardFilters.length = ${HARD_COUNT}
+- nonHardFilters.length = ${DETAIL_COUNT}
+- candidates 是 minified JSON，没有额外隐藏字段
 
-## pros / cons 写作规范（与匹配判断完全解耦）
-pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的口碑点"。这一块**只描述这家店在 Google / Tabelog / Yelp 等平台上的真实评价口碑**，与"是否符合用户需求"完全无关——匹配性判断属于 hardFilterChecks 和 matchDetails，不要在 pros/cons 里重复。
-铁律：
-- **数据源限定**：pros/cons 的每一条都必须来自候选数据里的 googleReviews / tabelog / yelp / realWorldReviews / reviewHighlights 等**真实平台评论文本**。禁止用 editorialSummary、地址、营业时间、Google 评分数值、primaryType 等**非评论字段**拼凑 pros/cons。
-- **禁止回扣用户需求**：pros/cons 的文案里**严禁**出现"符合 / 匹配 / 满足 / 命中 / 您的要求 / 用户条件 / 用户需求 / 你想要的 XX"等任何把口碑和用户输入挂钩的措辞；也禁止"评论提到 {用户偏好的菜品/场景/地段}"这种回扣句式。即使某条评论同时印证了一个匹配条件，写进 pros/cons 时也只描述"食客觉得 XX 好/不好"，不要加"因此满足你的 XX 需求"之类的尾巴。
-- **与 matchDetails 去重**：如果某个点已经在 hardFilterChecks / matchDetails 里作为匹配证据出现，pros/cons 这边换一个纯口碑角度写，或者干脆不写，避免上下两块语义重复。
-- **来源标注**：每条 pros/cons 的 source 字段优先填上平台名（Google / Tabelog / Yelp）。
-- **宁缺毋滥**：当某家店在所有平台评论里都找不到足够支撑的口碑点（少于 2 条评论提及）时，pros 或 cons 直接返回空数组 []，不要为了凑数硬写；前端已经有"暂无可信网评 / 暂无明显差评"的兜底文案。
+## 3. 输出格式（严格限定）
 
-输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
-（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
-};
+只输出 JSON 对象。禁止 markdown、代码块、自然语言解释、注释、schema 之外的字段。
+
+\`\`\`json
+{
+  "picks": [
+    {
+      "placeId": "string",
+      "verificationStatus": "ok" | "unknown" | "fail",
+      "matchScore": 0-100 整数,
+      "matchTier": "perfect" | "high" | "partial",
+      "aiSummary": "string",
+      "pros": [{ "text": "string", "source": "string" }],
+      "cons": [{ "text": "string", "source": "string" }],
+      "matchDetails": [{ "label": "string", "status": "ok"|"unknown"|"fail", "confidence": 0-100 }],
+      "hardFilterChecks": [{ "status": "ok"|"unknown"|"fail", "note": "string", "confidence": 0-100 }]
+    }
+  ]
+}
+\`\`\`
+
+candidates 为空时返回 \`{"picks": []}\`。
+
+**禁止字段**：bucket、reason、rank、cuisine、rawScore、debug、sources、confidenceReason、filter。
+
+## 4. picks 覆盖规则（硬约束）
+
+- picks.length 必须严格等于 candidates.length（本批 = ${group.candidates.length}）。
+- picks 必须按 candidates 顺序逐项对应：picks[i] 对应 candidates[i]。
+- 即使餐厅不适合，也必须输出 pick，设置 verificationStatus="fail"，**不要删除**。
+
+## 5. 数组长度与顺序（最高优先级）
+
+### 5.1 hardFilterChecks
+- 长度严格等于 ${HARD_COUNT}，顺序与 hardFilters 完全一致：hardFilterChecks[i] 对应 hardFilters[i]。
+- 每项：\`{ "status", "note": 简短判断说明, "confidence": 0-100 }\`。
+- **不要输出 filter 字段**。
+- hardFilterChecks 是硬条件的唯一输出位置，禁止把硬条件复述进 matchDetails。
+
+### 5.2 matchDetails
+- 长度严格等于 ${DETAIL_COUNT}，顺序与 nonHardFilters 完全一致：matchDetails[j] 对应 nonHardFilters[j]。
+- 每项：\`{ "label": nonHardFilters[j].text, "status", "confidence": 0-100 }\`。
+- matchDetails 是非硬条件的唯一输出位置，禁止把非硬条件复述进 hardFilterChecks。
+
+## 6. verificationStatus 分桶规则
+
+- **ok**：没有任何 weight≥0.85 的 hardFilter 判 fail，且料理保真没有明显失败，主要信息足够支持推荐。
+- **unknown**：没有任何 weight≥0.85 的 hardFilter 明确 fail，但存在重要条件缺少证据无法确认；或料理方向可能匹配但证据不足。
+- **fail**：任意 weight≥0.85 的 hardFilter 明确 fail；或餐厅明显不属于当前 cuisine 分组；或与用户核心需求明显冲突。
+
+fail 餐厅仍然必须保留在 picks 中。
+
+## 7. 料理保真
+
+需检查字段：name、primaryType、editorialSummary、reviewHighlights、realWorldReviews、tabelog.summary、tabelog.signals、yelp.summary、yelp.signals。
+
+- 命中 primary 或 synonyms 且无强冲突 → 料理保真通过。
+- 只命中 negativeExamples 且未命中 primary/synonyms → 料理不符。
+- primaryType 仅为 restaurant/food/point_of_interest 时，**不能单独证明料理匹配**。
+- 料理明显不符 → verificationStatus="fail"，matchScore 明显降低，matchTier 不能是 perfect/high。
+- 料理证据不足但无明显冲突 → verificationStatus 可以是 unknown。
+
+## 8. hardFilters 判定
+
+- ok：有明确证据支持。
+- fail：有明确证据冲突。
+- unknown：证据不足无法确认。
+
+weight≥0.85 的 hardFilter 是强硬条件，任意一项 fail → verificationStatus 必须 fail。weight<0.85 的也要检查，但不一定直接导致 fail。**没有证据必须判 unknown，禁止"看起来可能符合"就判 ok**。
+
+## 9. nonHardFilters 判定
+
+- **negativeFilter**：明确踩中 → fail；明确没踩中 → ok；无法确认 → unknown。
+- **dishPreference**：菜单/评论/summary/signals/真实评论中明确提到 → ok；明确说明不提供 → fail；只是没看到 → unknown（**禁止**因为"没看到"就判 fail）。
+- **softPreference**：按一般证据规则。
+
+## 10. matchScore 与 matchTier
+
+matchScore 是 0-100 整数。matchTier 阈值（与代码完全一致）：
+- matchScore ≥ 92 → perfect
+- matchScore ≥ 80 且 < 92 → high
+- matchScore < 80 → partial
+
+参考刻度：92-100 硬条件全 ok+料理高度匹配+评论强；80-91 主要偏好匹配但有少量 unknown；60-79 多个 unknown 或部分 fail；0-59 料理不符或关键冲突。fail 餐厅可以低分，但**必须输出**。
+
+## 11. confidence
+
+0-100 整数。90-100 直接明确证据；70-89 较强间接证据；40-69 证据有限；0-39 几乎没有证据。
+- status=unknown 时 confidence 通常 ≤ 60。
+- status=fail 时必须有明确冲突证据，confidence 通常 ≥ 70。
+
+## 12. aiSummary
+
+简体中文 20-40 字 / 英文 15-30 words。ok 说明为何适合；unknown 说明信息不足但可能相关；fail 简短说明为何不适合。**不要暴露字段名、不要写 hardFilters/softPreferences/negativeFilters、不要编造评论里没有的信息**。
+
+## 13. pros / cons
+
+**只来自真实评论文本或真实页面摘要**。允许来源：reviewHighlights、realWorldReviews、editorialSummary、tabelog.summary、tabelog.signals、yelp.summary、yelp.signals。
+
+禁止来源：用户需求、hardFilters、nonHardFilters、推测、Google rating 数字本身。
+
+pros/cons 与匹配判断完全解耦——只写真实评论里对餐厅的评价，不要写"符合用户想要的 XX"，也不要把 hardFilterChecks/matchDetails 内容复制进 pros/cons。source 必须是简短来源名："Google reviews" / "Google editorial" / "Tabelog" / "Yelp"。同一事实多源命中时只写一条，优先 Tabelog > Yelp > Google editorial > Google reviews。
+
+没有真实评论证据时 pros 可以是 []，cons 可以是 []。**宁缺毋滥**。
+
+## 14. 去重
+
+hardFilterChecks、matchDetails、pros、cons、aiSummary 之间不要重复同一句话。可以表达同一事实的不同用途，但不能复制同样文案。
+
+## 15. 最终自检
+
+输出前必须内部检查：
+- 只输出 JSON，没有 schema 之外的字段。
+- picks.length === ${group.candidates.length}，顺序与 candidates 完全一致。
+- 每个 pick 有 placeId、有 verificationStatus（只能 ok/unknown/fail）。
+- 每个 pick 的 hardFilterChecks.length === ${HARD_COUNT}，顺序与 hardFilters 一致，**不输出 filter**。
+- 每个 pick 的 matchDetails.length === ${DETAIL_COUNT}，顺序与 nonHardFilters 一致。
+- matchScore 0-100 整数；matchTier 与阈值一致（≥92 perfect，≥80 high，否则 partial）。
+- 所有 confidence 0-100 整数。
+- 所有人类可读字段使用 ${humanLanguage}。`;
+    };
+
 
 
     // 每个 cuisine 独立调用 AI（主调用 + raw 文本兜底）。失败时返回空 picks，不抛出，
