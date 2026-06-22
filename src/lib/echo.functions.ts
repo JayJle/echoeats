@@ -1699,7 +1699,7 @@ ${JSON.stringify(group.candidates, null, 2)}
   - "ok": 你认为有明确证据支持该条件。
   - "fail": 你认为有明确证据表明不满足该条件。
   - "unknown": 资料不足、无法判断、或证据模糊。
-- **必须给 confidence（0–100 整数）**：每条 hardFilterChecks 和 matchDetails 都必须返回一个 `confidence` 字段，表示你对自己这条判断的把握度。
+- **必须给 confidence（0–100 整数）**：每条 hardFilterChecks 和 matchDetails 都必须返回一个 confidence 字段，表示你对自己这条判断的把握度。
   - 85–100：证据非常明确、直接、充分。
   - 70–84：证据合理，可以下结论。
   - 40–69：证据模糊、需要推断、间接相关 —— **务必在此区间，不要硬给 ok**。
