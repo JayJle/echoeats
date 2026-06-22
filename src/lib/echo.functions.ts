@@ -1695,14 +1695,20 @@ ${JSON.stringify(group.candidates, null, 2)}
 - **matchDetails 必须完整覆盖所有非硬条件**：按以下数组顺序逐条返回，长度必须严格等于 ${nonHardFilters.length}，不得遗漏、合并或新增：${JSON.stringify(nonHardFilters)}。
 - 每条 matchDetails.label 必须包含对应用户条件及简短证据；没有资料也必须保留该条件并写明资料不足。
 - **禁止同义重复**：如果 hardFilterChecks 已包含某个主题，matchDetails 不得用另一种语言或近义表达再次输出；尤其禁止重复 Google 评分、靠近车站/地铁、菜品口味等条件。
-- **状态判定依据**：
-  - "ok": 明确证据支持。只要 label 中引用或概述了明确支持该条件的评论/资料，就必须是 ok，绝不能是 unknown。
-  - "fail": 明确证据证实不满足。
-  - "unknown": 确实没有相关证据、资料不足或无法确认。
-- **状态与文案必须一致**：note/label 出现“符合、满足、支持、明确表明、未命中反例”等确定性表达时，status 必须为 ok；出现“可能、很可能、未明确提及、资料不足、无法确认”等表达时，status 必须为 unknown。
-- **面向用户写短句**：hardFilterChecks[].note 和 matchDetails[].label 只写简短结论与依据，建议 20–40 字；禁止展示 PrimaryType、reviewHighlights、editorialSummary、realWorldReviews 等内部字段名，禁止使用“字段 = 值”或连续箭头解释推理过程。
+- **状态判定依据**（基于整体语义判断，不要机械匹配关键词）：
+  - "ok": 你认为有明确证据支持该条件。
+  - "fail": 你认为有明确证据表明不满足该条件。
+  - "unknown": 资料不足、无法判断、或证据模糊。
+- **必须给 confidence（0–100 整数）**：每条 hardFilterChecks 和 matchDetails 都必须返回一个 `confidence` 字段，表示你对自己这条判断的把握度。
+  - 85–100：证据非常明确、直接、充分。
+  - 70–84：证据合理，可以下结论。
+  - 40–69：证据模糊、需要推断、间接相关 —— **务必在此区间，不要硬给 ok**。
+  - 0–39：基本是猜测或资料严重不足。
+  - **铁律**：如果你写 "ok" 但证据其实只是"评论赞美整体但没具体提到该条件"，confidence 必须 < 70；系统会自动把它降为 unknown。诚实评估自己的把握度，不要全部给 90+。
+- **面向用户写短句**：hardFilterChecks[].note 和 matchDetails[].label 只写简短结论与依据，建议 20–40 字；禁止展示 PrimaryType、reviewHighlights、editorialSummary、realWorldReviews 等内部字段名，禁止使用"字段 = 值"或连续箭头解释推理过程。
 - **Google 评分是确定性事实**：候选中的 googleRating/rating 来自 Google Places。遇到 Google/谷歌评分阈值条件时必须直接做数值比较；有数值时禁止标为 unknown，也不要用评论文本推断评分。
 - **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
+
 
 ## pros / cons 写作规范（与匹配判断完全解耦）
 pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的口碑点"。这一块**只描述这家店在 Google / Tabelog / Yelp 等平台上的真实评价口碑**，与"是否符合用户需求"完全无关——匹配性判断属于 hardFilterChecks 和 matchDetails，不要在 pros/cons 里重复。
