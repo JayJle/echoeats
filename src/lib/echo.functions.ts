@@ -730,7 +730,7 @@ const HardFilterCheckSchema = z.preprocess(
     filter: z.string().catch("").default(""),
     status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
     note: z.string().optional(),
-    confidence: z.coerce.number().min(0).max(100).catch(50).default(50),
+    confidence: z.coerce.number().min(0).max(100).catch(70).default(70).optional(),
   }),
 );
 
