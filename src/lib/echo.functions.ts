@@ -735,6 +735,26 @@ const HardFilterCheckSchema = z.preprocess(
 );
 
 
+// DeepSeek 排序时顺手输出的 display 字段（取代之前由 Perplexity 直接产的字段）。
+const YelpDisplaySchema = z.object({
+  rating: z.string().nullable().optional().default(null),
+  reviewCount: z.number().nullable().optional().default(null),
+  priceLevel: z.enum(["$", "$$", "$$$", "$$$$"]).nullable().optional().default(null),
+  summary: z.string().nullable().optional().default(null),
+}).nullable().optional().default(null);
+
+const TabelogDisplaySchema = z.object({
+  rating: z.string().nullable().optional().default(null),
+  reviewCount: z.number().nullable().optional().default(null),
+  priceRange: z.string().nullable().optional().default(null),
+  summary: z.string().nullable().optional().default(null),
+}).nullable().optional().default(null);
+
+const DisplayFieldsSchema = z.object({
+  yelp: YelpDisplaySchema,
+  tabelog: TabelogDisplaySchema,
+}).nullable().optional().default(null);
+
 const AiPickSchema = z.object({
   placeId: z.string(),
   matchScore: z.number().min(0).max(100),
@@ -750,6 +770,7 @@ const AiPickSchema = z.object({
   )).default([]),
   matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
   hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
+  displayFields: DisplayFieldsSchema,
 });
 
 const AiRankingSchema = z.object({
