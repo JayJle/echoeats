@@ -680,7 +680,7 @@ const readableStringFrom = (value: unknown, fallback = "") => {
 
 const MatchDetailSchema = z.preprocess(
   (v) => {
-    if (typeof v === "string") return { label: v, status: "unknown" };
+    if (typeof v === "string") return { label: v, status: "unknown", confidence: 50 };
     if (v && typeof v === "object") {
       const obj = v as Record<string, unknown>;
       const label =
@@ -694,19 +694,20 @@ const MatchDetailSchema = z.preprocess(
         readableStringFrom(obj.evidence) ||
         readableStringFrom(obj.summary) ||
         "Verification detail";
-      return { ...obj, label, status: obj.status ?? "unknown" };
+      return { ...obj, label, status: obj.status ?? "unknown", confidence: obj.confidence ?? 50 };
     }
-    return { label: "", status: "unknown" };
+    return { label: "", status: "unknown", confidence: 50 };
   },
   z.object({
     label: z.string().catch(""),
     status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
+    confidence: z.coerce.number().min(0).max(100).catch(50).default(50),
   }),
 );
 
 const HardFilterCheckSchema = z.preprocess(
   (v) => {
-    if (typeof v === "string") return { filter: v, status: "unknown", note: v };
+    if (typeof v === "string") return { filter: v, status: "unknown", note: v, confidence: 50 };
     if (v && typeof v === "object") {
       const obj = v as Record<string, unknown>;
       const filter =
@@ -721,17 +722,18 @@ const HardFilterCheckSchema = z.preprocess(
         readableStringFrom(obj.evidence) ||
         readableStringFrom(obj.summary) ||
         undefined;
-      return { ...obj, filter, note, status: obj.status ?? "unknown" };
+      return { ...obj, filter, note, status: obj.status ?? "unknown", confidence: obj.confidence ?? 50 };
     }
-    return { filter: "", status: "unknown" };
+    return { filter: "", status: "unknown", confidence: 50 };
   },
   z.object({
-    // 部分模型只返回 status/note；下游会按数组位置重新对应原始硬条件。
     filter: z.string().catch("").default(""),
     status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
     note: z.string().optional(),
+    confidence: z.coerce.number().min(0).max(100).catch(50).default(50),
   }),
 );
+
 
 const AiPickSchema = z.object({
   placeId: z.string(),
