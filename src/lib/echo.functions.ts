@@ -1876,7 +1876,16 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
           if (finishReason === "length" || finishReason === "max-tokens") {
             throw new Error(`truncated (finishReason=${finishReason})`);
           }
-          const parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          const rawText = fb.text || "";
+          let parsed;
+          try {
+            parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(rawText)));
+          } catch (parseErr) {
+            console.warn(
+              `[Echo/AI-rank] "${group.cuisine}" raw parse error, head=${JSON.stringify(rawText.slice(0, 200))}`,
+            );
+            throw parseErr;
+          }
           console.log(
             `[Echo/AI-rank] "${group.cuisine}" fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
           );
