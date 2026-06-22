@@ -1,8 +1,9 @@
 // Tabelog 信息抓取层（仅 JP 分支用）
 // 不直接爬 Tabelog（ToS + 反爬），用 Perplexity 让其代为读取 tabelog.com 并返回结构化结果。
-// 两阶段策略：
-//   1) sonar + search_domain_filter=tabelog.com（快、便宜）
-//   2) 第一轮 null 时，sonar-pro + 显式 site: 提示（更强推理、更多引用）
+// 三阶段策略：
+//   Stage 0: 多变体 /search 预搜（含 name+area+city+cuisine），打分挑最真实候选页
+//   Stage 1: sonar + search_domain_filter=tabelog.com（快、便宜），带 preUrl 提示
+//   Stage 2: sonar-pro + site: 提示（更强推理），仅在 Stage 1 失败时
 
 export type TabelogPriceJPY = { low: number | null; high: number | null };
 
@@ -33,6 +34,26 @@ function extractJPArea(address: string): string {
   return [pref, ward].filter(Boolean).join(" ");
 }
 
+// 都道府县中文/日文 → tabelog URL 路径段
+const PREF_TO_PATH: Record<string, string> = {
+  東京: "tokyo", 东京: "tokyo",
+  大阪: "osaka", 京都: "kyoto",
+  神奈川: "kanagawa", 横浜: "kanagawa", 横滨: "kanagawa",
+  愛知: "aichi", 爱知: "aichi", 名古屋: "aichi",
+  福岡: "fukuoka", 福冈: "fukuoka",
+  北海道: "hokkaido", 札幌: "hokkaido",
+  兵庫: "hyogo", 兵库: "hyogo", 神戸: "hyogo", 神户: "hyogo",
+  沖縄: "okinawa", 冲绳: "okinawa",
+};
+
+function prefPathHint(area: string, city: string): string | null {
+  const combined = `${area} ${city}`;
+  for (const [k, v] of Object.entries(PREF_TO_PATH)) {
+    if (combined.includes(k)) return v;
+  }
+  return null;
+}
+
 // 解析 Tabelog 价位字符串到数字区间 (JPY)
 // 支持：
 //   "￥6,000〜￥7,999" / "¥6000～¥7999"
@@ -56,6 +77,188 @@ export function parseTabelogPriceJPY(raw: string | null): TabelogPriceJPY | null
   return { low: Math.min(a, b), high: Math.max(a, b) };
 }
 
+// =========================================================================
+// Stage 0: 多变体预搜 + 真实性打分
+// =========================================================================
+
+type SearchResult = { url: string; title: string; snippet: string };
+
+async function perplexitySearch(opts: {
+  apiKey: string;
+  query: string;
+  label: string;
+  name: string;
+}): Promise<SearchResult[]> {
+  const { apiKey, query, label, name } = opts;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch("https://api.perplexity.ai/search", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({ query, max_results: 6 }),
+    });
+    if (!res.ok) {
+      console.warn(`[Tabelog/search:${label}] ${name}: HTTP ${res.status}`);
+      return [];
+    }
+    const json = (await res.json()) as Record<string, unknown>;
+    const results = (json.results ?? json.data ?? []) as Array<Record<string, unknown>>;
+    return results
+      .map((r) => ({
+        url: typeof r.url === "string" ? r.url : "",
+        title: typeof r.title === "string" ? r.title : "",
+        snippet:
+          typeof r.snippet === "string"
+            ? r.snippet
+            : typeof r.description === "string"
+              ? r.description
+              : "",
+      }))
+      .filter((r) => r.url && TABELOG_SHOP_URL_RE.test(r.url));
+  } catch (e) {
+    console.warn(`[Tabelog/search:${label}] ${name}:`, e instanceof Error ? e.message : e);
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeToken(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’`]/g, "")
+    .replace(/[^a-z0-9\u4e00-\u9fff\u3040-\u30ff]+/g, " ")
+    .trim();
+}
+
+function nameTokens(name: string): string[] {
+  return normalizeToken(name)
+    .split(" ")
+    .filter((t) => t.length >= 1);
+}
+
+type ScoredCandidate = { url: string; score: number; appearances: number };
+
+function scoreTabelogCandidates(
+  batches: SearchResult[][],
+  name: string,
+  area: string,
+  city: string,
+  cuisine?: string,
+): ScoredCandidate[] {
+  const nameToks = nameTokens(name);
+  const cuisineToks = cuisine ? nameTokens(cuisine) : [];
+  const prefPath = prefPathHint(area, city); // e.g. "tokyo"
+
+  const byUrl = new Map<string, { score: number; appearances: number }>();
+
+  for (const batch of batches) {
+    const seenInBatch = new Set<string>();
+    for (const r of batch) {
+      if (seenInBatch.has(r.url)) continue;
+      seenInBatch.add(r.url);
+
+      const urlLower = r.url.toLowerCase();
+      const titleNorm = normalizeToken(r.title);
+      const snippetNorm = normalizeToken(r.snippet);
+
+      let score = 0;
+      // 店名 token 命中 title/snippet
+      const nameHits = nameToks.filter(
+        (t) => titleNorm.includes(t) || snippetNorm.includes(t),
+      ).length;
+      if (nameToks.length > 0) {
+        const ratio = nameHits / nameToks.length;
+        if (ratio >= 0.7) score += 3;
+        else if (ratio >= 0.4) score += 2;
+        else if (ratio > 0) score += 1;
+      }
+      // 都道府县路径命中（/tokyo/、/osaka/ 等）
+      if (prefPath && urlLower.includes(`/${prefPath}/`)) score += 2;
+      // cuisine 关键词命中 snippet/title
+      if (cuisineToks.length > 0) {
+        const cuisineHit = cuisineToks.some(
+          (t) => snippetNorm.includes(t) || titleNorm.includes(t),
+        );
+        if (cuisineHit) score += 1;
+      }
+
+      const prev = byUrl.get(r.url);
+      if (prev) {
+        prev.appearances += 1;
+        prev.score = Math.max(prev.score, score);
+      } else {
+        byUrl.set(r.url, { score, appearances: 1 });
+      }
+    }
+  }
+
+  const scored: ScoredCandidate[] = [];
+  for (const [url, v] of byUrl.entries()) {
+    // 多变体重复命中 → 更真实
+    const repeatBonus = v.appearances >= 3 ? 2 : v.appearances >= 2 ? 1 : 0;
+    scored.push({ url, score: v.score + repeatBonus, appearances: v.appearances });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored;
+}
+
+async function preSearchTabelog(opts: {
+  apiKey: string;
+  name: string;
+  city: string;
+  address: string;
+  cuisine?: string;
+}): Promise<string | null> {
+  const { apiKey, name, city, address, cuisine } = opts;
+  const area = extractJPArea(address);
+  const where = area || city;
+
+  const queries: Array<{ q: string; label: string }> = [
+    { q: `"${name}" ${where} site:tabelog.com`, label: "name+area" },
+  ];
+  if (cuisine && cuisine.trim()) {
+    queries.push({
+      q: `"${name}" ${where} ${city} ${cuisine} site:tabelog.com`,
+      label: "name+area+city+cuisine",
+    });
+  }
+
+  const batches = await Promise.all(
+    queries.map((q) => perplexitySearch({ apiKey, query: q.q, label: q.label, name })),
+  );
+  let scored = scoreTabelogCandidates(batches, name, area, city, cuisine);
+
+  // 全空兜底
+  if (scored.length === 0) {
+    const fallback = await perplexitySearch({
+      apiKey,
+      query: `${name} site:tabelog.com`,
+      label: "name-only",
+      name,
+    });
+    scored = scoreTabelogCandidates([fallback], name, area, city, cuisine);
+  }
+
+  if (scored.length === 0) {
+    console.log(`[Tabelog/search] ${name}: no candidates`);
+    return null;
+  }
+  const top = scored[0];
+  console.log(
+    `[Tabelog/search] ${name}: top=${top.url} score=${top.score} appearances=${top.appearances} (${scored.length} candidates, ${queries.length} variants)`,
+  );
+  return top.url;
+}
+
+// =========================================================================
+// Stage 1/2: Perplexity chat 读取字段
+// =========================================================================
+
 type Stage = "sonar" | "sonar-pro";
 
 async function callPerplexity(opts: {
@@ -65,20 +268,36 @@ async function callPerplexity(opts: {
   address: string;
   city: string;
   area: string;
+  cuisine?: string;
+  preUrl: string | null;
 }): Promise<{ json: unknown; ok: boolean; status: number } | null> {
-  const { apiKey, stage, name, address, city, area } = opts;
+  const { apiKey, stage, name, address, city, area, cuisine, preUrl } = opts;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const isFirst = stage === "sonar";
+
+    const priorityBlock = `**字段优先级（按顺序尽力读）**：
+1. **summary（评论口碑，最关键）**：基于真实 Tabelog 口コミ 文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
+2. **rating（综合评分）/ reviewCount（口コミ件数）**：直接读页面字段。
+3. **priceRange（夜の予算/ランチ予算）**：读到就给。`;
+
+    const hintLine = preUrl
+      ? `\n候选 Tabelog 店铺页 URL：${preUrl}\n请优先打开该页面核验店名+地址是否吻合，吻合则原样返回 url 并读取字段。\n`
+      : "";
+
+    const cuisineLine = cuisine ? `- 料理类型：${cuisine}\n` : "";
+
     const userPrompt = isFirst
       ? `查找 Tabelog 上的店铺：
 - 店名：${name}
 - 地址：${address}
 - 城市：${city}
 - 行政区提示：${area || "（未知）"}
+${cuisineLine}${hintLine}
+${priorityBlock}
 
-要求：
+其它要求：
 - 必须是 tabelog.com 上**真实存在**的店铺页（URL 形如 https://tabelog.com/<pref>/A.../...../<数字>/，例 tabelog.com/tokyo/A1301/A130101/13001234/）。**绝对不要返回搜索页/分类页/列表页 URL**。
 - 店名和地址必须能合理对应；同名不同店一律算找不到，宁可返回 null。
 - url: 找到即返回；即使评分/口コミ件数/价位/摘要暂时读取不到，也照常返回 url。
@@ -95,6 +314,8 @@ async function callPerplexity(opts: {
 - Google 地址：${address}
 - 城市：${city}
 - 期望行政区：${area || "（未知，按城市判断）"}
+${cuisineLine}${hintLine}
+${priorityBlock}
 
 严格要求：
 - 必须返回**店铺详情页** URL（形如 https://tabelog.com/<pref>/A.../...../<数字>/）。**禁止返回搜索/列表/排行榜页**。
@@ -171,7 +392,7 @@ async function callPerplexity(opts: {
   }
 }
 
-function parseStage(name: string, stage: Stage, raw: unknown): TabelogInfo | null {
+function parseStage(name: string, stage: Stage, raw: unknown, preUrl: string | null): TabelogInfo | null {
   const json = raw as Record<string, unknown> | null;
   if (!json) return null;
   const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
@@ -184,18 +405,19 @@ function parseStage(name: string, stage: Stage, raw: unknown): TabelogInfo | nul
   const tabelogCitation = citations.find((c) => TABELOG_SHOP_URL_RE.test(c)) ?? null;
 
   if (!content) {
-    if (tabelogCitation) {
-      console.log(`[Tabelog/${stage}] ${name}: empty content but citation hit → url-only`);
+    const url = preUrl ?? tabelogCitation;
+    if (url) {
+      console.log(`[Tabelog/${stage}] ${name}: empty content but url available → url-only`);
       return {
         rating: null,
         reviewCount: null,
-        url: tabelogCitation,
+        url,
         priceRange: null,
         priceJPY: null,
         summary: null,
       };
     }
-    console.warn(`[Tabelog/${stage}] ${name}: empty content & no shop-page citation`);
+    console.warn(`[Tabelog/${stage}] ${name}: empty content & no shop-page url`);
     return null;
   }
 
@@ -209,7 +431,7 @@ function parseStage(name: string, stage: Stage, raw: unknown): TabelogInfo | nul
 
   const rawUrl = typeof parsed.url === "string" ? parsed.url.trim() : null;
   const urlFromJson = rawUrl && TABELOG_SHOP_URL_RE.test(rawUrl) ? rawUrl : null;
-  const url = urlFromJson ?? tabelogCitation;
+  const url = urlFromJson ?? preUrl ?? tabelogCitation;
 
   if (!url) {
     console.warn(`[Tabelog/${stage}] ${name}: no shop-page url in JSON or citations`);
@@ -248,6 +470,7 @@ export async function fetchTabelogInfo(
   name: string,
   address: string,
   city: string,
+  cuisine?: string,
 ): Promise<TabelogInfo | null> {
   const apiKey = process.env.PERPLEXITY_API_KEY;
   if (!apiKey) return null;
@@ -257,21 +480,21 @@ export async function fetchTabelogInfo(
 
   const area = extractJPArea(address);
 
+  // Stage 0：多变体预搜，挑最真实候选页 URL
+  const preUrl = await preSearchTabelog({ apiKey, name, city, address, cuisine });
+
   // Stage 1
-  const r1 = await callPerplexity({ apiKey, stage: "sonar", name, address, city, area });
-  let info = r1?.ok ? parseStage(name, "sonar", r1.json) : null;
+  const r1 = await callPerplexity({
+    apiKey, stage: "sonar", name, address, city, area, cuisine, preUrl,
+  });
+  let info = r1?.ok ? parseStage(name, "sonar", r1.json, preUrl) : null;
 
   // Stage 2 fallback
   if (!info) {
     const r2 = await callPerplexity({
-      apiKey,
-      stage: "sonar-pro",
-      name,
-      address,
-      city,
-      area,
+      apiKey, stage: "sonar-pro", name, address, city, area, cuisine, preUrl,
     });
-    info = r2?.ok ? parseStage(name, "sonar-pro", r2.json) : null;
+    info = r2?.ok ? parseStage(name, "sonar-pro", r2.json, preUrl) : null;
   }
 
   cache.set(cacheKey, info);

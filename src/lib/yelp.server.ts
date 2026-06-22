@@ -117,10 +117,12 @@ function scoreCandidates(
   name: string,
   city: string,
   address: string,
+  cuisine?: string,
 ): ScoredCandidate[] {
   const tokens = nameTokens(name);
   const cityToken = normalizeToken(city);
   const streetToks = extractStreetTokens(address);
+  const cuisineToks = cuisine ? nameTokens(cuisine) : [];
   // 抽取门牌号
   const streetNumMatch = address.match(/\b(\d{1,5})\b/);
   const streetNum = streetNumMatch ? streetNumMatch[1] : null;
@@ -156,6 +158,13 @@ function scoreCandidates(
       if (streetHit) score += 2;
       // 门牌号 in snippet
       if (streetNum && (r.snippet.includes(streetNum) || r.title.includes(streetNum))) score += 1;
+      // cuisine 关键词命中 snippet/title/slug → +1（多变体真实性加分）
+      if (cuisineToks.length > 0) {
+        const cuisineHit = cuisineToks.some(
+          (t) => snippetNorm.includes(t) || titleNorm.includes(t) || slug.includes(t),
+        );
+        if (cuisineHit) score += 1;
+      }
 
       const prev = byUrl.get(r.url);
       if (prev) {
@@ -167,10 +176,11 @@ function scoreCandidates(
     }
   }
 
-  // 多 batch 重复出现加分
+  // 多 batch 重复出现加分（出现在多条 query 里 = 更真实）
   const scored: ScoredCandidate[] = [];
   for (const [url, v] of byUrl.entries()) {
-    const final = v.score + (v.appearances > 1 ? 1 : 0);
+    const repeatBonus = v.appearances >= 3 ? 2 : v.appearances >= 2 ? 1 : 0;
+    const final = v.score + repeatBonus;
     scored.push({ url, score: final, appearances: v.appearances });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -189,9 +199,11 @@ async function preSearchYelp(opts: {
   name: string;
   city: string;
   address: string;
+  cuisine?: string;
 }): Promise<{ url: string | null; confidence: YelpConfidence }> {
-  const { apiKey, name, city, address } = opts;
+  const { apiKey, name, city, address, cuisine } = opts;
   const streetToks = extractStreetTokens(address);
+  const area = extractArea(address, city);
 
   const queries: Array<{ q: string; label: string }> = [
     { q: `"${name}" ${city} site:yelp.com`, label: "name+city" },
@@ -199,11 +211,18 @@ async function preSearchYelp(opts: {
   if (streetToks.length > 0) {
     queries.push({ q: `${name} ${streetToks.join(" ")} site:yelp.com`, label: "name+street" });
   }
+  // 新增：name + area + city + cuisine（强制变体）
+  if (cuisine && cuisine.trim()) {
+    queries.push({
+      q: `"${name}" ${area} ${city} ${cuisine} site:yelp.com`,
+      label: "name+area+city+cuisine",
+    });
+  }
 
   const batches = await Promise.all(queries.map((q) => perplexitySearch({ apiKey, query: q.q, label: q.label, name })));
-  let scored = scoreCandidates(batches, name, city, address);
+  let scored = scoreCandidates(batches, name, city, address, cuisine);
 
-  // 如果前两条 query 都没召回，name-only 兜底
+  // 如果前面所有 query 都没召回，name-only 兜底
   if (scored.length === 0) {
     const fallback = await perplexitySearch({
       apiKey,
@@ -211,7 +230,7 @@ async function preSearchYelp(opts: {
       label: "name-only",
       name,
     });
-    scored = scoreCandidates([fallback], name, city, address);
+    scored = scoreCandidates([fallback], name, city, address, cuisine);
   }
 
   if (scored.length === 0) {
@@ -222,7 +241,7 @@ async function preSearchYelp(opts: {
   const top = scored[0];
   const confidence = bucketConfidence(top.score);
   console.log(
-    `[Yelp/search] ${name}: top=${top.url} score=${top.score} conf=${confidence} (${scored.length} candidates)`,
+    `[Yelp/search] ${name}: top=${top.url} score=${top.score} conf=${confidence} (${scored.length} candidates, ${queries.length} variants)`,
   );
   return { url: top.url, confidence };
 }
@@ -262,7 +281,12 @@ async function callPerplexity(opts: {
 - 城市：${city}
 - 地区提示：${area}
 ${hintLine}
-要求（按优先级）：
+**字段优先级（按顺序尽力读）**：
+1. **summary（评论口碑，最关键）**：基于真实 Yelp 评论文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
+2. **rating（评分）/ reviewCount（评论数）**：直接读页面字段。
+3. **priceLevel（价位）**：读到就给。
+
+其它要求：
 - url 优先级最高：只要 Yelp 上有这家店的详情页（https://www.yelp.com/biz/<slug>），就返回 URL，**哪怕评分等其它字段读不到也要返回 URL**${verifyMode ? "（前提是核验通过）" : ""}。
 - ✗ 反例：https://www.yelp.com/search?find_desc=...（搜索页禁止）
 - 同名店：选地址/城市最匹配的那家。
@@ -280,7 +304,12 @@ ${hintLine}
 - 城市：${city}
 - 期望地区：${area || city}
 ${hintLine}
-要求：
+**字段优先级（按顺序尽力读）**：
+1. **summary（评论口碑，最关键）**：基于真实 Yelp 评论文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
+2. **rating（评分）/ reviewCount（评论数）**：直接读页面字段。
+3. **priceLevel（价位）**：读到就给。
+
+其它要求：
 - url 优先级最高：找到 Yelp 详情页（https://www.yelp.com/biz/<slug>）就返回${verifyMode ? "（核验通过的前提下）" : ""}。
 - ✗ 禁止返回搜索/列表/排行榜 URL。
 - 同名不同店：选地址最匹配该城市的那家。
@@ -432,6 +461,7 @@ export async function fetchYelpInfo(
   address: string,
   city: string,
   isEn = false,
+  cuisine?: string,
 ): Promise<YelpInfo | null> {
   const apiKey = process.env.PERPLEXITY_API_KEY;
   if (!apiKey) return null;
@@ -442,8 +472,8 @@ export async function fetchYelpInfo(
 
   const area = extractArea(address, city);
 
-  // Stage 0：多变体并发 + 打分
-  const { url: preUrl, confidence } = await preSearchYelp({ apiKey, name, city, address });
+  // Stage 0：多变体并发 + 打分（含 name+area+city+cuisine 变体）
+  const { url: preUrl, confidence } = await preSearchYelp({ apiKey, name, city, address, cuisine });
 
   let info: YelpInfo | null = null;
 
