@@ -1639,10 +1639,18 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       `[Echo/AI-rank] sending ${totalCandidatesForPrompt} candidates across ${candidatesForPrompt.length} cuisine(s) to model`,
     );
 
+    // 优先使用 DeepSeek（同时做 evidence→字段提取 + 排序），不可用时回退到 Gemini。
+    const deepseekKey = process.env.DEEPSEEK_API_KEY;
     const gateway = createLovableAiGatewayProvider(aiKey);
-    // gemini-3-flash-preview 在当前 AI Gateway 下不支持 responseFormat JSON Schema
-    // （会触发 "Output.object failed: No output generated."），换回稳定的 2.5-flash。
-    const model = gateway("google/gemini-2.5-flash");
+    let model;
+    if (deepseekKey) {
+      const ds = createDeepSeekProvider(deepseekKey);
+      model = ds(DEEPSEEK_CHAT_MODEL);
+      console.log("[Echo/AI-rank] using DeepSeek for ranking + field extraction");
+    } else {
+      model = gateway("google/gemini-2.5-flash");
+      console.log("[Echo/AI-rank] DEEPSEEK_API_KEY missing, falling back to gemini-2.5-flash");
+    }
 
 
     const hardFiltersList = data.hardFilters.map((h) => h.text);
