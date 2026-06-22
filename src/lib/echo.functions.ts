@@ -1256,6 +1256,10 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
     const recallSourcesById = new Map<string, string[]>();
+    // 跨品类去重：每个 placeId 原本命中的所有品类（保留全集，供 AI prompt / 前端展示参考）
+    const matchedCuisinesById = new Map<string, string[]>();
+    // 跨品类去重：每个 placeId 在每个命中品类下的召回 tag 列表
+    const recallSourcesByCuisine = new Map<string, Map<string, string[]>>();
     let placeResults: Array<{
       cuisine: string;
       places: PlaceCandidate[];
