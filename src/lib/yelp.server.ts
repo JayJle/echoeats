@@ -6,6 +6,15 @@
 
 export type YelpConfidence = "high" | "medium" | "low";
 
+export type YelpEvidence = {
+  matchEvidence: string[];
+  fieldEvidence: string[];
+  reviewEvidence: string[];
+  pageSignals: string[];
+};
+
+// rating/reviewCount/priceLevel/summary 默认 null：由下游 DeepSeek 排序时从 evidence 中提取。
+// 保留这些字段是为了 UI 兼容；displayFields 合并后会覆盖。
 export type YelpInfo = {
   rating: string | null;
   reviewCount: number | null;
@@ -13,6 +22,7 @@ export type YelpInfo = {
   priceLevel: "$" | "$$" | "$$$" | "$$$$" | null;
   summary: string | null;
   confidence: YelpConfidence;
+  evidence: YelpEvidence | null;
 };
 
 type CacheEntry = { info: YelpInfo | null; expireAt: number };
