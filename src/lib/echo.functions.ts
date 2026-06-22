@@ -80,12 +80,45 @@ const ParsedSchema = z.object({
 
 type WeightedCondition = z.infer<typeof WeightedConditionSchema>;
 
-function conditionKey(text: string): string {
-  const source = text.split(/\s*(?:→|->|=>)\s*/, 1)[0] || text;
-  return source
+// 语义主题归一：把同义/近义的条件归并到同一个 topic key，避免
+// "菜品精致 / 摆盘精致 / 出品精致 / 精美" 这种近义文本在 hard/soft 里同时出现。
+// 只对常见的主观/可枚举维度做归一；硬指标（"预算 ≤ X"、人数、营业到 X 点）走文本 key，不会被误并。
+const TOPIC_RULES: Array<{ topic: string; pattern: RegExp }> = [
+  { topic: "fine-plating", pattern: /(精致|精美|摆盘|盛盘|出品|卖相|plating|presentation|exquisite|refined)/i },
+  { topic: "quiet", pattern: /(安静|清静|不吵|quiet|peaceful)/i },
+  { topic: "lively", pattern: /(热闹|气氛热|lively|bustling|vibrant)/i },
+  { topic: "date", pattern: /(约会|适合情侣|romantic|浪漫|date[-\s]?night)/i },
+  { topic: "business", pattern: /(谈事|商务|business\s*(?:meal|meeting))/i },
+  { topic: "reservable", pattern: /(可预约|可预订|支持预约|接受预约|reservation|reservable|takes?\s*booking|book(?:able)?)/i },
+  { topic: "private-room", pattern: /(包间|包房|包厢|private\s*room|private\s*dining)/i },
+  { topic: "non-smoking", pattern: /(无烟|禁烟|non[-\s]?smoking|smoke[-\s]?free)/i },
+  { topic: "tourist-trap", pattern: /(游客店|游客陷阱|tourist\s*trap|touristy)/i },
+  { topic: "english-menu", pattern: /(英文菜单|english\s*menu)/i },
+  { topic: "vegetarian", pattern: /(素食|纯素|vegetarian|vegan|plant[-\s]?based)/i },
+  { topic: "kid-friendly", pattern: /(带小孩|带宝宝|儿童友好|亲子|kid[-\s]?friendly|child[-\s]?friendly|family[-\s]?friendly)/i },
+  { topic: "credit-card", pattern: /(信用卡|刷卡|credit\s*card|accepts?\s*card)/i },
+  { topic: "counter-seat", pattern: /(吧台|counter\s*seat)/i },
+  { topic: "view", pattern: /(景观|view|scenic|海景|夜景)/i },
+  { topic: "fresh-ingredients", pattern: /(食材新鲜|新鲜食材|fresh\s*ingredients)/i },
+  { topic: "authentic", pattern: /(地道|正宗|authentic|traditional)/i },
+];
+
+function normalizeText(text: string): string {
+  return text
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function conditionKey(text: string): string {
+  // 把 "原话 → 标准化" 两侧都纳入主题判定，避免只看左边漏判。
+  const both = text.replace(/\s*(?:→|->|=>)\s*/g, " ");
+  for (const { topic, pattern } of TOPIC_RULES) {
+    if (pattern.test(both)) return `topic:${topic}`;
+  }
+  // 退化到标准化全文 key（取右侧标准化条件为主，覆盖不到时用原文）
+  const right = text.split(/\s*(?:→|->|=>)\s*/).slice(-1)[0] || text;
+  return normalizeText(right) || normalizeText(text);
 }
 
 function uniqueConditions(items: WeightedCondition[]): WeightedCondition[] {
@@ -111,6 +144,7 @@ function uniqueStrings(items: string[]): string[] {
 }
 
 function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
+  // 优先级：negative > hard > soft（同一语义主题只保留最高优先级一处）
   const negativeFilters = uniqueConditions(parsed.negativeFilters);
   const negativeKeys = new Set(negativeFilters.map((item) => conditionKey(item.text)));
   const hardFilters = uniqueConditions(parsed.hardFilters).filter(
@@ -121,9 +155,10 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
     const key = conditionKey(item.text);
     return !negativeKeys.has(key) && !hardKeys.has(key);
   });
+  // 菜品名仅按字面去重；不走主题归一（"鳗鱼饭"、"刺身" 是独立菜品，不应合并）。
   const dishPreferences = [...new Map(
     parsed.dishPreferences
-      .map((dish) => [conditionKey(dish), dish.trim()] as const)
+      .map((dish) => [normalizeText(dish), dish.trim()] as const)
       .filter(([key, dish]) => key && dish),
   ).values()];
 
@@ -393,6 +428,17 @@ export const parseRequirements = createServerFn({ method: "POST" })
       return dedupeParsedConditions(parsed);
     };
 
+    const logParsedSummary = (label: string, p: z.infer<typeof ParsedSchema>) => {
+      const fmt = (arr: WeightedCondition[]) => arr.map((x) => `${x.text}@${x.weight.toFixed(1)}`).join(" | ");
+      console.log(
+        `[parseRequirements] ${label} hard=${p.hardFilters.length} soft=${p.softPreferences.length} neg=${p.negativeFilters.length} dish=${p.dishPreferences.length}`,
+      );
+      if (p.hardFilters.length) console.log(`[parseRequirements] hard: ${fmt(p.hardFilters)}`);
+      if (p.softPreferences.length) console.log(`[parseRequirements] soft: ${fmt(p.softPreferences)}`);
+      if (p.negativeFilters.length) console.log(`[parseRequirements] neg : ${fmt(p.negativeFilters)}`);
+      if (p.dishPreferences.length) console.log(`[parseRequirements] dish: ${p.dishPreferences.join(" | ")}`);
+    };
+
     const FALLBACK_CUISINE_WORDS = new Set([
       "餐厅",
       "restaurants",
@@ -486,12 +532,16 @@ export const parseRequirements = createServerFn({ method: "POST" })
     try {
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        return sanitizeVisitTime(await enforceInferIfRequested(first));
+        const final = sanitizeVisitTime(await enforceInferIfRequested(first));
+        logParsedSummary("final(gemini)", final);
+        return final;
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        return sanitizeVisitTime(await enforceInferIfRequested(second));
+        const final = sanitizeVisitTime(await enforceInferIfRequested(second));
+        logParsedSummary("final(gpt-5-mini)", final);
+        return final;
       }
 
     } catch (e) {
