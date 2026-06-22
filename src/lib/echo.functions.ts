@@ -1775,6 +1775,7 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         const result = await generateText({
           model,
           prompt,
+          temperature: 0,
           maxOutputTokens: 12000,
           output: Output.object({
             schema: AiPickGroupSchema,
@@ -1782,6 +1783,7 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             description: `AI ranking of real candidates for cuisine "${group.cuisine}"`,
           }),
         });
+
         console.log(
           `[Echo/AI-rank] "${group.cuisine}" Output.object ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
         );
