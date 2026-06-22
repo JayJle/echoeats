@@ -1609,19 +1609,15 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               realWorldReviews: review,
               tabelog: tabelog
                 ? {
-                    rating: tabelog.rating,
-                    reviewCount: tabelog.reviewCount,
-                    priceRange: tabelog.priceRange,
-                    priceJPY: tabelog.priceJPY,
-                    summary: tabelog.summary,
+                    url: tabelog.url,
+                    evidence: tabelog.evidence ?? null,
                   }
                 : null,
               yelp: yelp
                 ? {
-                    rating: yelp.rating,
-                    reviewCount: yelp.reviewCount,
-                    priceLevel: yelp.priceLevel,
-                    summary: yelp.summary,
+                    url: yelp.url,
+                    confidence: yelp.confidence,
+                    evidence: yelp.evidence ?? null,
                   }
                 : null,
             };
