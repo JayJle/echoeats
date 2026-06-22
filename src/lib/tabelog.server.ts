@@ -13,7 +13,8 @@ export type TabelogInfo = {
   url: string | null; // tabelog 店铺页 URL（必须包含 tabelog.com）
   priceRange: string | null; // 例 "￥6,000〜￥7,999"（原文）
   priceJPY: TabelogPriceJPY | null; // 解析后的数字区间（JPY）
-  summary: string | null; // 1-2 句中文摘要
+  summary: string | null; // 1 句中文短摘要，前端展示
+  signals: string[]; // 后台隐藏评论信号，最多 8 条，每条 ≤35 字
 };
 
 const cache = new Map<string, TabelogInfo | null>();
@@ -277,51 +278,46 @@ async function callPerplexity(opts: {
   try {
     const isFirst = stage === "sonar";
 
-    const priorityBlock = `**字段优先级（按顺序尽力读）**：
-1. **summary（评论口碑，最关键）**：基于真实 Tabelog 口コミ 文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
-2. **rating（综合评分）/ reviewCount（口コミ件数）**：直接读页面字段。
-3. **priceRange（夜の予算/ランチ予算）**：读到就给。`;
-
     const hintLine = preUrl
       ? `\n候选 Tabelog 店铺页 URL：${preUrl}\n请优先打开该页面核验店名+地址是否吻合，吻合则原样返回 url 并读取字段。\n`
       : "";
 
-    const cuisineLine = cuisine ? `- 料理类型：${cuisine}\n` : "";
+    const cuisineLine = cuisine ? `- 料理类型：${cuisine}\n` : "- 料理类型：（未知）\n";
 
     const userPrompt = isFirst
       ? `查找 Tabelog 上的店铺：
+
 - 店名：${name}
 - 地址：${address}
 - 城市：${city}
 - 行政区提示：${area || "（未知）"}
-${cuisineLine}${hintLine}
-${priorityBlock}
+${cuisineLine}- 候选 Tabelog 店铺页 URL：${preUrl || "（无）"}
+${hintLine}
+请优先打开候选 URL 核验店名和地址。若匹配，读取字段；若不匹配，继续查找正确 Tabelog 店铺详情页。禁止返回搜索页/列表页。
 
-其它要求：
-- 必须是 tabelog.com 上**真实存在**的店铺页（URL 形如 https://tabelog.com/<pref>/A.../...../<数字>/，例 tabelog.com/tokyo/A1301/A130101/13001234/）。**绝对不要返回搜索页/分类页/列表页 URL**。
-- 店名和地址必须能合理对应；同名不同店一律算找不到，宁可返回 null。
-- url: 找到即返回；即使评分/口コミ件数/价位/摘要暂时读取不到，也照常返回 url。
-- rating: Tabelog 综合评分（数字字符串如 "3.62"）。读不到 → null。
-- reviewCount: 口コミ件数（整数）。读不到 → null。
-- priceRange: "夜の予算" 或 "ランチ予算" 字段原文（如 "￥6,000〜￥7,999"）。读不到 → null。
-- summary: 1-2 句简体中文，归纳口碑（具体菜品/服务/氛围），≤ 60 字。读不到 → null。
+最重要：请不要只写 summary，要在 signals 中压缩保留尽可能多的高价值评论信息，但 signals 最多 8 条，每条必须具体、去重、真实，每条 ≤35 字。优先保留：招牌菜、口味、服务、氛围、价格、排队预约、适合场景、负面注意事项。
 
-只输出 JSON。找不到任何匹配店铺时，所有字段返回 null。`
-      : `请用 Google 搜索 \`site:tabelog.com "${name}" "${area || city}"\` 找到该店在 Tabelog 的店铺页，然后读取评分/口コミ件数/价位/摘要。
+只输出 JSON。`
+      : `请用 Google 搜索 \`site:tabelog.com "${name}" "${area || city}"\` 找到该店在 Tabelog 的店铺详情页，然后读取字段。
 
 店铺信息：
+
 - 店名：${name}
 - Google 地址：${address}
 - 城市：${city}
 - 期望行政区：${area || "（未知，按城市判断）"}
-${cuisineLine}${hintLine}
-${priorityBlock}
+${cuisineLine}- 候选 URL：${preUrl || "（无）"}
 
 严格要求：
-- 必须返回**店铺详情页** URL（形如 https://tabelog.com/<pref>/A.../...../<数字>/）。**禁止返回搜索/列表/排行榜页**。
-- 该店铺页的地址必须落在「${area || city}」内；落在其它行政区的同名店一律视为不匹配。
-- 即便没有评分/价位也要返回 url；只在确认 Tabelog 上没有这家店时全部返回 null。
-- rating / reviewCount / priceRange / summary 同第一轮规则；读不到原样返回 null，禁止编造。
+
+- Google 只能用于发现 Tabelog URL。
+- 字段内容必须来自 Tabelog 店铺详情页。
+- 必须返回店铺详情页 URL（形如 https://tabelog.com/<pref>/A.../...../<数字>/），禁止返回搜索页/列表页/排行榜页。
+- 店铺页地址必须落在「${area || city}」内。
+- 同名不同地址或不同行政区，一律视为不匹配。
+- 找到正确店铺页时，即使评分/价位/评论读不到，也要返回 url。
+- signals 最多 8 条，每条 ≤35 字；优先保留招牌菜、口味、服务、氛围、价格、排队预约、适合场景、注意事项。
+- 禁止编造。
 
 只输出 JSON。`;
 
@@ -331,11 +327,11 @@ ${priorityBlock}
         {
           role: "system",
           content:
-            "你是 Tabelog（食べログ）查询助手。只参考 tabelog.com 的真实页面，找到与给定店名+地址最匹配的店铺页，输出结构化 JSON。找不到必须返回 null 字段，禁止编造。",
+            "你是 Tabelog（食べログ）查询助手。只参考 tabelog.com 的真实店铺详情页，找到与给定店名+地址最匹配的店铺页，并输出结构化 JSON。找不到必须返回 null，禁止编造。\n\n核心目标：在接近短摘要 token 成本的前提下，尽可能多保留高价值评论信息。不要只写 summary；请把更多信息压缩进 signals（最多 8 条，每条 ≤35 字，去重、具体、真实，优先：招牌菜/口味/服务/氛围/价格/排队预约/适合场景/负面注意事项）。\n\n规则：\n- 只允许参考 tabelog.com。\n- 返回的 url 必须是 Tabelog 店铺详情页（https://tabelog.com/<pref>/A.../...../<数字>/）。\n- 禁止返回搜索页、列表页、分类页、排行榜页。\n- 店名和地址/行政区必须合理对应；同名不同店一律算不匹配。\n- 找到正确店铺页时，即使评分/价位/评论读不到，也要返回 url。\n- 读不到的字段返回 null 或空数组。\n- 禁止根据料理类型/评分/地区自行推测评论内容。\n- 输出必须只包含 JSON，不要 Markdown，不要解释。",
         },
         { role: "user", content: userPrompt },
       ],
-      max_tokens: isFirst ? 400 : 700,
+      max_tokens: isFirst ? 700 : 1100,
       temperature: 0.1,
       response_format: {
         type: "json_schema",
@@ -349,8 +345,9 @@ ${priorityBlock}
               url: { type: ["string", "null"] },
               priceRange: { type: ["string", "null"] },
               summary: { type: ["string", "null"] },
+              signals: { type: "array", items: { type: "string" } },
             },
-            required: ["rating", "reviewCount", "url", "priceRange", "summary"],
+            required: ["rating", "reviewCount", "url", "priceRange", "summary", "signals"],
           },
         },
       },
@@ -415,6 +412,7 @@ function parseStage(name: string, stage: Stage, raw: unknown, preUrl: string | n
         priceRange: null,
         priceJPY: null,
         summary: null,
+        signals: [],
       };
     }
     console.warn(`[Tabelog/${stage}] ${name}: empty content & no shop-page url`);
@@ -458,12 +456,19 @@ function parseStage(name: string, stage: Stage, raw: unknown, preUrl: string | n
     typeof parsed.summary === "string" && parsed.summary.trim().length > 0
       ? parsed.summary.trim().slice(0, 120)
       : null;
+  const signals = Array.isArray(parsed.signals)
+    ? (parsed.signals as unknown[])
+        .filter((s): s is string => typeof s === "string")
+        .map((s) => s.trim().slice(0, 35))
+        .filter((s) => s.length > 0)
+        .slice(0, 8)
+    : [];
 
   console.log(
-    `[Tabelog/${stage}] ${name}: ok rating=${rating} reviews=${reviewCount} price=${priceRange ?? "-"} priceJPY=${priceJPY ? `${priceJPY.low ?? "-"}~${priceJPY.high ?? "-"}` : "-"}`,
+    `[Tabelog/${stage}] ${name}: ok rating=${rating} reviews=${reviewCount} price=${priceRange ?? "-"} priceJPY=${priceJPY ? `${priceJPY.low ?? "-"}~${priceJPY.high ?? "-"}` : "-"} signals=${signals.length}`,
   );
 
-  return { rating, reviewCount, url, priceRange, priceJPY, summary };
+  return { rating, reviewCount, url, priceRange, priceJPY, summary, signals };
 }
 
 export async function fetchTabelogInfo(
