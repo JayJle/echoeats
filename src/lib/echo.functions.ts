@@ -1891,7 +1891,10 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             check: deterministicRatingCheck
               ? { filter: filter.text, ...deterministicRatingCheck }
               : aiCheck
-                ? { ...aiCheck, status: reconcileEvidenceStatus(aiCheck.status, aiCheck.note) }
+                ? {
+                    ...aiCheck,
+                    status: (aiCheck.confidence ?? 50) >= 70 ? aiCheck.status : ("unknown" as const),
+                  }
                 : {
                     filter: filter.text,
                     status: "unknown" as const,
@@ -1916,11 +1919,12 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           const conditionLabel = conciseCondition(condition.text);
           const evidence = conciseEvidence(detail?.label, conditionLabel, isEn);
           const status = detail
-            ? reconcileEvidenceStatus(detail.status, evidence)
-            : "unknown" as const;
+            ? ((detail.confidence ?? 50) >= 70 ? detail.status : ("unknown" as const))
+            : ("unknown" as const);
           return { label: `${conditionLabel}：${evidence}`, status };
         });
         const matchDetails = [...hardDetails, ...nonHardDetails];
+
 
         // ============ 三层打分 ============
         const recallSources = recallSourcesById.get(p.placeId) ?? [];
