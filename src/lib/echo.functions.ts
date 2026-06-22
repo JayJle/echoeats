@@ -1480,6 +1480,66 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       );
     }
 
+    // 跨品类去重：一家餐厅只归属一个品类，永不丢店
+    if (placeResults.length > 1) {
+      const beforeTotal = placeResults.reduce((s, r) => s + r.places.length, 0);
+      // placeId -> [{cuisineIdx, hits, kwScore}]
+      const occurrences = new Map<
+        string,
+        { place: PlaceCandidate; entries: Array<{ idx: number; hits: number; kw: number }> }
+      >();
+      for (let idx = 0; idx < placeResults.length; idx++) {
+        const r = placeResults[idx];
+        const expansion = cuisineExpansions.get(r.cuisine);
+        const positives = expansion
+          ? [expansion.primary, ...expansion.synonyms].map((s) => s.toLowerCase()).filter(Boolean)
+          : [];
+        for (const p of r.places) {
+          const haystack = `${p.name} ${p.primaryType ?? ""} ${p.editorialSummary ?? ""}`.toLowerCase();
+          const kw = positives.reduce((n, k) => (k && haystack.includes(k) ? n + 1 : n), 0);
+          const hits = r.recallHits.get(p.placeId) ?? 0;
+          const occ = occurrences.get(p.placeId);
+          if (occ) occ.entries.push({ idx, hits, kw });
+          else occurrences.set(p.placeId, { place: p, entries: [{ idx, hits, kw }] });
+        }
+      }
+
+      const uniquePlaces = occurrences.size;
+      const winnerByPlaceId = new Map<string, number>(); // placeId -> winning cuisine idx
+      let duplicates = 0;
+      for (const [pid, { place, entries }] of occurrences) {
+        if (entries.length === 1) {
+          winnerByPlaceId.set(pid, entries[0].idx);
+          continue;
+        }
+        duplicates++;
+        // 三档比较：hits > kw > 原始 cuisine 顺序（idx 小者胜）
+        entries.sort((a, b) => (b.hits - a.hits) || (b.kw - a.kw) || (a.idx - b.idx));
+        const winner = entries[0];
+        winnerByPlaceId.set(pid, winner.idx);
+        console.log(
+          `[dedup-cross-cuisine] place="${place.name}" placeId=${pid} candidates=[${entries
+            .map((e) => `${placeResults[e.idx].cuisine}(hits=${e.hits},kw=${e.kw})`)
+            .join(", ")}] kept=${placeResults[winner.idx].cuisine}`,
+        );
+      }
+
+      const deduped = placeResults.map((r, idx) => ({
+        ...r,
+        places: r.places.filter((p) => winnerByPlaceId.get(p.placeId) === idx),
+      }));
+      const afterTotal = deduped.reduce((s, r) => s + r.places.length, 0);
+      if (afterTotal !== uniquePlaces) {
+        console.error(
+          `[dedup-cross-cuisine] ASSERTION FAILED afterTotal=${afterTotal} uniquePlaces=${uniquePlaces} — rolling back, no dedup applied`,
+        );
+      } else {
+        console.log(
+          `[dedup-cross-cuisine] uniquePlaces=${uniquePlaces} beforeTotal=${beforeTotal} afterTotal=${afterTotal} removedDuplicates=${beforeTotal - afterTotal} duplicatePlaceIds=${duplicates}`,
+        );
+        placeResults = deduped;
+      }
+    }
 
     const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
     yield { type: "stage", stage: "places-done", count: totalCandidates };
