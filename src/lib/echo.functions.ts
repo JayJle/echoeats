@@ -735,19 +735,47 @@ const HardFilterCheckSchema = z.preprocess(
 );
 
 
+// 容错说明：模型经常漏 matchScore / matchTier / aiSummary 这几个字段，或者把数字写成
+// 带引号的字符串。这里全部用 coerce + catch + default 兜底，让第一档 Output.object
+// 不再因为单字段缺失而整组失败（slim fallback 触发的根因）。
 const AiPickSchema = z.object({
   placeId: z.string(),
-  matchScore: z.number().min(0).max(100),
-  matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
-  aiSummary: z.string(),
-  pros: z.array(z.preprocess(
-    (v) => (typeof v === "string" ? { text: v, source: null } : v),
-    z.object({ text: z.string(), source: z.string().nullable().optional() }),
-  )).default([]),
-  cons: z.array(z.preprocess(
-    (v) => (typeof v === "string" ? { text: v, source: null } : v),
-    z.object({ text: z.string(), source: z.string().nullable().optional() }),
-  )).default([]),
+  verificationStatus: z
+    .enum(["ok", "unknown", "fail"])
+    .catch("unknown")
+    .default("unknown"),
+  matchScore: z.coerce.number().min(0).max(100).catch(0).default(0),
+  matchTier: z
+    .enum(["perfect", "high", "partial"])
+    .catch("partial")
+    .default("partial"),
+  aiSummary: z.string().catch("").default(""),
+  pros: z
+    .array(
+      z.preprocess(
+        (v) => (typeof v === "string" ? { text: v, source: null } : v),
+        z.object({
+          text: z.string().catch("").default(""),
+          source: z.string().nullable().optional(),
+        }),
+      ),
+    )
+    .catch([])
+    .default([])
+    .transform((arr) => arr.filter((p) => p.text && p.text.trim().length > 0)),
+  cons: z
+    .array(
+      z.preprocess(
+        (v) => (typeof v === "string" ? { text: v, source: null } : v),
+        z.object({
+          text: z.string().catch("").default(""),
+          source: z.string().nullable().optional(),
+        }),
+      ),
+    )
+    .catch([])
+    .default([])
+    .transform((arr) => arr.filter((c) => c.text && c.text.trim().length > 0)),
   matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
   hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
 });
