@@ -412,6 +412,7 @@ function parseStage(name: string, stage: Stage, raw: unknown, preUrl: string | n
         priceRange: null,
         priceJPY: null,
         summary: null,
+        signals: [],
       };
     }
     console.warn(`[Tabelog/${stage}] ${name}: empty content & no shop-page url`);
@@ -455,12 +456,19 @@ function parseStage(name: string, stage: Stage, raw: unknown, preUrl: string | n
     typeof parsed.summary === "string" && parsed.summary.trim().length > 0
       ? parsed.summary.trim().slice(0, 120)
       : null;
+  const signals = Array.isArray(parsed.signals)
+    ? (parsed.signals as unknown[])
+        .filter((s): s is string => typeof s === "string")
+        .map((s) => s.trim().slice(0, 35))
+        .filter((s) => s.length > 0)
+        .slice(0, 8)
+    : [];
 
   console.log(
-    `[Tabelog/${stage}] ${name}: ok rating=${rating} reviews=${reviewCount} price=${priceRange ?? "-"} priceJPY=${priceJPY ? `${priceJPY.low ?? "-"}~${priceJPY.high ?? "-"}` : "-"}`,
+    `[Tabelog/${stage}] ${name}: ok rating=${rating} reviews=${reviewCount} price=${priceRange ?? "-"} priceJPY=${priceJPY ? `${priceJPY.low ?? "-"}~${priceJPY.high ?? "-"}` : "-"} signals=${signals.length}`,
   );
 
-  return { rating, reviewCount, url, priceRange, priceJPY, summary };
+  return { rating, reviewCount, url, priceRange, priceJPY, summary, signals };
 }
 
 export async function fetchTabelogInfo(
