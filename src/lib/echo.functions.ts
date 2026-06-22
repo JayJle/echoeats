@@ -609,17 +609,22 @@ ${JSON.stringify(payload, null, 2)}
     try {
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        const final = sanitizeVisitTime(await enforceInferIfRequested(first));
+        const sanitized = sanitizeVisitTime(await enforceInferIfRequested(first));
+        logParsedSummary("pre-dedupe(gemini)", sanitized);
+        const final = await semanticDedupe(sanitized);
         logParsedSummary("final(gemini)", final);
         return final;
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        const final = sanitizeVisitTime(await enforceInferIfRequested(second));
+        const sanitized = sanitizeVisitTime(await enforceInferIfRequested(second));
+        logParsedSummary("pre-dedupe(gpt-5-mini)", sanitized);
+        const final = await semanticDedupe(sanitized);
         logParsedSummary("final(gpt-5-mini)", final);
         return final;
       }
+
 
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
