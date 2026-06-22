@@ -1667,9 +1667,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     );
 
     const gateway = createLovableAiGatewayProvider(aiKey);
-    // gemini-3-flash-preview 在当前 AI Gateway 下不支持 responseFormat JSON Schema
-    // （会触发 "Output.object failed: No output generated."），换回稳定的 2.5-flash。
-    const model = gateway("google/gemini-2.5-flash");
+    // provider 已默认启用 structuredOutputs，response_format=json_schema 能正确发到
+    // Gateway；切回 3-flash-preview 以获得更快/更便宜的推理。
+    const model = gateway("google/gemini-3-flash-preview");
 
 
     const hardFiltersList = data.hardFilters.map((h) => h.text);
@@ -1876,8 +1876,12 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
         return { cuisine: group.cuisine, picks: result.output.picks };
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
+        const rawHead =
+          typeof (e1 as { text?: string })?.text === "string"
+            ? ((e1 as { text?: string }).text as string).slice(0, 200)
+            : "";
         console.warn(
-          `[Echo/AI-rank] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
+          `[Echo/AI-rank] "${group.cuisine}" Output.object failed (${m1})${rawHead ? `, head=${JSON.stringify(rawHead)}` : ""}, retrying raw…`,
         );
         try {
           const fb = await generateText({
