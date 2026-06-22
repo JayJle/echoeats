@@ -2140,14 +2140,16 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           matchScore -= softPenalty;
           breakdown.push({ label: isEn ? "Soft preference fails" : "软偏好未中", delta: -Math.round(softPenalty) });
         }
-        // Negative fails
-        let negPenalty = 0;
+        // Negative fails / unknowns — 与 hard 同档（fail × 10.7，unknown × 2.7）
+        let negDeduct = 0;
         for (let i = 0; i < negCount; i++) {
-          if (negStatuses[i] === "fail") negPenalty += data.negativeFilters[i].weight * 13.3;
+          const w = data.negativeFilters[i].weight;
+          if (negStatuses[i] === "fail") negDeduct += w * 10.7;
+          else if (negStatuses[i] === "unknown") negDeduct += w * 2.7;
         }
-        if (negPenalty > 0) {
-          matchScore -= negPenalty;
-          breakdown.push({ label: isEn ? "Avoidance hits" : "命中避雷", delta: -Math.round(negPenalty) });
+        if (negDeduct > 0) {
+          matchScore -= negDeduct;
+          breakdown.push({ label: isEn ? "Avoidance penalties" : "避雷扣分", delta: -Math.round(negDeduct) });
         }
         // Dish hits (cap +16)
         let dishBonus = 0;
