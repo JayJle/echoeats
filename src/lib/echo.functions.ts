@@ -2,7 +2,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
-import { createDeepSeekProvider, DEEPSEEK_CHAT_MODEL } from "./deepseek.server";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
@@ -526,7 +525,7 @@ import {
   filterByCuisineRelevance,
   type CuisineExpansion,
 } from "./cuisine-expand.server";
-import { fetchTabelogInfo, parseTabelogPriceJPY, type TabelogInfo } from "./tabelog.server";
+import { fetchTabelogInfo, type TabelogInfo } from "./tabelog.server";
 import { fetchYelpInfo, type YelpInfo } from "./yelp.server";
 
 const YELP_COUNTRIES = new Set(["US", "CA", "FR", "IT", "DE", "ES", "GB"]);
@@ -736,26 +735,6 @@ const HardFilterCheckSchema = z.preprocess(
 );
 
 
-// DeepSeek 排序时顺手输出的 display 字段（取代之前由 Perplexity 直接产的字段）。
-const YelpDisplaySchema = z.object({
-  rating: z.string().nullable().optional().default(null),
-  reviewCount: z.number().nullable().optional().default(null),
-  priceLevel: z.enum(["$", "$$", "$$$", "$$$$"]).nullable().optional().default(null),
-  summary: z.string().nullable().optional().default(null),
-}).nullable().optional().default(null);
-
-const TabelogDisplaySchema = z.object({
-  rating: z.string().nullable().optional().default(null),
-  reviewCount: z.number().nullable().optional().default(null),
-  priceRange: z.string().nullable().optional().default(null),
-  summary: z.string().nullable().optional().default(null),
-}).nullable().optional().default(null);
-
-const DisplayFieldsSchema = z.object({
-  yelp: YelpDisplaySchema,
-  tabelog: TabelogDisplaySchema,
-}).nullable().optional().default(null);
-
 const AiPickSchema = z.object({
   placeId: z.string(),
   matchScore: z.number().min(0).max(100),
@@ -771,7 +750,6 @@ const AiPickSchema = z.object({
   )).default([]),
   matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
   hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
-  displayFields: DisplayFieldsSchema,
 });
 
 const AiRankingSchema = z.object({
@@ -1610,15 +1588,19 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               realWorldReviews: review,
               tabelog: tabelog
                 ? {
-                    url: tabelog.url,
-                    evidence: tabelog.evidence ?? null,
+                    rating: tabelog.rating,
+                    reviewCount: tabelog.reviewCount,
+                    priceRange: tabelog.priceRange,
+                    priceJPY: tabelog.priceJPY,
+                    summary: tabelog.summary,
                   }
                 : null,
               yelp: yelp
                 ? {
-                    url: yelp.url,
-                    confidence: yelp.confidence,
-                    evidence: yelp.evidence ?? null,
+                    rating: yelp.rating,
+                    reviewCount: yelp.reviewCount,
+                    priceLevel: yelp.priceLevel,
+                    summary: yelp.summary,
                   }
                 : null,
             };
@@ -1640,18 +1622,10 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       `[Echo/AI-rank] sending ${totalCandidatesForPrompt} candidates across ${candidatesForPrompt.length} cuisine(s) to model`,
     );
 
-    // 优先使用 DeepSeek（同时做 evidence→字段提取 + 排序），不可用时回退到 Gemini。
-    const deepseekKey = process.env.DEEPSEEK_API_KEY;
     const gateway = createLovableAiGatewayProvider(aiKey);
-    let model;
-    if (deepseekKey) {
-      const ds = createDeepSeekProvider(deepseekKey);
-      model = ds(DEEPSEEK_CHAT_MODEL);
-      console.log("[Echo/AI-rank] using DeepSeek for ranking + field extraction");
-    } else {
-      model = gateway("google/gemini-2.5-flash");
-      console.log("[Echo/AI-rank] DEEPSEEK_API_KEY missing, falling back to gemini-2.5-flash");
-    }
+    // gemini-3-flash-preview 在当前 AI Gateway 下不支持 responseFormat JSON Schema
+    // （会触发 "Output.object failed: No output generated."），换回稳定的 2.5-flash。
+    const model = gateway("google/gemini-2.5-flash");
 
 
     const hardFiltersList = data.hardFilters.map((h) => h.text);
@@ -1745,26 +1719,7 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
 - **来源标注**：每条 pros/cons 的 source 字段优先填上平台名（Google / Tabelog / Yelp）。
 - **宁缺毋滥**：当某家店在所有平台评论里都找不到足够支撑的口碑点（少于 2 条评论提及）时，pros 或 cons 直接返回空数组 []，不要为了凑数硬写；前端已经有"暂无可信网评 / 暂无明显差评"的兜底文案。
 
-## displayFields：从 tabelog/yelp evidence 中提取展示字段
-候选数据里 \`tabelog\` / \`yelp\` 不再带 rating/summary/price，而是带 \`evidence\` 包（matchEvidence / fieldEvidence / reviewEvidence / pageSignals 四个数组的原文片段）。你需要为每个 pick 额外输出 \`displayFields\`，把这些 evidence 提炼成展示字段：
-
-- **displayFields.yelp**（仅当 candidate.yelp 非 null 才输出，否则给 null）：
-  - \`rating\`: 形如 "4.3" 的字符串；只能来自 fieldEvidence，找不到 → null。
-  - \`reviewCount\`: 整数；只能来自 fieldEvidence，找不到 → null。
-  - \`priceLevel\`: "$" / "$$" / "$$$" / "$$$$"；只能来自 fieldEvidence，找不到 → null。
-  - \`summary\`: ${isEn ? "1-2 句英文，≤80 字符" : "1-2 句简体中文，≤60 字符"}，必须从 reviewEvidence 归纳具体菜品/服务/氛围；reviewEvidence 为空 → null，禁止编造。
-- **displayFields.tabelog**（仅当 candidate.tabelog 非 null 才输出，否则给 null）：
-  - \`rating\`: 形如 "3.62" 的字符串；只能来自 fieldEvidence（综合点数）。
-  - \`reviewCount\`: 口コミ件数整数。
-  - \`priceRange\`: 夜の予算/ランチ予算字段原文，例 "￥6,000〜￥7,999"。
-  - \`summary\`: ${isEn ? "1-2 句英文 ≤80 字符" : "1-2 句简体中文 ≤60 字符"}，必须从 reviewEvidence 归纳；空则 null。
-
-铁律：
-- evidence 里有什么填什么，没有就给 null，**禁止编造任何字段**。
-- 排序与匹配判断（hardFilterChecks / matchDetails / pros / cons）也应优先参考 evidence 原文。
-- displayFields 的 summary **只描述真实评论口碑**，不要回扣用户需求。
-
-输出 JSON 格式：{ "picks": [{ "placeId": "...", "matchScore": 88, "displayFields": { "yelp": {...}|null, "tabelog": {...}|null }, ... }] }
+输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
 （注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
 };
 
@@ -1800,41 +1755,17 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
               ? c.editorialSummary.slice(0, 60)
               : c.editorialSummary,
             tabelog: c.tabelog
-              ? {
-                  ...c.tabelog,
-                  evidence: c.tabelog.evidence
-                    ? {
-                        ...c.tabelog.evidence,
-                        // slim: 减少 reviewEvidence + pageSignals
-                        reviewEvidence: c.tabelog.evidence.reviewEvidence.slice(0, 3),
-                        pageSignals: c.tabelog.evidence.pageSignals.slice(0, 2),
-                      }
-                    : null,
-                }
+              ? { ...c.tabelog, summary: c.tabelog.summary ? c.tabelog.summary.slice(0, 30) : null }
               : c.tabelog,
             yelp: c.yelp
-              ? {
-                  ...c.yelp,
-                  evidence: c.yelp.evidence
-                    ? {
-                        ...c.yelp.evidence,
-                        reviewEvidence: c.yelp.evidence.reviewEvidence.slice(0, 3),
-                        pageSignals: c.yelp.evidence.pageSignals.slice(0, 2),
-                      }
-                    : null,
-                }
+              ? { ...c.yelp, summary: c.yelp.summary ? c.yelp.summary.slice(0, 30) : null }
               : c.yelp,
           })),
         } as GroupForPrompt;
         return buildPromptForGroup(slim) + RAW_FORMAT_HARD_RULES;
       };
 
-      // DeepSeek 不支持 Output.object 走的 json_schema response_format（只接 json_object）。
-      // 用 DeepSeek 时直接走 raw 文本 + 解析路径，省掉一次必然失败的 Output.object 尝试。
-      const useRawFirst = Boolean(deepseekKey);
-
       try {
-        if (useRawFirst) throw new Error("skip-output-object-for-deepseek");
         const result = await generateText({
           model,
           prompt,
@@ -2113,32 +2044,8 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
               : "partial";
 
         const review = reviewById.get(p.placeId) ?? null;
-        const rawTabelog = tabelogById.get(p.placeId) ?? null;
-        const rawYelp = yelpById.get(p.placeId) ?? null;
-
-        // 用 DeepSeek 排序时输出的 displayFields 覆盖 evidence 阶段留空的字段
-        const dfTabelog = pick?.displayFields?.tabelog ?? null;
-        const dfYelp = pick?.displayFields?.yelp ?? null;
-        const tabelogInfo: TabelogInfo | null = rawTabelog
-          ? {
-              ...rawTabelog,
-              rating: dfTabelog?.rating ?? rawTabelog.rating,
-              reviewCount: dfTabelog?.reviewCount ?? rawTabelog.reviewCount,
-              priceRange: dfTabelog?.priceRange ?? rawTabelog.priceRange,
-              priceJPY: parseTabelogPriceJPY(dfTabelog?.priceRange ?? rawTabelog.priceRange),
-              summary: dfTabelog?.summary ?? rawTabelog.summary,
-            }
-          : null;
-        const yelpInfo: YelpInfo | null = rawYelp
-          ? {
-              ...rawYelp,
-              rating: dfYelp?.rating ?? rawYelp.rating,
-              reviewCount: dfYelp?.reviewCount ?? rawYelp.reviewCount,
-              priceLevel: dfYelp?.priceLevel ?? rawYelp.priceLevel,
-              summary: dfYelp?.summary ?? rawYelp.summary,
-            }
-          : null;
-
+        const tabelogInfo = tabelogById.get(p.placeId) ?? null;
+        const yelpInfo = yelpById.get(p.placeId) ?? null;
         const restaurant: z.infer<typeof RestaurantSchema> = {
           id: `${cuisine}-${idx}-${p.placeId}`.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80),
           name: p.name,

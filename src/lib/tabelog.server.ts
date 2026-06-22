@@ -7,23 +7,13 @@
 
 export type TabelogPriceJPY = { low: number | null; high: number | null };
 
-export type TabelogEvidence = {
-  matchEvidence: string[];
-  fieldEvidence: string[];
-  reviewEvidence: string[];
-  pageSignals: string[];
-};
-
-// rating/reviewCount/priceRange/summary 默认 null：由下游 DeepSeek 排序时从 evidence 中提取。
-// 保留这些字段是为了 UI 兼容；displayFields 合并后会覆盖。
 export type TabelogInfo = {
-  rating: string | null;
-  reviewCount: number | null;
-  url: string | null;
-  priceRange: string | null;
-  priceJPY: TabelogPriceJPY | null;
-  summary: string | null;
-  evidence: TabelogEvidence | null;
+  rating: string | null; // 例 "3.62"
+  reviewCount: number | null; // 例 412
+  url: string | null; // tabelog 店铺页 URL（必须包含 tabelog.com）
+  priceRange: string | null; // 例 "￥6,000〜￥7,999"（原文）
+  priceJPY: TabelogPriceJPY | null; // 解析后的数字区间（JPY）
+  summary: string | null; // 1-2 句中文摘要
 };
 
 const cache = new Map<string, TabelogInfo | null>();
@@ -271,7 +261,6 @@ async function preSearchTabelog(opts: {
 
 type Stage = "sonar" | "sonar-pro";
 
-// 调 Perplexity 拉 evidence 包：URL + 4 类短引用（不再让 Perplexity 直接产业务字段）。
 async function callPerplexity(opts: {
   apiKey: string;
   stage: Stage;
@@ -287,59 +276,54 @@ async function callPerplexity(opts: {
   const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const isFirst = stage === "sonar";
+
+    const priorityBlock = `**字段优先级（按顺序尽力读）**：
+1. **summary（评论口碑，最关键）**：基于真实 Tabelog 口コミ 文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
+2. **rating（综合评分）/ reviewCount（口コミ件数）**：直接读页面字段。
+3. **priceRange（夜の予算/ランチ予算）**：读到就给。`;
+
     const hintLine = preUrl
-      ? `\n候选 Tabelog 详情页：${preUrl}\n先打开页面核验店名+地址是否吻合，吻合再摘 evidence；不吻合 url=null。\n`
+      ? `\n候选 Tabelog 店铺页 URL：${preUrl}\n请优先打开该页面核验店名+地址是否吻合，吻合则原样返回 url 并读取字段。\n`
       : "";
+
     const cuisineLine = cuisine ? `- 料理类型：${cuisine}\n` : "";
 
     const userPrompt = isFirst
-      ? `从 Tabelog（食べログ）上为这家店收集**证据片段**（不要做归纳，不要写结论）：
+      ? `查找 Tabelog 上的店铺：
 - 店名：${name}
 - 地址：${address}
 - 城市：${city}
 - 行政区提示：${area || "（未知）"}
 ${cuisineLine}${hintLine}
-**任务**：找到该店的 Tabelog 店铺详情页（https://tabelog.com/<pref>/A.../...../<数字>/，禁止搜索/列表页），输出 JSON：
+${priorityBlock}
 
-\`\`\`
-{
-  "url": "https://tabelog.com/...",
-  "matchEvidence":  [2-3 条，必须含店名 + 地址原文（用来核验是否同一家店）],
-  "fieldEvidence":  [3-5 条，包含 总合点数原文、口コミ件数原文、夜の予算/ランチ予算原文、ジャンル],
-  "reviewEvidence": [6-8 条，从真实 口コミ 里摘的**原话片段**，覆盖料理/接客/雰囲気/コスパ],
-  "pageSignals":    [3-5 条，营业时间/电话/最寄駅/招牌菜]
-}
-\`\`\`
+其它要求：
+- 必须是 tabelog.com 上**真实存在**的店铺页（URL 形如 https://tabelog.com/<pref>/A.../...../<数字>/，例 tabelog.com/tokyo/A1301/A130101/13001234/）。**绝对不要返回搜索页/分类页/列表页 URL**。
+- 店名和地址必须能合理对应；同名不同店一律算找不到，宁可返回 null。
+- url: 找到即返回；即使评分/口コミ件数/价位/摘要暂时读取不到，也照常返回 url。
+- rating: Tabelog 综合评分（数字字符串如 "3.62"）。读不到 → null。
+- reviewCount: 口コミ件数（整数）。读不到 → null。
+- priceRange: "夜の予算" 或 "ランチ予算" 字段原文（如 "￥6,000〜￥7,999"）。读不到 → null。
+- summary: 1-2 句简体中文，归纳口碑（具体菜品/服务/氛围），≤ 60 字。读不到 → null。
 
-硬规则：
-- 每条 evidence 80–120 字符；超过截断；不要翻译或改写，保留日文/中文原文。
-- 找不到的字段给空数组 []，**禁止编造**。
-- url 必须是真实店铺详情页；同名不同区一律视为不匹配 → url=null + 全空数组。
-- 只输出 JSON，不要前后说明。`
-      : `请用 Google 搜索 \`site:tabelog.com "${name}" "${area || city}"\` 找到该店在 Tabelog 的店铺页，然后采集 evidence。
+只输出 JSON。找不到任何匹配店铺时，所有字段返回 null。`
+      : `请用 Google 搜索 \`site:tabelog.com "${name}" "${area || city}"\` 找到该店在 Tabelog 的店铺页，然后读取评分/口コミ件数/价位/摘要。
 
 店铺信息：
 - 店名：${name}
-- 地址：${address}
+- Google 地址：${address}
 - 城市：${city}
 - 期望行政区：${area || "（未知，按城市判断）"}
 ${cuisineLine}${hintLine}
-**任务**：输出 JSON：
+${priorityBlock}
 
-\`\`\`
-{
-  "url": "https://tabelog.com/...",
-  "matchEvidence":  [2-3 条，必须含店名 + 地址原文],
-  "fieldEvidence":  [3-5 条，rating/口コミ件数/夜の予算/ランチ予算/ジャンル 原文],
-  "reviewEvidence": [6-8 条，真实口コミ原话片段],
-  "pageSignals":    [3-5 条，营业时间/最寄駅/招牌菜]
-}
-\`\`\`
+严格要求：
+- 必须返回**店铺详情页** URL（形如 https://tabelog.com/<pref>/A.../...../<数字>/）。**禁止返回搜索/列表/排行榜页**。
+- 该店铺页的地址必须落在「${area || city}」内；落在其它行政区的同名店一律视为不匹配。
+- 即便没有评分/价位也要返回 url；只在确认 Tabelog 上没有这家店时全部返回 null。
+- rating / reviewCount / priceRange / summary 同第一轮规则；读不到原样返回 null，禁止编造。
 
-硬规则：
-- 必须返回**店铺详情页** URL（形如 https://tabelog.com/<pref>/A.../...../<数字>/）；禁止搜索/列表页。
-- 店铺地址必须落在「${area || city}」内；不在则 url=null。
-- 每条 evidence 80–120 字符，原文保留，禁止编造；只输出 JSON。`;
+只输出 JSON。`;
 
     const body: Record<string, unknown> = {
       model: isFirst ? "sonar" : "sonar-pro",
@@ -347,26 +331,26 @@ ${cuisineLine}${hintLine}
         {
           role: "system",
           content:
-            "你是 Tabelog 证据采集助手：只摘原文片段，不归纳、不产业务字段、不打分。同名不同区 → url=null。",
+            "你是 Tabelog（食べログ）查询助手。只参考 tabelog.com 的真实页面，找到与给定店名+地址最匹配的店铺页，输出结构化 JSON。找不到必须返回 null 字段，禁止编造。",
         },
         { role: "user", content: userPrompt },
       ],
-      max_tokens: isFirst ? 600 : 900,
+      max_tokens: isFirst ? 400 : 700,
       temperature: 0.1,
       response_format: {
         type: "json_schema",
         json_schema: {
-          name: "tabelog_evidence",
+          name: "tabelog_info",
           schema: {
             type: "object",
             properties: {
+              rating: { type: ["string", "null"] },
+              reviewCount: { type: ["number", "null"] },
               url: { type: ["string", "null"] },
-              matchEvidence: { type: "array", items: { type: "string" } },
-              fieldEvidence: { type: "array", items: { type: "string" } },
-              reviewEvidence: { type: "array", items: { type: "string" } },
-              pageSignals: { type: "array", items: { type: "string" } },
+              priceRange: { type: ["string", "null"] },
+              summary: { type: ["string", "null"] },
             },
-            required: ["url", "matchEvidence", "fieldEvidence", "reviewEvidence", "pageSignals"],
+            required: ["rating", "reviewCount", "url", "priceRange", "summary"],
           },
         },
       },
@@ -383,6 +367,7 @@ ${cuisineLine}${hintLine}
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
           },
+          // 内层用 retry signal；外层 controller 仍保留 20s 兜底总超时
           signal: sig ?? controller.signal,
           body: JSON.stringify(body),
         }).then((r) => {
@@ -407,38 +392,7 @@ ${cuisineLine}${hintLine}
   }
 }
 
-function sanitizeEvidenceList(raw: unknown, max: number): string[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((x): x is string => typeof x === "string")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .slice(0, max)
-    .map((s) => (s.length > 140 ? s.slice(0, 140) : s));
-}
-
-function emptyEvidence(): TabelogEvidence {
-  return { matchEvidence: [], fieldEvidence: [], reviewEvidence: [], pageSignals: [] };
-}
-
-function urlOnlyInfo(url: string, evidence: TabelogEvidence | null): TabelogInfo {
-  return {
-    rating: null,
-    reviewCount: null,
-    url,
-    priceRange: null,
-    priceJPY: null,
-    summary: null,
-    evidence,
-  };
-}
-
-function parseEvidenceStage(
-  name: string,
-  stage: Stage,
-  raw: unknown,
-  preUrl: string | null,
-): TabelogInfo | null {
+function parseStage(name: string, stage: Stage, raw: unknown, preUrl: string | null): TabelogInfo | null {
   const json = raw as Record<string, unknown> | null;
   if (!json) return null;
   const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
@@ -446,14 +400,24 @@ function parseEvidenceStage(
   const citations: string[] = Array.isArray(json.citations)
     ? (json.citations as unknown[]).filter((c): c is string => typeof c === "string")
     : [];
+
+  // 只接受店铺详情页 URL
   const tabelogCitation = citations.find((c) => TABELOG_SHOP_URL_RE.test(c)) ?? null;
 
   if (!content) {
     const url = preUrl ?? tabelogCitation;
     if (url) {
       console.log(`[Tabelog/${stage}] ${name}: empty content but url available → url-only`);
-      return urlOnlyInfo(url, null);
+      return {
+        rating: null,
+        reviewCount: null,
+        url,
+        priceRange: null,
+        priceJPY: null,
+        summary: null,
+      };
     }
+    console.warn(`[Tabelog/${stage}] ${name}: empty content & no shop-page url`);
     return null;
   }
 
@@ -461,38 +425,45 @@ function parseEvidenceStage(
   try {
     parsed = JSON.parse(content);
   } catch {
-    const url = preUrl ?? tabelogCitation;
-    return url ? urlOnlyInfo(url, null) : null;
+    console.warn(`[Tabelog/${stage}] ${name}: parse_error`);
+    return null;
   }
 
   const rawUrl = typeof parsed.url === "string" ? parsed.url.trim() : null;
   const urlFromJson = rawUrl && TABELOG_SHOP_URL_RE.test(rawUrl) ? rawUrl : null;
-  const verifyRejected = parsed.url === null;
-  const url = urlFromJson ?? (verifyRejected ? null : (preUrl ?? tabelogCitation));
-  if (!url) return null;
+  const url = urlFromJson ?? preUrl ?? tabelogCitation;
 
-  const evidence: TabelogEvidence = {
-    matchEvidence: sanitizeEvidenceList(parsed.matchEvidence, 3),
-    fieldEvidence: sanitizeEvidenceList(parsed.fieldEvidence, 5),
-    reviewEvidence: sanitizeEvidenceList(parsed.reviewEvidence, 8),
-    pageSignals: sanitizeEvidenceList(parsed.pageSignals, 5),
-  };
-  const totalEv =
-    evidence.matchEvidence.length +
-    evidence.fieldEvidence.length +
-    evidence.reviewEvidence.length +
-    evidence.pageSignals.length;
+  if (!url) {
+    console.warn(`[Tabelog/${stage}] ${name}: no shop-page url in JSON or citations`);
+    return null;
+  }
+
+  const ratingRaw = parsed.rating;
+  const rating =
+    typeof ratingRaw === "string" && /^\d(\.\d{1,2})?$/.test(ratingRaw.trim())
+      ? ratingRaw.trim()
+      : typeof ratingRaw === "number" && ratingRaw > 0 && ratingRaw <= 5
+        ? ratingRaw.toFixed(2)
+        : null;
+  const reviewCount =
+    typeof parsed.reviewCount === "number" && parsed.reviewCount >= 0
+      ? Math.round(parsed.reviewCount)
+      : null;
+  const priceRange =
+    typeof parsed.priceRange === "string" && parsed.priceRange.trim().length > 0
+      ? parsed.priceRange.trim().slice(0, 60)
+      : null;
+  const priceJPY = parseTabelogPriceJPY(priceRange);
+  const summary =
+    typeof parsed.summary === "string" && parsed.summary.trim().length > 0
+      ? parsed.summary.trim().slice(0, 120)
+      : null;
 
   console.log(
-    `[Tabelog/${stage}] ${name}: ok url=${url.slice(0, 60)} evidence=${totalEv}(m${evidence.matchEvidence.length}/f${evidence.fieldEvidence.length}/r${evidence.reviewEvidence.length}/s${evidence.pageSignals.length})`,
+    `[Tabelog/${stage}] ${name}: ok rating=${rating} reviews=${reviewCount} price=${priceRange ?? "-"} priceJPY=${priceJPY ? `${priceJPY.low ?? "-"}~${priceJPY.high ?? "-"}` : "-"}`,
   );
 
-  return urlOnlyInfo(url, totalEv > 0 ? evidence : emptyEvidence());
-}
-
-function hasUsefulEvidence(info: TabelogInfo | null): boolean {
-  if (!info || !info.evidence) return false;
-  return info.evidence.reviewEvidence.length > 0 || info.evidence.fieldEvidence.length > 0;
+  return { rating, reviewCount, url, priceRange, priceJPY, summary };
 }
 
 export async function fetchTabelogInfo(
@@ -508,22 +479,24 @@ export async function fetchTabelogInfo(
   if (cache.has(cacheKey)) return cache.get(cacheKey) ?? null;
 
   const area = extractJPArea(address);
+
+  // Stage 0：多变体预搜，挑最真实候选页 URL
   const preUrl = await preSearchTabelog({ apiKey, name, city, address, cuisine });
 
+  // Stage 1
   const r1 = await callPerplexity({
     apiKey, stage: "sonar", name, address, city, area, cuisine, preUrl,
   });
-  let info = r1?.ok ? parseEvidenceStage(name, "sonar", r1.json, preUrl) : null;
+  let info = r1?.ok ? parseStage(name, "sonar", r1.json, preUrl) : null;
 
-  if (!info || !hasUsefulEvidence(info)) {
+  // Stage 2 fallback
+  if (!info) {
     const r2 = await callPerplexity({
-      apiKey, stage: "sonar-pro", name, address, city, area, cuisine, preUrl: info?.url ?? preUrl,
+      apiKey, stage: "sonar-pro", name, address, city, area, cuisine, preUrl,
     });
-    const info2 = r2?.ok ? parseEvidenceStage(name, "sonar-pro", r2.json, info?.url ?? preUrl) : null;
-    if (info2) info = info2;
+    info = r2?.ok ? parseStage(name, "sonar-pro", r2.json, preUrl) : null;
   }
 
   cache.set(cacheKey, info);
   return info;
 }
-
