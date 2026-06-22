@@ -1745,7 +1745,26 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
 - **来源标注**：每条 pros/cons 的 source 字段优先填上平台名（Google / Tabelog / Yelp）。
 - **宁缺毋滥**：当某家店在所有平台评论里都找不到足够支撑的口碑点（少于 2 条评论提及）时，pros 或 cons 直接返回空数组 []，不要为了凑数硬写；前端已经有"暂无可信网评 / 暂无明显差评"的兜底文案。
 
-输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
+## displayFields：从 tabelog/yelp evidence 中提取展示字段
+候选数据里 \`tabelog\` / \`yelp\` 不再带 rating/summary/price，而是带 \`evidence\` 包（matchEvidence / fieldEvidence / reviewEvidence / pageSignals 四个数组的原文片段）。你需要为每个 pick 额外输出 \`displayFields\`，把这些 evidence 提炼成展示字段：
+
+- **displayFields.yelp**（仅当 candidate.yelp 非 null 才输出，否则给 null）：
+  - \`rating\`: 形如 "4.3" 的字符串；只能来自 fieldEvidence，找不到 → null。
+  - \`reviewCount\`: 整数；只能来自 fieldEvidence，找不到 → null。
+  - \`priceLevel\`: "$" / "$$" / "$$$" / "$$$$"；只能来自 fieldEvidence，找不到 → null。
+  - \`summary\`: ${isEn ? "1-2 句英文，≤80 字符" : "1-2 句简体中文，≤60 字符"}，必须从 reviewEvidence 归纳具体菜品/服务/氛围；reviewEvidence 为空 → null，禁止编造。
+- **displayFields.tabelog**（仅当 candidate.tabelog 非 null 才输出，否则给 null）：
+  - \`rating\`: 形如 "3.62" 的字符串；只能来自 fieldEvidence（综合点数）。
+  - \`reviewCount\`: 口コミ件数整数。
+  - \`priceRange\`: 夜の予算/ランチ予算字段原文，例 "￥6,000〜￥7,999"。
+  - \`summary\`: ${isEn ? "1-2 句英文 ≤80 字符" : "1-2 句简体中文 ≤60 字符"}，必须从 reviewEvidence 归纳；空则 null。
+
+铁律：
+- evidence 里有什么填什么，没有就给 null，**禁止编造任何字段**。
+- 排序与匹配判断（hardFilterChecks / matchDetails / pros / cons）也应优先参考 evidence 原文。
+- displayFields 的 summary **只描述真实评论口碑**，不要回扣用户需求。
+
+输出 JSON 格式：{ "picks": [{ "placeId": "...", "matchScore": 88, "displayFields": { "yelp": {...}|null, "tabelog": {...}|null }, ... }] }
 （注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
 };
 
