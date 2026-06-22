@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
+import { createDeepSeekProvider, DEEPSEEK_CHAT_MODEL } from "./deepseek.server";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
