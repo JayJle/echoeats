@@ -1546,12 +1546,22 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
     const yelpById = new Map<string, YelpInfo>();
     if (pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
+      // 只对"会进入 AI 排序"的候选做 Perplexity 富化，按 cuisine 取头部，避免给被裁掉的项目白跑。
+      // 与下游 rankOneGroup 的 BATCH_SIZE=12 对齐，留一点冗余覆盖一个 batch 用量。
+      const YELP_PER_CUISINE = 12;
       const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
       for (const r of placeResults) {
-        for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
+        const ranked = [...r.places].sort((a, b) => {
+          const sa = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
+          const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
+          return sb - sa;
+        });
+        for (const p of ranked.slice(0, YELP_PER_CUISINE)) {
+          allTargets.push({ p, cuisine: r.cuisine });
+        }
       }
       yield { type: "stage", stage: "yelp", total: allTargets.length };
-      const CONCURRENCY = 8;
+      const CONCURRENCY = 16;
       let cursor = 0;
       const runWorker = async () => {
         while (true) {
