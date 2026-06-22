@@ -1082,6 +1082,7 @@ async function* withHeartbeat<T>(
   p: Promise<T>,
   stage: string,
   intervalMs = 4000,
+  progress?: () => { done: number; total: number },
 ): AsyncGenerator<SearchStreamChunk, T, unknown> {
   let settled = false;
   let value: T | undefined;
@@ -1103,7 +1104,12 @@ async function* withHeartbeat<T>(
       tracked,
       new Promise<void>((r) => setTimeout(r, intervalMs)),
     ]);
-    if (!settled) yield { type: "heartbeat", stage };
+    if (!settled) {
+      const prog = progress?.();
+      yield prog
+        ? { type: "heartbeat", stage, done: prog.done, total: prog.total }
+        : { type: "heartbeat", stage };
+    }
   }
   if (isError) throw error;
   return value as T;
