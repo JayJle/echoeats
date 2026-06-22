@@ -1256,6 +1256,10 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
     const recallSourcesById = new Map<string, string[]>();
+    // 跨品类去重：每个 placeId 原本命中的所有品类（保留全集，供 AI prompt / 前端展示参考）
+    const matchedCuisinesById = new Map<string, string[]>();
+    // 跨品类去重：每个 placeId 在每个命中品类下的召回 tag 列表
+    const recallSourcesByCuisine = new Map<string, Map<string, string[]>>();
     let placeResults: Array<{
       cuisine: string;
       places: PlaceCandidate[];
@@ -1376,9 +1380,13 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             }
           }
           // attach recallSources to each PlaceCandidate via a side-map (kept on outer scope)
+          const perCuisine = new Map<string, string[]>();
           for (const [pid, tags] of recallSourcesMap) {
-            recallSourcesById.set(pid, Array.from(tags));
+            const arr = Array.from(tags);
+            recallSourcesById.set(pid, arr);
+            perCuisine.set(pid, arr);
           }
+          recallSourcesByCuisine.set(cuisine, perCuisine);
           const allPlaces = Array.from(merged.values());
           const inRegionPlaces = allPlaces.filter((place) => {
             const outside = isPlaceClearlyOutsideTargetRegion(place, region, data.city);
@@ -1395,6 +1403,99 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       );
     }
 
+    // ============ 跨品类去重 ============
+    // 同一家店（placeId）若在多个品类桶里出现，按以下优先级唯一归属到一个桶：
+    //   1) 强匹配（primaryType > name > editorialSummary 命中该品类的 primary/synonyms）
+    //   2) 召回路线强度（primary > name:/cuisine: > 其它）
+    //   3) 稀有品类优先（候选总数更少的品类先收）
+    //   4) 用户输入顺序（data.cuisines 越靠前越优先）
+    // 兜底品类（"餐厅"/"Restaurants"）永远排最后。
+    {
+      const fallbackWord = data.uiLanguage === "en" ? "Restaurants" : "餐厅";
+      const cuisineOrder = new Map(data.cuisines.map((c, i) => [c, i]));
+      const bucketSize = new Map(placeResults.map((r) => [r.cuisine, r.places.length]));
+      const beforeSum = placeResults.reduce((s, r) => s + r.places.length, 0);
+
+      // 收集 placeId -> 出现过的品类
+      const occur = new Map<string, { cuisine: string; place: PlaceCandidate }[]>();
+      for (const r of placeResults) {
+        for (const p of r.places) {
+          if (!occur.has(p.placeId)) occur.set(p.placeId, []);
+          occur.get(p.placeId)!.push({ cuisine: r.cuisine, place: p });
+        }
+      }
+
+      const scoreFor = (placeId: string, cuisine: string, place: PlaceCandidate): number => {
+        if (cuisine === fallbackWord) return -1e9 + (cuisineOrder.get(cuisine) ?? 0);
+        let score = 0;
+        const exp = cuisineExpansions.get(cuisine);
+        if (exp) {
+          const positives = [exp.primary, ...exp.synonyms]
+            .map((s) => (s ?? "").toLowerCase())
+            .filter(Boolean);
+          const primaryType = (place.primaryType ?? "").toLowerCase();
+          const name = (place.name ?? "").toLowerCase();
+          const editorial = (place.editorialSummary ?? "").toLowerCase();
+          if (positives.some((k) => primaryType.includes(k))) score += 1000;
+          else if (positives.some((k) => name.includes(k))) score += 500;
+          else if (positives.some((k) => editorial.includes(k))) score += 200;
+        }
+        const tags = recallSourcesByCuisine.get(cuisine)?.get(placeId) ?? [];
+        if (tags.includes("primary")) score += 80;
+        else if (tags.some((t) => t.startsWith("name:") || t.startsWith("cuisine:"))) score += 50;
+        else if (tags.length > 0) score += 20;
+        // 稀有品类优先：bucketSize 越小，加分越多（最大约 +50）
+        const bs = bucketSize.get(cuisine) ?? 0;
+        score += Math.max(0, 50 - bs);
+        // 用户输入顺序：靠前优先，最多 +data.cuisines.length，避免覆盖前面的强信号
+        const order = cuisineOrder.get(cuisine) ?? 999;
+        score += Math.max(0, 10 - order);
+        return score;
+      };
+
+      const winnerByPlace = new Map<string, string>();
+      for (const [pid, entries] of occur) {
+        const all = entries.map((e) => e.cuisine);
+        matchedCuisinesById.set(pid, Array.from(new Set(all)));
+        if (entries.length === 1) {
+          winnerByPlace.set(pid, entries[0].cuisine);
+          continue;
+        }
+        let best = entries[0];
+        let bestScore = scoreFor(pid, best.cuisine, best.place);
+        for (let i = 1; i < entries.length; i++) {
+          const s = scoreFor(pid, entries[i].cuisine, entries[i].place);
+          if (s > bestScore) {
+            best = entries[i];
+            bestScore = s;
+          }
+        }
+        winnerByPlace.set(pid, best.cuisine);
+      }
+
+      // 重建 placeResults：每个桶只保留 winner 归属是自己的 placeId
+      placeResults = placeResults.map((r) => ({
+        ...r,
+        places: r.places.filter((p) => winnerByPlace.get(p.placeId) === r.cuisine),
+      }));
+
+      const afterSum = placeResults.reduce((s, r) => s + r.places.length, 0);
+      const unionSize = occur.size;
+      const duplicates = beforeSum - unionSize;
+      console.log(
+        `[dedupe] union=${unionSize} kept=${afterSum} before=${beforeSum} duplicatesRemoved=${duplicates} buckets=[${placeResults.map((r) => `${r.cuisine}:${r.places.length}`).join(", ")}]`,
+      );
+      if (afterSum !== unionSize) {
+        console.error(
+          `[dedupe] HEALTH CHECK FAILED: kept=${afterSum} != union=${unionSize}. Some restaurants may have been lost.`,
+        );
+        pushWarn({
+          stage: "dedupe",
+          message: `跨品类去重健康检查失败：kept=${afterSum} 不等于 union=${unionSize}`,
+          retryable: false,
+        });
+      }
+    }
 
     const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
     yield { type: "stage", stage: "places-done", count: totalCandidates };
@@ -1635,6 +1736,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               openNow: p.openNow,
               primaryType: p.primaryType,
               editorialSummary: p.editorialSummary,
+              matchedCuisines: matchedCuisinesById.get(p.placeId) ?? [r.cuisine],
               realWorldReviews: review,
               tabelog: tabelog
                 ? {
