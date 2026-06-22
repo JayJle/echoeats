@@ -735,19 +735,47 @@ const HardFilterCheckSchema = z.preprocess(
 );
 
 
+// 容错说明：模型经常漏 matchScore / matchTier / aiSummary 这几个字段，或者把数字写成
+// 带引号的字符串。这里全部用 coerce + catch + default 兜底，让第一档 Output.object
+// 不再因为单字段缺失而整组失败（slim fallback 触发的根因）。
 const AiPickSchema = z.object({
   placeId: z.string(),
-  matchScore: z.number().min(0).max(100),
-  matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
-  aiSummary: z.string(),
-  pros: z.array(z.preprocess(
-    (v) => (typeof v === "string" ? { text: v, source: null } : v),
-    z.object({ text: z.string(), source: z.string().nullable().optional() }),
-  )).default([]),
-  cons: z.array(z.preprocess(
-    (v) => (typeof v === "string" ? { text: v, source: null } : v),
-    z.object({ text: z.string(), source: z.string().nullable().optional() }),
-  )).default([]),
+  verificationStatus: z
+    .enum(["ok", "unknown", "fail"])
+    .catch("unknown")
+    .default("unknown"),
+  matchScore: z.coerce.number().min(0).max(100).catch(0).default(0),
+  matchTier: z
+    .enum(["perfect", "high", "partial"])
+    .catch("partial")
+    .default("partial"),
+  aiSummary: z.string().catch("").default(""),
+  pros: z
+    .array(
+      z.preprocess(
+        (v) => (typeof v === "string" ? { text: v, source: null } : v),
+        z.object({
+          text: z.string().catch("").default(""),
+          source: z.string().nullable().optional(),
+        }),
+      ),
+    )
+    .catch([])
+    .default([])
+    .transform((arr) => arr.filter((p) => p.text && p.text.trim().length > 0)),
+  cons: z
+    .array(
+      z.preprocess(
+        (v) => (typeof v === "string" ? { text: v, source: null } : v),
+        z.object({
+          text: z.string().catch("").default(""),
+          source: z.string().nullable().optional(),
+        }),
+      ),
+    )
+    .catch([])
+    .default([])
+    .transform((arr) => arr.filter((c) => c.text && c.text.trim().length > 0)),
   matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
   hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
 });
@@ -1719,8 +1747,44 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
 - **来源标注**：每条 pros/cons 的 source 字段优先填上平台名（Google / Tabelog / Yelp）。
 - **宁缺毋滥**：当某家店在所有平台评论里都找不到足够支撑的口碑点（少于 2 条评论提及）时，pros 或 cons 直接返回空数组 []，不要为了凑数硬写；前端已经有"暂无可信网评 / 暂无明显差评"的兜底文案。
 
-输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
-（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
+## 输出格式（严格遵守，否则整组失败）
+只输出 JSON，第一字符必须是 "{"，最后一字符必须是 "}"。不要 markdown，不要 \`\`\`json，不要任何前后说明。
+
+picks.length 必须等于 ${group.candidates.length}（候选数），顺序与候选一致；即使 fail 也要保留。
+
+每个 pick 必填字段（缺一不可，缺失将导致整组排序失败）：
+- placeId (string，原样回传)
+- verificationStatus ("ok" | "unknown" | "fail")
+- **matchScore (0-100 的 number，不要字符串、不要带引号、不要省略)**
+- matchTier ("perfect" | "high" | "partial"，与 matchScore 阈值一致：>=92 perfect，>=80 high，否则 partial)
+- aiSummary (string，简短一句话)
+- **pros / cons 必须是对象数组 [{text: string, source?: string}]，禁止字符串数组；无证据时给 []**
+- matchDetails (长度严格 = ${nonHardFilters.length})
+- hardFilterChecks (长度严格 = ${hardFiltersList.length})
+
+输出样例（结构示意，照此形状生成）：
+{
+  "picks": [
+    {
+      "placeId": "ChIJxxx",
+      "verificationStatus": "ok",
+      "matchScore": 86,
+      "matchTier": "high",
+      "aiSummary": "炭火焼鳥口碑稳定，整体适合认真吃一顿。",
+      "pros": [
+        { "text": "评论提到炭火焼鳥表现好。", "source": "Google" },
+        { "text": "Tabelog 提到つくね和レバー表现稳定。", "source": "Tabelog" }
+      ],
+      "cons": [],
+      "matchDetails": [
+        { "label": "想吃烤鸡肉串：评论提到炭火焼鳥。", "status": "ok", "confidence": 90 }
+      ],
+      "hardFilterChecks": [
+        { "status": "ok", "note": "类型与评论均指向焼鳥店。", "confidence": 92 }
+      ]
+    }
+  ]
+}`;
 };
 
 
@@ -1738,10 +1802,24 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
 - picks 数组必须逐一覆盖本批所有候选（本批最多 8 条）；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
 
       const extractJson = (text: string): string => {
-        const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-        if (fenced) return fenced[1].trim();
-        const m = text.match(/\{[\s\S]*\}/);
-        return m ? m[0] : text;
+        let s = (text || "").trim();
+        // 剥所有 markdown 围栏变体
+        s = s.replace(/^```(?:json|JSON)?\s*/i, "").replace(/```\s*$/i, "");
+        // 抓首 { 到末 }
+        const first = s.indexOf("{");
+        const last = s.lastIndexOf("}");
+        if (first !== -1 && last > first) s = s.slice(first, last + 1);
+        // 修复带引号的数字字段（matchScore / confidence 偶尔会被模型加引号）
+        s = s.replace(
+          /"(matchScore|confidence)"\s*:\s*"(-?\d+(?:\.\d+)?)"/g,
+          '"$1": $2',
+        );
+        // 修复千分位逗号数字（"1,200" → 1200）
+        s = s.replace(
+          /"(matchScore|confidence|rating|reviewCount)"\s*:\s*"(\d{1,3}(?:,\d{3})+(?:\.\d+)?)"/g,
+          (_m, k, n) => `"${k}": ${n.replace(/,/g, "")}`,
+        );
+        return s;
       };
 
       // 极简兜底：砍掉占 token 大头的 realWorldReviews + 截短 tabelog/yelp summary。
@@ -1798,7 +1876,16 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           if (finishReason === "length" || finishReason === "max-tokens") {
             throw new Error(`truncated (finishReason=${finishReason})`);
           }
-          const parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          const rawText = fb.text || "";
+          let parsed;
+          try {
+            parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(rawText)));
+          } catch (parseErr) {
+            console.warn(
+              `[Echo/AI-rank] "${group.cuisine}" raw parse error, head=${JSON.stringify(rawText.slice(0, 200))}`,
+            );
+            throw parseErr;
+          }
           console.log(
             `[Echo/AI-rank] "${group.cuisine}" fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
           );
