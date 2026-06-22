@@ -281,7 +281,12 @@ async function callPerplexity(opts: {
 - 城市：${city}
 - 地区提示：${area}
 ${hintLine}
-要求（按优先级）：
+**字段优先级（按顺序尽力读）**：
+1. **summary（评论口碑，最关键）**：基于真实 Yelp 评论文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
+2. **rating（评分）/ reviewCount（评论数）**：直接读页面字段。
+3. **priceLevel（价位）**：读到就给。
+
+其它要求：
 - url 优先级最高：只要 Yelp 上有这家店的详情页（https://www.yelp.com/biz/<slug>），就返回 URL，**哪怕评分等其它字段读不到也要返回 URL**${verifyMode ? "（前提是核验通过）" : ""}。
 - ✗ 反例：https://www.yelp.com/search?find_desc=...（搜索页禁止）
 - 同名店：选地址/城市最匹配的那家。
