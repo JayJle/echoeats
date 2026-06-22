@@ -121,14 +121,14 @@ function conditionKey(text: string): string {
   return normalizeText(right) || normalizeText(text);
 }
 
+// 同 key 时保留 weight 最大的那一条，文本沿用最大权重那一条。
 function uniqueConditions(items: WeightedCondition[]): WeightedCondition[] {
   const unique = new Map<string, WeightedCondition>();
   for (const item of items) {
     const key = conditionKey(item.text);
     if (!key) continue;
     const existing = unique.get(key);
-    if (!existing) unique.set(key, item);
-    else if (item.weight > existing.weight) unique.set(key, { ...existing, weight: item.weight });
+    if (!existing || item.weight > existing.weight) unique.set(key, item);
   }
   return [...unique.values()];
 }
@@ -144,18 +144,15 @@ function uniqueStrings(items: string[]): string[] {
 }
 
 function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
-  // 优先级：negative > hard > soft（同一语义主题只保留最高优先级一处）
+  // negative 与 hard/soft 极性相反，单独去重，绝不跨数组合并。
   const negativeFilters = uniqueConditions(parsed.negativeFilters);
-  const negativeKeys = new Set(negativeFilters.map((item) => conditionKey(item.text)));
-  const hardFilters = uniqueConditions(parsed.hardFilters).filter(
-    (item) => !negativeKeys.has(conditionKey(item.text)),
-  );
-  const hardKeys = new Set(hardFilters.map((item) => conditionKey(item.text)));
-  const softPreferences = uniqueConditions(parsed.softPreferences).filter((item) => {
-    const key = conditionKey(item.text);
-    return !negativeKeys.has(key) && !hardKeys.has(key);
-  });
-  // 菜品名仅按字面去重；不走主题归一（"鳗鱼饭"、"刺身" 是独立菜品，不应合并）。
+  // hard 与 soft 合并候选池，按同语义主题分组取最高 weight；
+  // weight ≥ 0.8 入 hard，否则入 soft（与"0.8 提升为 hard"的规则天然一致）。
+  const pool: WeightedCondition[] = [...parsed.hardFilters, ...parsed.softPreferences];
+  const merged = uniqueConditions(pool);
+  const hardFilters = merged.filter((item) => item.weight >= 0.8);
+  const softPreferences = merged.filter((item) => item.weight < 0.8);
+  // 菜品名仅按字面去重；不走主题归一。
   const dishPreferences = [...new Map(
     parsed.dishPreferences
       .map((dish) => [normalizeText(dish), dish.trim()] as const)
@@ -170,6 +167,106 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
     softPreferences,
     dishPreferences,
   };
+}
+
+// Step 2：语义去重。Step 1 的正则覆盖不到的同义/近义条目，用一次小模型调用收口。
+// 输入：用户原文 + 当前结构化条件（带 bucket+index）。
+// 输出：分组合并指令，每组保留 weight 最大那一条，其余剔除。
+// 失败兜底：任何异常都跳过，仅用 Step 1 结果，不阻塞主流程。
+async function semanticDedupe(
+  parsed: z.infer<typeof ParsedSchema>,
+  freeText: string,
+  gateway: ReturnType<typeof createLovableAiGatewayProvider>,
+): Promise<z.infer<typeof ParsedSchema>> {
+  const hardCount = parsed.hardFilters.length;
+  const softCount = parsed.softPreferences.length;
+  const negCount = parsed.negativeFilters.length;
+  // 触发条件：hard+soft >=2 或 neg >=2；否则没有重复可言。
+  if (hardCount + softCount < 2 && negCount < 2) return parsed;
+
+  type Bucket = "hard" | "soft" | "neg";
+  type Item = { id: number; bucket: Bucket; text: string; weight: number };
+  const items: Item[] = [];
+  let id = 0;
+  parsed.hardFilters.forEach((x) => items.push({ id: id++, bucket: "hard", text: x.text, weight: x.weight }));
+  parsed.softPreferences.forEach((x) => items.push({ id: id++, bucket: "soft", text: x.text, weight: x.weight }));
+  parsed.negativeFilters.forEach((x) => items.push({ id: id++, bucket: "neg", text: x.text, weight: x.weight }));
+
+  const GroupsSchema = z.object({
+    groups: z
+      .array(
+        z.object({
+          keepId: z.number().int(),
+          mergeIds: z.array(z.number().int()).default([]),
+          reason: z.string().default(""),
+        }),
+      )
+      .default([]),
+  });
+
+  const dedupPrompt = `你是 Echo Eats 的需求语义去重器。判断下列结构化条件中，哪些条目在**用户原意**层面表达的是同一个诉求（同义/近义/不同强度的同一维度），把它们合并成一组。
+
+## 用户原文
+${freeText || "（空）"}
+
+## 当前条件（id | bucket | weight | text）
+${items.map((x) => `${x.id} | ${x.bucket} | ${x.weight.toFixed(1)} | ${x.text}`).join("\n")}
+
+## 规则（严格遵守）
+1. 判断时**同时比对**原文与结构化文本两层语义；不要只看字面。
+2. 同一组内**保留 weight 最大的 id**（keepId），其余进 mergeIds。weight 并列时按 bucket 优先级：neg > hard > soft。
+3. **neg 与 hard/soft 极性相反，绝对不能合并到同一组**。
+4. 不同维度即使主题相近也不能合并（例如"安静"与"无烟"是两个维度）。
+5. 不确定就**不要合并**，宁可多保留也不要错并。
+6. 每个 id 最多出现在一组里（要么 keepId 要么 mergeIds）；没有重复就返回 \`{"groups": []}\`。
+
+只返回 JSON，形如：\`{"groups":[{"keepId":2,"mergeIds":[0,5],"reason":"都是环境好"}]}\``;
+
+  try {
+    const { output } = await generateText({
+      model: gateway("google/gemini-2.5-flash-lite"),
+      prompt: dedupPrompt,
+      maxOutputTokens: 400,
+      output: Output.object({
+        schema: GroupsSchema,
+        name: "semantic_dedupe_groups",
+        description: "Groups of duplicate condition ids; keepId stays, mergeIds are dropped.",
+      }),
+    });
+    const { groups } = GroupsSchema.parse(output);
+    const dropped = new Set<number>();
+    const itemById = new Map(items.map((x) => [x.id, x] as const));
+    for (const g of groups) {
+      const keep = itemById.get(g.keepId);
+      if (!keep) continue;
+      for (const mid of g.mergeIds) {
+        const m = itemById.get(mid);
+        if (!m) continue;
+        // 极性保护：neg 与非 neg 之间永不合并
+        if ((keep.bucket === "neg") !== (m.bucket === "neg")) continue;
+        if (mid === g.keepId) continue;
+        dropped.add(mid);
+      }
+      if (groups.length) {
+        console.log(
+          `[semanticDedupe] keep #${g.keepId}(${keep.bucket} ${keep.weight.toFixed(1)}) <- merge [${g.mergeIds.join(",")}] ${g.reason ? "// " + g.reason : ""}`,
+        );
+      }
+    }
+    if (!dropped.size) return parsed;
+
+    // 按 bucket 重建数组（保持原顺序）
+    const keepByBucket = (b: Bucket) => items.filter((x) => x.bucket === b && !dropped.has(x.id));
+    return {
+      ...parsed,
+      hardFilters: keepByBucket("hard").map((x) => ({ text: x.text, weight: x.weight })),
+      softPreferences: keepByBucket("soft").map((x) => ({ text: x.text, weight: x.weight })),
+      negativeFilters: keepByBucket("neg").map((x) => ({ text: x.text, weight: x.weight })),
+    };
+  } catch (e) {
+    console.warn("[semanticDedupe] 跳过：", e instanceof Error ? e.message : e);
+    return parsed;
+  }
 }
 
 const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
@@ -425,7 +522,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         !userProvidedCuisines &&
         parsed.cuisines.length > 0 &&
         !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
-      return dedupeParsedConditions(parsed);
+      return await semanticDedupe(dedupeParsedConditions(parsed), data.freeText ?? "", gateway);
     };
 
     const logParsedSummary = (label: string, p: z.infer<typeof ParsedSchema>) => {
