@@ -461,6 +461,7 @@ export async function fetchYelpInfo(
   address: string,
   city: string,
   isEn = false,
+  cuisine?: string,
 ): Promise<YelpInfo | null> {
   const apiKey = process.env.PERPLEXITY_API_KEY;
   if (!apiKey) return null;
@@ -471,8 +472,8 @@ export async function fetchYelpInfo(
 
   const area = extractArea(address, city);
 
-  // Stage 0：多变体并发 + 打分
-  const { url: preUrl, confidence } = await preSearchYelp({ apiKey, name, city, address });
+  // Stage 0：多变体并发 + 打分（含 name+area+city+cuisine 变体）
+  const { url: preUrl, confidence } = await preSearchYelp({ apiKey, name, city, address, cuisine });
 
   let info: YelpInfo | null = null;
 
