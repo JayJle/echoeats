@@ -117,10 +117,12 @@ function scoreCandidates(
   name: string,
   city: string,
   address: string,
+  cuisine?: string,
 ): ScoredCandidate[] {
   const tokens = nameTokens(name);
   const cityToken = normalizeToken(city);
   const streetToks = extractStreetTokens(address);
+  const cuisineToks = cuisine ? nameTokens(cuisine) : [];
   // 抽取门牌号
   const streetNumMatch = address.match(/\b(\d{1,5})\b/);
   const streetNum = streetNumMatch ? streetNumMatch[1] : null;
@@ -156,6 +158,13 @@ function scoreCandidates(
       if (streetHit) score += 2;
       // 门牌号 in snippet
       if (streetNum && (r.snippet.includes(streetNum) || r.title.includes(streetNum))) score += 1;
+      // cuisine 关键词命中 snippet/title/slug → +1（多变体真实性加分）
+      if (cuisineToks.length > 0) {
+        const cuisineHit = cuisineToks.some(
+          (t) => snippetNorm.includes(t) || titleNorm.includes(t) || slug.includes(t),
+        );
+        if (cuisineHit) score += 1;
+      }
 
       const prev = byUrl.get(r.url);
       if (prev) {
@@ -167,10 +176,11 @@ function scoreCandidates(
     }
   }
 
-  // 多 batch 重复出现加分
+  // 多 batch 重复出现加分（出现在多条 query 里 = 更真实）
   const scored: ScoredCandidate[] = [];
   for (const [url, v] of byUrl.entries()) {
-    const final = v.score + (v.appearances > 1 ? 1 : 0);
+    const repeatBonus = v.appearances >= 3 ? 2 : v.appearances >= 2 ? 1 : 0;
+    const final = v.score + repeatBonus;
     scored.push({ url, score: final, appearances: v.appearances });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -189,9 +199,11 @@ async function preSearchYelp(opts: {
   name: string;
   city: string;
   address: string;
+  cuisine?: string;
 }): Promise<{ url: string | null; confidence: YelpConfidence }> {
-  const { apiKey, name, city, address } = opts;
+  const { apiKey, name, city, address, cuisine } = opts;
   const streetToks = extractStreetTokens(address);
+  const area = extractArea(address, city);
 
   const queries: Array<{ q: string; label: string }> = [
     { q: `"${name}" ${city} site:yelp.com`, label: "name+city" },
@@ -199,11 +211,18 @@ async function preSearchYelp(opts: {
   if (streetToks.length > 0) {
     queries.push({ q: `${name} ${streetToks.join(" ")} site:yelp.com`, label: "name+street" });
   }
+  // 新增：name + area + city + cuisine（强制变体）
+  if (cuisine && cuisine.trim()) {
+    queries.push({
+      q: `"${name}" ${area} ${city} ${cuisine} site:yelp.com`,
+      label: "name+area+city+cuisine",
+    });
+  }
 
   const batches = await Promise.all(queries.map((q) => perplexitySearch({ apiKey, query: q.q, label: q.label, name })));
-  let scored = scoreCandidates(batches, name, city, address);
+  let scored = scoreCandidates(batches, name, city, address, cuisine);
 
-  // 如果前两条 query 都没召回，name-only 兜底
+  // 如果前面所有 query 都没召回，name-only 兜底
   if (scored.length === 0) {
     const fallback = await perplexitySearch({
       apiKey,
@@ -211,7 +230,7 @@ async function preSearchYelp(opts: {
       label: "name-only",
       name,
     });
-    scored = scoreCandidates([fallback], name, city, address);
+    scored = scoreCandidates([fallback], name, city, address, cuisine);
   }
 
   if (scored.length === 0) {
@@ -222,7 +241,7 @@ async function preSearchYelp(opts: {
   const top = scored[0];
   const confidence = bucketConfidence(top.score);
   console.log(
-    `[Yelp/search] ${name}: top=${top.url} score=${top.score} conf=${confidence} (${scored.length} candidates)`,
+    `[Yelp/search] ${name}: top=${top.url} score=${top.score} conf=${confidence} (${scored.length} candidates, ${queries.length} variants)`,
   );
   return { url: top.url, confidence };
 }
