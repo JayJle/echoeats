@@ -44,7 +44,54 @@ function todayHoursLabel(
   return line.replace(/^[^:：]+[:：]\s*/, "");
 }
 
-// 去重已在后端 parseRequirements 完成（正则归并 + 语义去重），前端直接渲染。
+const DISPLAY_TOPIC_RULES: Array<{ topic: string; pattern: RegExp }> = [
+  { topic: "fine-plating", pattern: /(精致|精美|摆盘|盛盘|出品|卖相|plating|presentation|exquisite|refined)/i },
+  { topic: "quiet", pattern: /(安静|清静|不吵|quiet|peaceful)/i },
+  { topic: "lively", pattern: /(热闹|气氛热|lively|bustling|vibrant)/i },
+  { topic: "date", pattern: /(约会|适合情侣|romantic|浪漫|date[-\s]?night)/i },
+  { topic: "business", pattern: /(谈事|商务|business\s*(?:meal|meeting))/i },
+  { topic: "reservable", pattern: /(可预约|可预订|支持预约|接受预约|reservation|reservable|takes?\s*booking|book(?:able)?)/i },
+  { topic: "private-room", pattern: /(包间|包房|包厢|private\s*room|private\s*dining)/i },
+  { topic: "non-smoking", pattern: /(无烟|禁烟|non[-\s]?smoking|smoke[-\s]?free)/i },
+  { topic: "tourist-trap", pattern: /(游客店|游客陷阱|tourist\s*trap|touristy)/i },
+  { topic: "english-menu", pattern: /(英文菜单|english\s*menu)/i },
+  { topic: "vegetarian", pattern: /(素食|纯素|vegetarian|vegan|plant[-\s]?based)/i },
+  { topic: "kid-friendly", pattern: /(带小孩|带宝宝|儿童友好|亲子|kid[-\s]?friendly|child[-\s]?friendly|family[-\s]?friendly)/i },
+  { topic: "credit-card", pattern: /(信用卡|刷卡|credit\s*card|accepts?\s*card)/i },
+  { topic: "counter-seat", pattern: /(吧台|counter\s*seat)/i },
+  { topic: "view", pattern: /(景观|view|scenic|海景|夜景)/i },
+  { topic: "fresh-ingredients", pattern: /(食材新鲜|新鲜食材|fresh\s*ingredients)/i },
+  { topic: "authentic", pattern: /(地道|正宗|authentic|traditional)/i },
+];
+
+function displayConditionKey(text: string): string {
+  const both = text.replace(/\s*(?:→|->|=>)\s*/g, " ");
+  for (const { topic, pattern } of DISPLAY_TOPIC_RULES) {
+    if (pattern.test(both)) return `topic:${topic}`;
+  }
+  const right = text.split(/\s*(?:→|->|=>)\s*/).slice(-1)[0] || text;
+  return right.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function uniqueDisplayItems<T extends { text: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = displayConditionKey(item.text);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function uniqueDisplayStrings(items: string[]): string[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = displayConditionKey(item);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 const RECALL_TAG_LABELS_ZH: Record<string, string> = {
   primary: "主词",
@@ -144,10 +191,10 @@ function ResultsPage() {
     partial: "bg-secondary text-secondary-foreground",
   };
   const weekdayShort = t("results.weekday.short").split(",");
-  const displayedHardFilters = parsed.hardFilters;
-  const displayedSoftPreferences = parsed.softPreferences;
-  const displayedNegativeFilters = parsed.negativeFilters;
-  const displayedDishPreferences = parsed.dishPreferences;
+  const displayedHardFilters = uniqueDisplayItems(parsed.hardFilters);
+  const displayedSoftPreferences = uniqueDisplayItems(parsed.softPreferences);
+  const displayedNegativeFilters = uniqueDisplayItems(parsed.negativeFilters);
+  const displayedDishPreferences = uniqueDisplayStrings(parsed.dishPreferences);
 
   const cancelRefine = () => {
     abortRef.current?.abort();
