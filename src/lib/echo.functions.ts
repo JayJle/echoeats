@@ -428,6 +428,17 @@ export const parseRequirements = createServerFn({ method: "POST" })
       return dedupeParsedConditions(parsed);
     };
 
+    const logParsedSummary = (label: string, p: z.infer<typeof ParsedSchema>) => {
+      const fmt = (arr: WeightedCondition[]) => arr.map((x) => `${x.text}@${x.weight.toFixed(1)}`).join(" | ");
+      console.log(
+        `[parseRequirements] ${label} hard=${p.hardFilters.length} soft=${p.softPreferences.length} neg=${p.negativeFilters.length} dish=${p.dishPreferences.length}`,
+      );
+      if (p.hardFilters.length) console.log(`[parseRequirements] hard: ${fmt(p.hardFilters)}`);
+      if (p.softPreferences.length) console.log(`[parseRequirements] soft: ${fmt(p.softPreferences)}`);
+      if (p.negativeFilters.length) console.log(`[parseRequirements] neg : ${fmt(p.negativeFilters)}`);
+      if (p.dishPreferences.length) console.log(`[parseRequirements] dish: ${p.dishPreferences.join(" | ")}`);
+    };
+
     const FALLBACK_CUISINE_WORDS = new Set([
       "餐厅",
       "restaurants",
