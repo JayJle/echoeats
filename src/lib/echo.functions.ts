@@ -1949,29 +1949,29 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         const closedPermanent = p.businessStatus != null && p.businessStatus !== "OPERATIONAL";
         const admitted = !hasBlockingFail && !negFailHeavy && !failsBayesRating && !closedPermanent;
 
-        // Layer 2 基础分 (贝叶斯, 0..40)
-        const baseScore = Math.max(0, Math.min(40, adjRating * 8));
+        // Layer 2 基础分 (贝叶斯, 0..20)
+        const baseScore = Math.max(0, Math.min(20, adjRating * 4));
         breakdown.push({
           label: isEn
-            ? `Bayesian rating ${adjRating.toFixed(2)} × 8`
-            : `贝叶斯评分 ${adjRating.toFixed(2)} × 8`,
+            ? `Bayesian rating ${adjRating.toFixed(2)} × 4`
+            : `贝叶斯评分 ${adjRating.toFixed(2)} × 4`,
           delta: Math.round(baseScore),
         });
 
-        // Layer 3 匹配分 (0..60)
+        // Layer 3 匹配分 (0..80)
         let matchScore = 0;
-        const aiBase = (pick?.matchScore ?? 0) * 0.35;
+        const aiBase = (pick?.matchScore ?? 0) * 0.47;
         matchScore += aiBase;
         if (aiBase > 0) {
           breakdown.push({
-            label: isEn ? `AI match ${pick?.matchScore ?? 0} × 0.35` : `AI 匹配 ${pick?.matchScore ?? 0} × 0.35`,
+            label: isEn ? `AI match ${pick?.matchScore ?? 0} × 0.47` : `AI 匹配 ${pick?.matchScore ?? 0} × 0.47`,
             delta: Math.round(aiBase),
           });
         }
         let hardDeduct = 0;
         for (const { filter, check } of checks) {
-          if (check.status === "fail") hardDeduct += filter.weight * 8;
-          else if (check.status === "unknown") hardDeduct += filter.weight * 2;
+          if (check.status === "fail") hardDeduct += filter.weight * 10.7;
+          else if (check.status === "unknown") hardDeduct += filter.weight * 2.7;
         }
         if (hardDeduct > 0) {
           matchScore -= hardDeduct;
@@ -1980,15 +1980,15 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             delta: -Math.round(hardDeduct),
           });
         }
-        // Soft bonuses/penalties (cap +15 for ok)
+        // Soft bonuses/penalties (cap +20 for ok)
         let softBonus = 0, softPenalty = 0;
         for (let i = 0; i < softCount; i++) {
           const w = data.softPreferences[i].weight;
           const st = nonHardDetails[i].status;
-          if (st === "ok") softBonus += w * 5;
-          else if (st === "fail") softPenalty += w * 3;
+          if (st === "ok") softBonus += w * 6.7;
+          else if (st === "fail") softPenalty += w * 4;
         }
-        softBonus = Math.min(softBonus, 15);
+        softBonus = Math.min(softBonus, 20);
         if (softBonus > 0) {
           matchScore += softBonus;
           breakdown.push({ label: isEn ? "Soft preference hits" : "软偏好命中", delta: Math.round(softBonus) });
@@ -2000,24 +2000,24 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         // Negative fails
         let negPenalty = 0;
         for (let i = 0; i < negCount; i++) {
-          if (negStatuses[i] === "fail") negPenalty += data.negativeFilters[i].weight * 10;
+          if (negStatuses[i] === "fail") negPenalty += data.negativeFilters[i].weight * 13.3;
         }
         if (negPenalty > 0) {
           matchScore -= negPenalty;
           breakdown.push({ label: isEn ? "Avoidance hits" : "命中避雷", delta: -Math.round(negPenalty) });
         }
-        // Dish hits (cap +12)
+        // Dish hits (cap +16)
         let dishBonus = 0;
         for (let i = 0; i < dishCount; i++) {
-          if (nonHardDetails[softCount + negCount + i].status === "ok") dishBonus += 4;
+          if (nonHardDetails[softCount + negCount + i].status === "ok") dishBonus += 5.3;
         }
-        dishBonus = Math.min(dishBonus, 12);
+        dishBonus = Math.min(dishBonus, 16);
         if (dishBonus > 0) {
           matchScore += dishBonus;
-          breakdown.push({ label: isEn ? "Dish matches" : "菜品命中", delta: dishBonus });
+          breakdown.push({ label: isEn ? "Dish matches" : "菜品命中", delta: Math.round(dishBonus) });
         }
         // Recall bonus non-linear
-        const recallTable = [0, 0, 3, 6, 10];
+        const recallTable = [0, 0, 4, 8, 13];
         const recallBonus = recallTable[Math.min(recallSources.length, 4)];
         if (recallBonus > 0) {
           matchScore += recallBonus;
@@ -2026,7 +2026,8 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             delta: recallBonus,
           });
         }
-        matchScore = Math.max(0, Math.min(60, matchScore));
+        matchScore = Math.max(0, Math.min(80, matchScore));
+
 
         let finalScore = Math.max(0, Math.min(100, Math.round(baseScore + matchScore)));
         if (!admitted) {
