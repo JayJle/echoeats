@@ -1062,7 +1062,7 @@ export type SearchStreamChunk =
   | { type: "review-progress"; done: number; total: number }
   | { type: "tabelog-progress"; done: number; total: number }
   | { type: "yelp-progress"; done: number; total: number }
-  | { type: "heartbeat"; stage: string }
+  | { type: "heartbeat"; stage: string; done?: number; total?: number }
   | { type: "result"; payload: SearchResponse };
 
 // 把 Promise 数组按完成顺序流出。
