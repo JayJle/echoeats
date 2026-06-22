@@ -1,103 +1,83 @@
-# 跨品类候选去重方案
+## 目标
 
-## 背景（现状）
+优先通过**优化 prompt**，让首跑（`Output.object`）直接通过 schema 校验，不再触发后面 60–90 秒的 raw / slim 兜底，也不再触发模糊复核的第二次调用。
 
-`src/lib/echo.functions.ts` 中，候选池目前的结构是 `placeResults: { cuisine, places: PlaceCandidate[] }[]`，每个品类各自一个桶：
+不动 schema、不动兜底链结构、不动并行/超时逻辑。如果 prompt 改完日志还是经常掉到兜底，再考虑结构性改动。
 
-```
-placeResults = [
-  { cuisine: "寿司",   places: [A, B, C, D] },
-  { cuisine: "居酒屋", places: [B, C, E, F] },   // B、C 与寿司桶重复
-  { cuisine: "日本料理", places: [A, C, F, G] }, // A、C、F 也重复
-]
-```
+---
 
-后续每一步都按这个分桶结构进行：
-- L1444 visitTime 闭店硬筛
-- L1485 规则初筛（businessStatus/price/rating）
-- L1521 Tabelog（JP）：`for r of placeResults; for p of r.places` —— **同一家店会被抓多次**
-- L1565 Yelp（非 JP）：同样多次
-- L1603+ AI 分组排序：每个品类各自给 AI 一次 batch —— 同一家店会被多次喂给 AI 评估
-- 前端 `results.tsx` 按 group 渲染 —— 用户会在多个品类卡片里看到同一家店
+## 现状（基于代码 + 日志）
 
-所以现在的浪费主要发生在 **Tabelog/Yelp 抓取** 和 **AI 评论分析** 两步，正好是最贵的两步。需要在它们之前把同一 placeId 在跨品类间合并掉，并把这家店**唯一归属**到一个品类。
-
-## 去重原则（不丢失）
-
-1. 去重只发生在 **跨品类**：同一品类桶内本来就用 `merged: Map<placeId, …>` 合过了。
-2. 去重的判定键是 **Google Places 的 `placeId`**。这是稳定唯一键，不用名称/地址再做模糊匹配（避免误伤同名分店）。
-3. 去重等于"**移到唯一归属品类**"，不是删除。最终所有原本出现过的 placeId 仍然在某一个桶里出现一次。事后会用一行 log 自证：
-
-   ```
-   [dedupe] union=N, kept=N (per-cuisine sum before=M, after=N)
-   ```
-
-   `union` 和 `kept` 必须相等；否则视为 bug 立刻报错。
-4. 跨品类去重之前还要保留每个 placeId **曾经命中过哪些品类** 的信息（`matchedCuisines: string[]`），方便：
-   - 前端在该卡片上展示"也属于 居酒屋"标签（可选 UI 后续做，不在这次 scope）；
-   - AI prompt 里告诉模型这家店在哪些品类下被召回，避免它纠结分类。
-
-## 归属品类的选择规则（按优先级，遇到平手就看下一条）
-
-对每个 placeId 在多品类中重复时，按以下顺序判定它**归到哪一个**品类桶：
-
-1. **强匹配优先**：在该品类的 `CuisineExpansion` 下，命中 `primary` 或 `synonyms`（出现在 `name / primaryType / editorialSummary` 里）的归该品类。
-   - 进一步细分：`primaryType` 命中 > `name` 命中 > `editorialSummary` 命中。
-   - 已经在 `filterByCuisineRelevance` 用过同一套词表，复用即可。
-2. **召回路线强度**：看 `recallSourcesById` 里这家店在该品类的 recall tag。`primary`（品类名直搜）> `name:*` / `cuisine:syn`（同义词路线）> `budget:*` / `mood:*` 等周边路线。
-3. **稀有品类优先**：候选总数更少的品类优先（候选多的品类不缺这一家，少的品类留住它结构上更平衡）。这一步专门防止"寿司桶吃掉所有日料店"。
-4. **用户输入顺序**：以 `data.cuisines` 的顺序为准，越靠前优先级越高。这条是最终 tiebreaker，保证结果可复现。
-
-`["餐厅"] / fallback` 兜底品类永远排到最后——只有当这家店没有任何"具体品类"愿意收时，才落到兜底桶。
-
-## 实施位置（关键：在 Tabelog/Yelp/AI 之前）
-
-在 `echo.functions.ts` L1396 各品类 `Promise.all` 返回之后、L1444 `visitTime` 闭店硬筛之前，新增一个 `dedupeAcrossCuisines(placeResults, …)` 步骤。它的输入是 per-cuisine 桶，输出仍然是同形状的 per-cuisine 桶，但每个 placeId 在所有桶里只出现一次。
-
-放在闭店硬筛之前还是之后都可以，但**必须在 Tabelog（L1521）和 Yelp（L1565）和 AI 分组（L1603）之前**——这是省钱省时间的核心点。建议放在 L1396 之后立刻执行，理由：
-- 闭店、价格、评分三道规则筛本身按 placeId 做就行，对去重不敏感；
-- 但 visitTime 的 `visitMatchById` 是按 placeId 存的，跨品类没冲突，放后面也不影响；
-- 越早去重，后续所有 `for r of placeResults` 循环规模都越小，调试 log 也更清爽。
-
-## 数据结构改动
-
-`PlaceCandidate`（或外部 side-map）补一个：
-
-```ts
-// side-map，避免修改 PlaceCandidate 类型
-const matchedCuisinesById = new Map<string, string[]>();  // placeId -> 原本所有命中的 cuisine
-```
-
-`dedupeAcrossCuisines` 内部：
+`buildPromptForGroup`（L1810–L1876）现在的"输出说明"只有最后一行：
 
 ```text
-1. 遍历 placeResults，建 placeId -> { place, cuisines: string[], scores: { cuisine -> rank } }
-2. 对每个 placeId：按"归属规则"挑出 winnerCuisine
-3. 重建 placeResults：每个 cuisine 桶只保留 winner 是自己的 placeId
-4. 同时填充 matchedCuisinesById
-5. 打印 [dedupe] log + 健康检查 (union vs kept 必须相等)
+输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
+（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）
 ```
 
-## 顺带要做的小事
+但实际 schema（`AiPickSchema`, L788）有 8 个字段，其中**模型经常漏的两个**就是日志里反复报错的：
+- `matchScore`（必须 0–100 整数）—— 模型有时只给 `matchTier` 不给分
+- `pros[i].text` / `cons[i].text`（每项必须是 `{text, source?}` 对象）—— 模型常返回纯字符串数组
 
-- AI prompt 里把 `matchedCuisines` 透传进去（如果某家店原本也命中"居酒屋"，prompt 里附一句"该店也符合 居酒屋"），避免 AI 因为分类差异给出奇怪的解释。这个改动很小，在构建 `candidatesForPrompt` 处加一个字段即可。
-- 前端 `results.tsx` 不做强制改动；如果想给重复店加个小 tag 可后续单独提。
+prompt 里 `## pros / cons 写作规范` 那一段全在讲"写什么内容"，**完全没说"输出结构是 {text, source} 对象"**，所以模型按自然语言习惯输出字符串数组。`matchScore` 也只在最后那行示例里一笔带过，没强调"必填、整数、0–100"。
 
-## 不做的事
+`Output.object` 用的是 Gemini constrained decoding，但 Gemini Flash 在长 prompt + 复杂嵌套 schema 下仍会偶发漏字段——这种情况**只能靠 prompt 强约束 + few-shot 示例来压低概率**。
 
-- 不引入名称/地址模糊匹配——`placeId` 已经够。
-- 不改 `searchPlaces` 召回阶段——召回照旧按品类分别请求，保证每个品类的召回多样性。
-- 不改 `cuisineLevelConstraints` / 推断 cuisines 的逻辑。
-- 不改前端 UI（除非你想要"重复品类"小标签）。
+---
 
-## 风险与对策
+## 改动方案（只动 `buildPromptForGroup`）
 
-| 风险 | 对策 |
-| --- | --- |
-| winner 规则选错品类，导致用户在期望的品类下看不到这家店 | `matchedCuisines` 保留全集 + log 打印；UI 后续可加二级标签 |
-| 兜底品类 `["餐厅"]` 吃掉所有候选 | 归属规则里兜底品类降到最低优先级 |
-| 健康检查触发 | 直接 throw / pushWarn，迅速暴露而不是静默丢店 |
+### 1. 在 prompt 末尾追加"输出结构硬约束 + 完整示例"段
 
-## 待你确认
+替换现有最后两行（L1874–L1875）为一段**自包含的输出契约**，包含：
 
-- "归属品类"的 4 条优先级你是否接受？尤其是第 3 条 **"稀有品类优先"** 要不要放进去——它和第 1 条强匹配可能偶尔打架。如果你只想要简单规则，可以只保留 **1 → 4**（强匹配 → 用户顺序），更可预测但偶尔会让候选数严重不均。
+- 每个 pick **必填字段清单**（8 个），逐条说明类型与取值范围
+- `matchScore` 单独强调：**必填 0–100 整数；缺失或写成字符串都会被判失败**
+- `pros / cons` 单独强调：**每一项必须是 `{"text": "...", "source": "Google" | "Tabelog" | "Yelp" | null}` 对象，禁止写成纯字符串**
+- 一段**完整的 1-pick 示例 JSON**（含 hardFilterChecks 一项、matchDetails 一项、pros 一项、cons 一项），让模型有 few-shot 锚点
+- 一句"在返回前自检：每个 pick 是否都包含 matchScore、pros/cons 是否都是对象"
+
+### 2. 把"输出契约"提到 prompt 中部、紧跟候选数据之后
+
+现在输出规范散落在三处：L1819（开头一句）、L1865–L1872（pros/cons 写作）、L1874（末尾示例）。Gemini 在长 prompt 下对**末尾几百字**注意力最高。把完整结构契约 + 示例放在 prompt 最末（在"铁律"和"pros/cons 规范"之后），让模型生成 JSON 之前最后看到的就是结构示例。
+
+### 3. 给 `pros / cons 写作规范` 段补一条结构约束
+
+在现有那段开头加一句：
+> **结构铁律**：pros / cons 数组的每一项必须是 `{"text": "评论原话或概括", "source": "Google" | "Tabelog" | "Yelp" | null}` 对象；禁止写成纯字符串数组。
+
+### 4.（可选小幅改动）`rerankSuffix` 同步约束
+
+复核分支也容易触发同样的 schema 错误。在 `rerankSuffix` 末尾追加一句"输出结构同首跑要求，不要省略 matchScore 和 pros/cons 的 text 字段"。
+
+---
+
+## 验证方式
+
+改完后无需 schema 改动，直接观察 published worker 日志（关键词 `Echo/AI-rank`）连续 5–10 次搜索：
+
+| 指标 | 现状 | 目标 |
+|---|---|---|
+| `Output.object ok` 直接命中率 | 偶发失败（韩国料理这次 0/3 batch 通过首跑）| ≥ 80% batch 一次通过 |
+| `raw fallback failed (matchScore Required …)` warn | 反复出现 | 消失 |
+| `raw fallback failed (pros[*].text Required …)` warn | 反复出现 | 消失 |
+| 整轮 `all N group(s) done in …` | 158s | ≤ 60s |
+
+若改完后仍频繁掉到 raw/slim，再来谈第二步（跳过 raw fallback / 缩小复核范围 / 单组预算超时）。
+
+---
+
+## 不在范围（本轮）
+
+- 不改 `AiPickSchema` / `AiPickGroupSchema`
+- 不改 `rankOneGroup` 的兜底链结构与重试次数
+- 不改 fuzzy 复核触发条件
+- 不改 batch 大小 / 并行度
+- 不改去重、hard/negative filter 处理
+
+## 风险
+
+- prompt 加长可能挤压模型输出 token —— 现在 `maxOutputTokens: 12000` 充足，新增内容预计 < 500 token，可忽略。
+- few-shot 示例可能让模型"模仿示例语气"而不是真核验数据 —— 示例里的店名/字段值用明显占位符（如 `"placeId": "<示例占位>"`、`"text": "示例：多位食客称赞…"`）规避。
+
+确认后我就只改 `buildPromptForGroup` 这一个函数，跑一轮日志再回来对齐下一步。
