@@ -144,10 +144,10 @@ function ResultsPage() {
     partial: "bg-secondary text-secondary-foreground",
   };
   const weekdayShort = t("results.weekday.short").split(",");
-  const displayedHardFilters = uniqueDisplayItems(parsed.hardFilters);
-  const displayedSoftPreferences = uniqueDisplayItems(parsed.softPreferences);
-  const displayedNegativeFilters = uniqueDisplayItems(parsed.negativeFilters);
-  const displayedDishPreferences = uniqueDisplayStrings(parsed.dishPreferences);
+  const displayedHardFilters = parsed.hardFilters;
+  const displayedSoftPreferences = parsed.softPreferences;
+  const displayedNegativeFilters = parsed.negativeFilters;
+  const displayedDishPreferences = parsed.dishPreferences;
 
   const cancelRefine = () => {
     abortRef.current?.abort();
