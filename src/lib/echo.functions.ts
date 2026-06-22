@@ -1728,9 +1728,15 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
     // 这样单个 cuisine 失败不会拖垮整次搜索。
     const rankOneGroup = async (
       group: GroupForPrompt,
+      opts?: { rerank?: boolean },
     ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
-      const prompt = buildPromptForGroup(group);
+      const rerankSuffix = opts?.rerank
+        ? `\n\n## 独立复核（重要）\n这是对同一批候选的**第二次独立核验**。请忽略任何先前结论，重新阅读候选资料，对每个条件**重新评估证据是否真的充分**。只在你确实能在候选数据里找到明确证据时才标 "ok"；证据模糊或间接 → 务必标 "unknown" 并把 confidence 控制在 40–70。`
+        : "";
+      const prompt = buildPromptForGroup(group) + rerankSuffix;
       const startedAt = Date.now();
+
+
 
       const RAW_FORMAT_HARD_RULES = `\n\n**输出格式硬约束**：
 - 第一个字符必须是 "{"，最后一个字符必须是 "}"。
@@ -1769,6 +1775,7 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
         const result = await generateText({
           model,
           prompt,
+          temperature: 0,
           maxOutputTokens: 12000,
           output: Output.object({
             schema: AiPickGroupSchema,
@@ -1776,6 +1783,7 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             description: `AI ranking of real candidates for cuisine "${group.cuisine}"`,
           }),
         });
+
         console.log(
           `[Echo/AI-rank] "${group.cuisine}" Output.object ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
         );
@@ -1792,8 +1800,10 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
               prompt +
               `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。` +
               RAW_FORMAT_HARD_RULES,
+            temperature: 0,
             maxOutputTokens: 20000,
           });
+
           const finishReason = (fb as { finishReason?: string }).finishReason;
           if (finishReason === "length" || finishReason === "max-tokens") {
             throw new Error(`truncated (finishReason=${finishReason})`);
@@ -1813,8 +1823,10 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
             const slimFb = await generateText({
               model,
               prompt: buildSlimPrompt(),
+              temperature: 0,
               maxOutputTokens: 20000,
             });
+
             const slimFinish = (slimFb as { finishReason?: string }).finishReason;
             if (slimFinish === "length" || slimFinish === "max-tokens") {
               throw new Error(`slim truncated (finishReason=${slimFinish})`);
@@ -1833,6 +1845,57 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
       }
     };
 
+    type Pick = z.infer<typeof AiPickSchema>;
+
+    // 判定一个 pick 是否"模糊" → 触发复跑
+    const isFuzzyPick = (p: Pick): boolean => {
+      const allChecks = [...(p.hardFilterChecks ?? []), ...(p.matchDetails ?? [])];
+      for (const c of allChecks) {
+        if (c.status === "unknown") return true;
+        const conf = typeof c.confidence === "number" ? c.confidence : 50;
+        if (conf >= 60 && conf <= 78) return true;
+      }
+      return false;
+    };
+
+    // 合并两次 pick：status OR-合并（ok > unknown > fail），confidence 取较大者
+    const mergeStatus = (a: "ok" | "unknown" | "fail", b: "ok" | "unknown" | "fail") => {
+      if (a === "ok" || b === "ok") return "ok" as const;
+      if (a === "unknown" || b === "unknown") return "unknown" as const;
+      return "fail" as const;
+    };
+    const mergeChecks = <T extends { status: "ok" | "unknown" | "fail"; confidence: number }>(
+      first: T[],
+      second: T[],
+    ): T[] => {
+      const out: T[] = [];
+      const len = Math.max(first.length, second.length);
+      for (let i = 0; i < len; i++) {
+        const a = first[i];
+        const b = second[i];
+        if (!a) { out.push(b); continue; }
+        if (!b) { out.push(a); continue; }
+        const status = mergeStatus(a.status, b.status);
+        const winner = a.status === status ? a : b;
+        out.push({
+          ...winner,
+          status,
+          confidence: Math.max(a.confidence ?? 50, b.confidence ?? 50),
+        });
+      }
+      return out;
+    };
+    const mergePicks = (first: Pick, second: Pick): Pick => ({
+      ...first,
+      matchScore: Math.max(first.matchScore, second.matchScore),
+      matchTier: first.matchScore >= second.matchScore ? first.matchTier : second.matchTier,
+      aiSummary: second.aiSummary?.trim() ? second.aiSummary : first.aiSummary,
+      pros: second.pros?.length ? second.pros : first.pros,
+      cons: second.cons?.length ? second.cons : first.cons,
+      hardFilterChecks: mergeChecks(first.hardFilterChecks ?? [], second.hardFilterChecks ?? []),
+      matchDetails: mergeChecks(first.matchDetails ?? [], second.matchDetails ?? []),
+    });
+
     yield { type: "stage", stage: "rank" };
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
@@ -1844,13 +1907,30 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           batches.push(group.candidates.slice(i, i + BATCH_SIZE));
         }
         const batchPicks = await Promise.all(batches.map(async (batch) => {
-          const res = await rankOneGroup({ ...group, candidates: batch });
-          return res.picks;
+          const first = await rankOneGroup({ ...group, candidates: batch });
+          const fuzzyIds = new Set(first.picks.filter(isFuzzyPick).map((p) => p.placeId));
+          if (fuzzyIds.size === 0) return first.picks;
+
+          const fuzzyCandidates = batch.filter((c) => fuzzyIds.has(c.placeId));
+          const rerunStart = Date.now();
+          const second = await rankOneGroup(
+            { ...group, candidates: fuzzyCandidates },
+            { rerank: true },
+          );
+          console.log(
+            `[Echo/AI-rank] "${group.cuisine}" fuzzy=${fuzzyIds.size}/${first.picks.length} reran in ${Date.now() - rerunStart}ms`,
+          );
+          const secondById = new Map(second.picks.map((p) => [p.placeId, p]));
+          return first.picks.map((p) => {
+            const s = secondById.get(p.placeId);
+            return s ? mergePicks(p, s) : p;
+          });
         }));
         return { cuisine: group.cuisine, picks: batchPicks.flat() };
       })),
       "rank",
     );
+
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
     );
