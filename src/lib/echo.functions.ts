@@ -1736,6 +1736,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               openNow: p.openNow,
               primaryType: p.primaryType,
               editorialSummary: p.editorialSummary,
+              matchedCuisines: matchedCuisinesById.get(p.placeId) ?? [r.cuisine],
               realWorldReviews: review,
               tabelog: tabelog
                 ? {
