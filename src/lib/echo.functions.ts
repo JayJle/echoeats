@@ -737,6 +737,7 @@ const HardFilterCheckSchema = z.preprocess(
 
 const AiPickSchema = z.object({
   placeId: z.string(),
+  verificationStatus: z.enum(["ok", "unknown", "fail"]).catch("unknown").default("unknown"),
   matchScore: z.number().min(0).max(100),
   matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
   aiSummary: z.string(),
