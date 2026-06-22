@@ -417,7 +417,106 @@ export const parseRequirements = createServerFn({ method: "POST" })
       if (p.dishPreferences.length) console.log(`[parseRequirements] dish: ${p.dishPreferences.join(" | ")}`);
     };
 
+    // ===== AI 语义去重 pass =====
+    // 把 hard/soft/neg 三个数组交给同一个 gateway，让模型按语义合并同义条目。
+    // 完全不依赖关键词；模型只能合并，不能新增/删除独立诉求；保留项 weight 取最高。
+    const DedupedArraySchema = z.array(
+      z.object({
+        text: z.string(),
+        weight: z.number().min(0).max(1),
+        mergedFrom: z.array(z.string()).optional(),
+      }),
+    );
+    const SemanticDedupeSchema = z.object({
+      hardFilters: DedupedArraySchema,
+      softPreferences: DedupedArraySchema,
+      negativeFilters: DedupedArraySchema,
+    });
+
+    const semanticDedupe = async (
+      parsed: z.infer<typeof ParsedSchema>,
+    ): Promise<z.infer<typeof ParsedSchema>> => {
+      const total =
+        parsed.hardFilters.length +
+        parsed.softPreferences.length +
+        parsed.negativeFilters.length;
+      // 少于 2 条就没什么可合并的
+      if (total < 2) return parsed;
+
+      const payload = {
+        hardFilters: parsed.hardFilters.map((x) => ({ text: x.text, weight: x.weight })),
+        softPreferences: parsed.softPreferences.map((x) => ({ text: x.text, weight: x.weight })),
+        negativeFilters: parsed.negativeFilters.map((x) => ({ text: x.text, weight: x.weight })),
+      };
+
+      const dedupePrompt = `你是条件语义去重器。下面是已结构化的餐厅搜索条件，分为 hardFilters / softPreferences / negativeFilters 三个数组。请按"语义"去重：
+
+去重规则（必须严格遵守）：
+1. **不要靠关键词**，按语义判断两条是不是在表达同一个诉求。
+2. **同一数组内的语义重复**：合并成一条，weight 取所有重复项的最大值。
+3. **跨数组的语义重复**：只保留在更高等级的数组里，其它数组里删掉；优先级 negativeFilters > hardFilters > softPreferences。weight 取所有同义条目的最大值。
+4. **绝对不能新增**用户没说过的条件；**绝对不能删除**语义独立的条件；只允许合并。
+5. 保留项的 text 选用最简洁、最能代表该诉求的一条（可以是原数组里的某一条原文，不要自己改写新概念）。
+6. 可选返回 mergedFrom 字段，列出被合并掉的原 text，便于审计。
+
+合并示例（说明语义判断的范围）：
+- "环境要好一点 / 环境精美 / 环境好 / 环境稍微好 / 氛围不错 / 装修要精致" → 都是"店内环境/氛围要好"，合并为一条。
+- "可以预约 / 接受预约 / 支持预约 / 可预订" → 合并为一条"可预约"。
+- "菜品必须精美" 和 "环境精美" 是不同诉求（一个说菜，一个说店内环境），**不要合并**。
+- "鳗鱼饭" 和 "刺身" 是不同菜品，**不要合并**（菜品名不在本次去重范围）。
+
+输入：
+${JSON.stringify(payload, null, 2)}
+
+只输出 JSON：三个数组 hardFilters / softPreferences / negativeFilters，元素形如 {"text":"...","weight":0.x,"mergedFrom":["原条目1","原条目2"]}。`;
+
+      try {
+        const { output } = await generateText({
+          model: gateway("google/gemini-2.5-flash"),
+          prompt: dedupePrompt,
+          maxOutputTokens: 4000,
+          output: Output.object({
+            schema: SemanticDedupeSchema,
+            name: "deduped_conditions",
+            description: "Semantically deduplicated condition arrays",
+          }),
+        });
+
+        // 日志：打印被合并的组
+        const logMerges = (label: string, items: z.infer<typeof DedupedArraySchema>) => {
+          for (const it of items) {
+            if (it.mergedFrom && it.mergedFrom.length > 0) {
+              console.log(
+                `[parseRequirements] semanticDedupe merged in ${label}: [${it.mergedFrom.join(" | ")}] -> ${it.text}@${it.weight.toFixed(1)}`,
+              );
+            }
+          }
+        };
+        logMerges("hard", output.hardFilters);
+        logMerges("soft", output.softPreferences);
+        logMerges("neg", output.negativeFilters);
+
+        const strip = (arr: z.infer<typeof DedupedArraySchema>): WeightedCondition[] =>
+          arr.map((x) => ({ text: x.text, weight: x.weight }));
+
+        // 再做一次字面兜底，去掉模型偶尔漏的完全相同条目
+        return literalDedupeParsed({
+          ...parsed,
+          hardFilters: strip(output.hardFilters),
+          softPreferences: strip(output.softPreferences),
+          negativeFilters: strip(output.negativeFilters),
+        });
+      } catch (e) {
+        console.warn(
+          "[parseRequirements] semanticDedupe 失败，沿用字面去重结果：",
+          e instanceof Error ? e.message : e,
+        );
+        return parsed;
+      }
+    };
+
     const FALLBACK_CUISINE_WORDS = new Set([
+
       "餐厅",
       "restaurants",
       "restaurant",
