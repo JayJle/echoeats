@@ -1549,8 +1549,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }
     }
 
-    // 全量候选按每批 8 家核验，避免固定前 25 截断，同时控制单次模型输入输出体积。
-    const AI_BATCH_SIZE = 8;
+    // 全量候选按每批 6 家核验，控制单次输出 token，降低 L1 截断率。
+    const AI_BATCH_SIZE = 6;
     const candidateGroups = placeResults
       .filter((r) => r.places.length)
       .map((r) => {
