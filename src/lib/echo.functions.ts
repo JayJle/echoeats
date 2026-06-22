@@ -1341,6 +1341,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     let placeResults: Array<{
       cuisine: string;
       places: PlaceCandidate[];
+      recallHits: Map<string, number>;
       error: string | null;
     }>;
 
