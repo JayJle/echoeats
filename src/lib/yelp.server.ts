@@ -202,16 +202,11 @@ async function preSearchYelp(opts: {
   cuisine?: string;
 }): Promise<{ url: string | null; confidence: YelpConfidence }> {
   const { apiKey, name, city, address, cuisine } = opts;
-  const streetToks = extractStreetTokens(address);
   const area = extractArea(address, city);
 
   const queries: Array<{ q: string; label: string }> = [
     { q: `"${name}" ${city} site:yelp.com`, label: "name+city" },
   ];
-  if (streetToks.length > 0) {
-    queries.push({ q: `${name} ${streetToks.join(" ")} site:yelp.com`, label: "name+street" });
-  }
-  // 新增：name + area + city + cuisine（强制变体）
   if (cuisine && cuisine.trim()) {
     queries.push({
       q: `"${name}" ${area} ${city} ${cuisine} site:yelp.com`,
@@ -220,18 +215,7 @@ async function preSearchYelp(opts: {
   }
 
   const batches = await Promise.all(queries.map((q) => perplexitySearch({ apiKey, query: q.q, label: q.label, name })));
-  let scored = scoreCandidates(batches, name, city, address, cuisine);
-
-  // 如果前面所有 query 都没召回，name-only 兜底
-  if (scored.length === 0) {
-    const fallback = await perplexitySearch({
-      apiKey,
-      query: `${name} site:yelp.com/biz`,
-      label: "name-only",
-      name,
-    });
-    scored = scoreCandidates([fallback], name, city, address, cuisine);
-  }
+  const scored = scoreCandidates(batches, name, city, address, cuisine);
 
   if (scored.length === 0) {
     console.log(`[Yelp/search] ${name}: no candidates`);
