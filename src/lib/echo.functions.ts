@@ -735,47 +735,19 @@ const HardFilterCheckSchema = z.preprocess(
 );
 
 
-// 容错说明：模型经常漏 matchScore / matchTier / aiSummary 这几个字段，或者把数字写成
-// 带引号的字符串。这里全部用 coerce + catch + default 兜底，让第一档 Output.object
-// 不再因为单字段缺失而整组失败（slim fallback 触发的根因）。
 const AiPickSchema = z.object({
   placeId: z.string(),
-  verificationStatus: z
-    .enum(["ok", "unknown", "fail"])
-    .catch("unknown")
-    .default("unknown"),
-  matchScore: z.coerce.number().min(0).max(100).catch(0).default(0),
-  matchTier: z
-    .enum(["perfect", "high", "partial"])
-    .catch("partial")
-    .default("partial"),
-  aiSummary: z.string().catch("").default(""),
-  pros: z
-    .array(
-      z.preprocess(
-        (v) => (typeof v === "string" ? { text: v, source: null } : v),
-        z.object({
-          text: z.string().catch("").default(""),
-          source: z.string().nullable().optional(),
-        }),
-      ),
-    )
-    .catch([])
-    .default([])
-    .transform((arr) => arr.filter((p) => p.text && p.text.trim().length > 0)),
-  cons: z
-    .array(
-      z.preprocess(
-        (v) => (typeof v === "string" ? { text: v, source: null } : v),
-        z.object({
-          text: z.string().catch("").default(""),
-          source: z.string().nullable().optional(),
-        }),
-      ),
-    )
-    .catch([])
-    .default([])
-    .transform((arr) => arr.filter((c) => c.text && c.text.trim().length > 0)),
+  matchScore: z.number().min(0).max(100),
+  matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
+  aiSummary: z.string(),
+  pros: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
+  cons: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
   matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
   hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
 });
@@ -1062,7 +1034,7 @@ export type SearchStreamChunk =
   | { type: "review-progress"; done: number; total: number }
   | { type: "tabelog-progress"; done: number; total: number }
   | { type: "yelp-progress"; done: number; total: number }
-  | { type: "heartbeat"; stage: string; done?: number; total?: number }
+  | { type: "heartbeat"; stage: string }
   | { type: "result"; payload: SearchResponse };
 
 // 把 Promise 数组按完成顺序流出。
@@ -1082,7 +1054,6 @@ async function* withHeartbeat<T>(
   p: Promise<T>,
   stage: string,
   intervalMs = 4000,
-  progress?: () => { done: number; total: number },
 ): AsyncGenerator<SearchStreamChunk, T, unknown> {
   let settled = false;
   let value: T | undefined;
@@ -1104,12 +1075,7 @@ async function* withHeartbeat<T>(
       tracked,
       new Promise<void>((r) => setTimeout(r, intervalMs)),
     ]);
-    if (!settled) {
-      const prog = progress?.();
-      yield prog
-        ? { type: "heartbeat", stage, done: prog.done, total: prog.total }
-        : { type: "heartbeat", stage };
-    }
+    if (!settled) yield { type: "heartbeat", stage };
   }
   if (isError) throw error;
   return value as T;
@@ -1546,22 +1512,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
     const yelpById = new Map<string, YelpInfo>();
     if (pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
-      // 只对"会进入 AI 排序"的候选做 Perplexity 富化，按 cuisine 取头部，避免给被裁掉的项目白跑。
-      // 与下游 rankOneGroup 的 BATCH_SIZE=12 对齐，留一点冗余覆盖一个 batch 用量。
-      const YELP_PER_CUISINE = 12;
       const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
       for (const r of placeResults) {
-        const ranked = [...r.places].sort((a, b) => {
-          const sa = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
-          const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
-          return sb - sa;
-        });
-        for (const p of ranked.slice(0, YELP_PER_CUISINE)) {
-          allTargets.push({ p, cuisine: r.cuisine });
-        }
+        for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
       }
       yield { type: "stage", stage: "yelp", total: allTargets.length };
-      const CONCURRENCY = 16;
+      const CONCURRENCY = 8;
       let cursor = 0;
       const runWorker = async () => {
         while (true) {
@@ -1667,9 +1623,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     );
 
     const gateway = createLovableAiGatewayProvider(aiKey);
-    // provider 已默认启用 structuredOutputs，response_format=json_schema 能正确发到
-    // Gateway；切回 3-flash-preview 以获得更快/更便宜的推理。
-    const model = gateway("google/gemini-3-flash-preview");
+    // gemini-3-flash-preview 在当前 AI Gateway 下不支持 responseFormat JSON Schema
+    // （会触发 "Output.object failed: No output generated."），换回稳定的 2.5-flash。
+    const model = gateway("google/gemini-2.5-flash");
 
 
     const hardFiltersList = data.hardFilters.map((h) => h.text);
@@ -1763,44 +1719,8 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
 - **来源标注**：每条 pros/cons 的 source 字段优先填上平台名（Google / Tabelog / Yelp）。
 - **宁缺毋滥**：当某家店在所有平台评论里都找不到足够支撑的口碑点（少于 2 条评论提及）时，pros 或 cons 直接返回空数组 []，不要为了凑数硬写；前端已经有"暂无可信网评 / 暂无明显差评"的兜底文案。
 
-## 输出格式（严格遵守，否则整组失败）
-只输出 JSON，第一字符必须是 "{"，最后一字符必须是 "}"。不要 markdown，不要 \`\`\`json，不要任何前后说明。
-
-picks.length 必须等于 ${group.candidates.length}（候选数），顺序与候选一致；即使 fail 也要保留。
-
-每个 pick 必填字段（缺一不可，缺失将导致整组排序失败）：
-- placeId (string，原样回传)
-- verificationStatus ("ok" | "unknown" | "fail")
-- **matchScore (0-100 的 number，不要字符串、不要带引号、不要省略)**
-- matchTier ("perfect" | "high" | "partial"，与 matchScore 阈值一致：>=92 perfect，>=80 high，否则 partial)
-- aiSummary (string，简短一句话)
-- **pros / cons 必须是对象数组 [{text: string, source?: string}]，禁止字符串数组；无证据时给 []**
-- matchDetails (长度严格 = ${nonHardFilters.length})
-- hardFilterChecks (长度严格 = ${hardFiltersList.length})
-
-输出样例（结构示意，照此形状生成）：
-{
-  "picks": [
-    {
-      "placeId": "ChIJxxx",
-      "verificationStatus": "ok",
-      "matchScore": 86,
-      "matchTier": "high",
-      "aiSummary": "炭火焼鳥口碑稳定，整体适合认真吃一顿。",
-      "pros": [
-        { "text": "评论提到炭火焼鳥表现好。", "source": "Google" },
-        { "text": "Tabelog 提到つくね和レバー表现稳定。", "source": "Tabelog" }
-      ],
-      "cons": [],
-      "matchDetails": [
-        { "label": "想吃烤鸡肉串：评论提到炭火焼鳥。", "status": "ok", "confidence": 90 }
-      ],
-      "hardFilterChecks": [
-        { "status": "ok", "note": "类型与评论均指向焼鳥店。", "confidence": 92 }
-      ]
-    }
-  ]
-}`;
+输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
+（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
 };
 
 
@@ -1818,24 +1738,10 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
 - picks 数组必须逐一覆盖本批所有候选（本批最多 8 条）；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
 
       const extractJson = (text: string): string => {
-        let s = (text || "").trim();
-        // 剥所有 markdown 围栏变体
-        s = s.replace(/^```(?:json|JSON)?\s*/i, "").replace(/```\s*$/i, "");
-        // 抓首 { 到末 }
-        const first = s.indexOf("{");
-        const last = s.lastIndexOf("}");
-        if (first !== -1 && last > first) s = s.slice(first, last + 1);
-        // 修复带引号的数字字段（matchScore / confidence 偶尔会被模型加引号）
-        s = s.replace(
-          /"(matchScore|confidence)"\s*:\s*"(-?\d+(?:\.\d+)?)"/g,
-          '"$1": $2',
-        );
-        // 修复千分位逗号数字（"1,200" → 1200）
-        s = s.replace(
-          /"(matchScore|confidence|rating|reviewCount)"\s*:\s*"(\d{1,3}(?:,\d{3})+(?:\.\d+)?)"/g,
-          (_m, k, n) => `"${k}": ${n.replace(/,/g, "")}`,
-        );
-        return s;
+        const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (fenced) return fenced[1].trim();
+        const m = text.match(/\{[\s\S]*\}/);
+        return m ? m[0] : text;
       };
 
       // 极简兜底：砍掉占 token 大头的 realWorldReviews + 截短 tabelog/yelp summary。
@@ -1876,12 +1782,8 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
         return { cuisine: group.cuisine, picks: result.output.picks };
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
-        const rawHead =
-          typeof (e1 as { text?: string })?.text === "string"
-            ? ((e1 as { text?: string }).text as string).slice(0, 200)
-            : "";
         console.warn(
-          `[Echo/AI-rank] "${group.cuisine}" Output.object failed (${m1})${rawHead ? `, head=${JSON.stringify(rawHead)}` : ""}, retrying raw…`,
+          `[Echo/AI-rank] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
         );
         try {
           const fb = await generateText({
@@ -1896,16 +1798,7 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
           if (finishReason === "length" || finishReason === "max-tokens") {
             throw new Error(`truncated (finishReason=${finishReason})`);
           }
-          const rawText = fb.text || "";
-          let parsed;
-          try {
-            parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(rawText)));
-          } catch (parseErr) {
-            console.warn(
-              `[Echo/AI-rank] "${group.cuisine}" raw parse error, head=${JSON.stringify(rawText.slice(0, 200))}`,
-            );
-            throw parseErr;
-          }
+          const parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
           console.log(
             `[Echo/AI-rank] "${group.cuisine}" fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
           );
@@ -1940,9 +1833,7 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
       }
     };
 
-    const rankTotal = candidatesForPrompt.length;
-    let rankDone = 0;
-    yield { type: "stage", stage: "rank", count: 0, total: rankTotal };
+    yield { type: "stage", stage: "rank" };
     const rankStartedAt = Date.now();
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
     const groupResults = yield* withHeartbeat(
@@ -1956,12 +1847,9 @@ picks.length 必须等于 ${group.candidates.length}（候选数），顺序与�
           const res = await rankOneGroup({ ...group, candidates: batch });
           return res.picks;
         }));
-        rankDone++;
         return { cuisine: group.cuisine, picks: batchPicks.flat() };
       })),
       "rank",
-      4000,
-      () => ({ done: rankDone, total: rankTotal }),
     );
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
