@@ -58,10 +58,13 @@ function StepRequirements() {
 
   // —— 平滑进度条状态 ——
   const [displayProgress, setDisplayProgress] = useState(0);
-  const targetProgressRef = useRef(0);
-  const lastChunkAtRef = useRef<number>(0);
+  const displayProgressRef = useRef(0);
+  const targetProgressRef = useRef(0); // 软上限
+  const lastFrameAtRef = useRef<number>(0);
   const rafProgressRef = useRef<number | null>(null);
   const currentRangeRef = useRef<[number, number]>([0, 100]);
+  const stageExpectedMsRef = useRef<number>(8000);
+  const jitterRef = useRef<{ at: number; factor: number }>({ at: 0, factor: 1 });
   const reviewMaxRef = useRef(0);
   const tabelogMaxRef = useRef(0);
   const yelpMaxRef = useRef(0);
