@@ -1836,6 +1836,22 @@ ${JSON.stringify(group.candidates, null, 2)}
 6. **Google 评分是确定性事实**：遇到 Google 评分阈值条件，直接拿候选的 rating/googleRating 做数值比较；有数值时不允许 unknown，也不要用评论文本推断评分。
 7. **料理保真**：检查 name / primaryType / editorialSummary / realWorldReviews。命中反例关键词且未命中主词/同义词 → 该硬条件判 fail。
 
+## 🔴 matchScore 强制输出铁律（最高优先级，违反即整批作废）
+
+**这是本次 prompt 最重要的一条规则，生成每一个 pick 时反复确认：**
+
+1. **每个 pick 必须包含 \`matchScore\` 字段**：本批 ${group.candidates.length} 家 → 必须有 ${group.candidates.length} 个 \`matchScore\`，**一个都不能漏**。
+2. \`matchScore\` 必须是 **JSON number 类型**的 0–100 整数。**严禁**以下任何写法：
+   - ❌ 漏写字段（pick 里只有 placeId / verificationStatus / hardFilterChecks，没有 matchScore）
+   - ❌ \`"matchScore": null\`
+   - ❌ \`"matchScore": "88"\`（字符串）
+   - ❌ \`"matchScore": "unknown"\` / \`"matchScore": "N/A"\` / \`"matchScore": ""\`
+   - ❌ \`"matchScore": undefined\`
+3. **不确定也必须给数字**：即使资料严重不足、证据模糊，也必须按下方"matchScore 评分指引"给一个保守估算分（参考"不确定时如何给分"小节），**绝对禁止**因为"不好评估""信息不足""无法判断"而省略该字段。资料不足应反映在低 confidence 与 verificationStatus="unknown"，而**不是**省略 matchScore。
+4. **\`verificationStatus\` 和 \`matchScore\` 必须成对出现**：写了 verificationStatus 就一定要写 matchScore，反之亦然。
+5. 输出前**逐 pick 自查**：每个 pick 是否同时具备 \`placeId\`、\`verificationStatus\`、\`matchScore\`(number)、\`hardFilterChecks\`、\`matchDetails\` 这 5 个字段。少任何一个都视为非法输出。
+
+
 ## 禁止做（DON'T）
 1. **禁止横向比较**：任何字段里都不允许出现"相比之下""比同批其他店""在本批中""更胜一筹"等措辞。
 2. **禁止跨条引用**：每家店的判定只能引用**它自己**的 candidate 数据，禁止引用同批其他店的评论 / 地址 / 菜单。
