@@ -1495,6 +1495,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 日期/时间硬筛：明确 closed 的候选属于不可用基础淘汰项，不参与后续补足。
     const visitMatchById = new Map<string, "open" | "unknown">();
     if (data.visitTime && data.visitTime.weekday != null && data.visitTime.hhmm) {
+      _currentStage = "visitTime";
+      const _vtT0 = Date.now();
       const w = data.visitTime.weekday;
       const t = data.visitTime.hhmm;
       let totalRemoved = 0;
@@ -1512,7 +1514,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         }
         return { ...r, places: kept };
       });
+      const _vtRemaining = placeResults.reduce((s, r) => s + r.places.length, 0);
       console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
+      echoLog.ok("visitTime", Date.now() - _vtT0, {
+        weekday: w,
+        hhmm: t,
+        removed: totalRemoved,
+        remaining: _vtRemaining,
+      });
     }
 
     // 规则初筛：只用 Google Places 直接返回的字段
