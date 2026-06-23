@@ -277,10 +277,10 @@ export const parseRequirements = createServerFn({ method: "POST" })
 1. 这类条件**必须**进 \`cuisineLevelConstraints\`（带 weight，规则同下文权重表）。
 2. **同时**把同一条复制进 \`softPreferences\`（保留排序信号，weight 相同）。
 3. **绝对不要**进 \`hardFilters\`（会让 Google Maps 文本搜索查不到候选）。
-4. 当**用户输入的 cuisines 为空时**，模型必须根据这些约束在 \`cuisines\` 字段里**主动产出 1–3 个匹配品类**，替代之前那种 \`["餐厅"]\` 的兜底。例：
-   - 「东京、用餐 1 小时内、想轻一点」→ cuisines: ["拉面","乌冬","定食"]
-   - 「大阪、带 3 岁小孩、想吃饱」→ cuisines: ["家庭餐厅","回转寿司","お好み焼き"]
-   - 「京都、想慢慢吃、安静」→ cuisines: ["怀石","会席料理","日本料理"]
+4. 当**用户输入的 cuisines 为空时**，模型必须根据这些约束在 \`cuisines\` 字段里**主动产出 1–2 个匹配品类**，替代之前那种 \`["餐厅"]\` 的兜底。例：
+   - 「东京、用餐 1 小时内、想轻一点」→ cuisines: ["拉面","定食"]
+   - 「大阪、带 3 岁小孩、想吃饱」→ cuisines: ["家庭餐厅","回转寿司"]
+   - 「京都、想慢慢吃、安静」→ cuisines: ["怀石","会席料理"]
 5. 当用户**已显式提供 cuisines** 时，**不要覆盖** cuisines；在 \`searchStrategy\` 里说明会按这些品类级约束做排序倾斜即可。
 
 ## hardFilters 判定规则（关键，务必严格执行）
