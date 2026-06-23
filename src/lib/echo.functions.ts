@@ -143,16 +143,52 @@ function uniqueStrings(items: string[]): string[] {
 }
 
 function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
-  const negativeFilters = uniqueConditions(parsed.negativeFilters);
-  const negativeKeys = new Set(negativeFilters.map((item) => conditionKey(item.text)));
-  const hardFilters = uniqueConditions(parsed.hardFilters).filter(
-    (item) => !negativeKeys.has(conditionKey(item.text)),
-  );
-  const hardKeys = new Set(hardFilters.map((item) => conditionKey(item.text)));
-  const softPreferences = uniqueConditions(parsed.softPreferences).filter((item) => {
-    const key = conditionKey(item.text);
-    return !negativeKeys.has(key) && !hardKeys.has(key);
-  });
+  // 兜底字符串归一去重（语义去重应该已经在 parseRequirements 的 prompt 里由 AI 完成）。
+  // 这里只做最后一道防线：把 hard/soft/neg 合并扁平化，按 conditionKey 去重，
+  // 同一 key 在多桶出现时保留 weight 最高的那条，并放回它原本的 bucket。
+  // 三桶最终互斥。
+  type Bucket = "hard" | "soft" | "neg";
+  const BUCKET_TIE_RANK: Record<Bucket, number> = { neg: 0, hard: 1, soft: 2 };
+  type Entry = { bucket: Bucket; item: WeightedCondition; key: string };
+  const all: Entry[] = [
+    ...parsed.hardFilters.map((item) => ({ bucket: "hard" as Bucket, item, key: conditionKey(item.text) })),
+    ...parsed.softPreferences.map((item) => ({ bucket: "soft" as Bucket, item, key: conditionKey(item.text) })),
+    ...parsed.negativeFilters.map((item) => ({ bucket: "neg" as Bucket, item, key: conditionKey(item.text) })),
+  ].filter((e) => e.key);
+
+  const winners = new Map<string, Entry>();
+  for (const entry of all) {
+    const existing = winners.get(entry.key);
+    if (!existing) {
+      winners.set(entry.key, entry);
+      continue;
+    }
+    if (entry.item.weight > existing.item.weight) {
+      winners.set(entry.key, entry);
+    } else if (entry.item.weight === existing.item.weight) {
+      // tie-break: neg > hard > soft（保持现有行为）
+      if (BUCKET_TIE_RANK[entry.bucket] < BUCKET_TIE_RANK[existing.bucket]) {
+        winners.set(entry.key, entry);
+      }
+    }
+  }
+
+  const hardFilters: WeightedCondition[] = [];
+  const softPreferences: WeightedCondition[] = [];
+  const negativeFilters: WeightedCondition[] = [];
+  for (const e of winners.values()) {
+    if (e.bucket === "hard") hardFilters.push(e.item);
+    else if (e.bucket === "soft") softPreferences.push(e.item);
+    else negativeFilters.push(e.item);
+  }
+
+  const mergedCount = all.length - winners.size;
+  if (mergedCount > 0) {
+    console.warn(
+      `[parseRequirements] AI missed semantic dedupe, fallback merged ${mergedCount} item(s)`,
+    );
+  }
+
   const dishPreferences = [...new Map(
     parsed.dishPreferences
       .map((dish) => [conditionKey(dish), dish.trim()] as const)
@@ -319,6 +355,26 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - 否定句一律进 negativeFilters，不要再复制到 hardFilters。
 - 同一条只放一个数组里，不要重复。
 - 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
+
+## 语义去重规则（最终输出前必须执行，关键，务必严格执行）
+
+在你最终输出 hardFilters / softPreferences / negativeFilters / dishPreferences 之前，必须对所有条目做一次**基于整句语义**的合并。这一步不可省略。
+
+1. **判定"同一诉求"按整句语义**，不要按关键词或字面重合判定。同一个诉求的不同措辞、不同强度、肯定与否定的等价改写，都算同一条。
+2. **不同诉求即使用词重叠也不算同一条**。判定原则：
+   - 同方向同维度 = 同一条。例："要安静"、"想找个安静的地方"、"不要吵"——同一诉求，必须合并。
+   - 相反方向 ≠ 同一条。例："要安静" vs "要热闹"——相反诉求，不可合并。
+   - 不同维度 ≠ 同一条。例："环境好" vs "服务好"、"装修精致" vs "菜品精致"——不同维度，不可合并。
+3. **同一诉求只能出现一次，且只能出现在 hard / soft / neg 三类中的一类里**。归类按该诉求在用户原文中**最强烈**的那次表达决定：
+   - 出现"必须 / 一定 / 务必 / 不能没有 / 不可以没有 / must / required / need" 等强制信号 → hardFilters。
+   - 只出现"希望 / 最好 / 喜欢 / 想要 / prefer / would like / nice to have" → softPreferences。
+   - 只出现"不要 / 别 / 讨厌 / 避免 / no / without / avoid" → negativeFilters。
+   - 同一诉求同时有正向和负向表达（如"要安静"+"不要吵"），统一归为最强烈那次表达对应的类（通常是 hardFilters 或 softPreferences，不要再单独留一条 negativeFilters）。
+4. 合并后的 weight 取该诉求所有表达中**最高**的那个值。
+5. text 字段的"原话片段"部分，使用最能体现最强烈表达的那句用户原文；"→ 标准化条件"部分用一句话概括该诉求。
+6. dishPreferences 同样要按菜品语义去重：同义词、别名、单复数、繁简、中英文对照（如"拉面" vs "ラーメン" vs "ramen"，"刺身" vs "sashimi"）算同一道菜，只保留一次。
+
+**反例**（错误，禁止）：用户原文出现"我希望环境好"、"环境一定要好"、"环境必须好"三次——这是**一个**诉求的三次重复表达，最终只能输出**一条**：text="环境必须好 → 环境/氛围佳"，weight=1.0，放在 hardFilters 里（因为出现了"必须/一定"强制信号）。**绝对不要**输出三条独立的 hard/soft/neg 条目。
 
 ## 示例
 
@@ -534,6 +590,13 @@ export const parseRequirements = createServerFn({ method: "POST" })
         const second = await runOnce("openai/gpt-5-mini");
         parsed = sanitizeVisitTime(await enforceInferIfRequested(second));
       }
+      const beforeDedupe = {
+        hard: parsed.hardFilters.length,
+        soft: parsed.softPreferences.length,
+        neg: parsed.negativeFilters.length,
+      };
+      // 注：runOnce 里已经在 return 前调用了 dedupeParsedConditions（line 425），
+      // 这里只是把"AI 自身合并 vs 字符串兜底" 的差异记一下，方便观察 prompt 效果。
       echoLog.ok("parseRequirements", Date.now() - _parseT0, {
         cuisines: parsed.cuisines.length,
         hard: parsed.hardFilters.length,
@@ -542,6 +605,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         dishes: parsed.dishPreferences.length,
         visitTime: parsed.visitTime ? "yes" : "no",
         mode: parsed.mode,
+        afterAiDedupe: `${beforeDedupe.hard}/${beforeDedupe.soft}/${beforeDedupe.neg}`,
       });
       return parsed;
     } catch (e) {

@@ -44,30 +44,8 @@ function todayHoursLabel(
   return line.replace(/^[^:：]+[:：]\s*/, "");
 }
 
-function displayConditionKey(text: string): string {
-  const source = text.split(/\s*(?:→|->|=>)\s*/, 1)[0] || text;
-  return source.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
-}
-
-function uniqueDisplayItems<T extends { text: string }>(items: T[]): T[] {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const key = displayConditionKey(item.text);
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function uniqueDisplayStrings(items: string[]): string[] {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const key = displayConditionKey(item);
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
+// 需求条目的去重完全由后端 parseRequirements 负责（prompt 内语义合并 + dedupeParsedConditions 字符串兜底）。
+// 前端直接渲染后端返回的数据，不做任何去重，避免隐藏后端真实输出。
 
 const RECALL_TAG_LABELS_ZH: Record<string, string> = {
   primary: "主词",
@@ -167,10 +145,10 @@ function ResultsPage() {
     partial: "bg-secondary text-secondary-foreground",
   };
   const weekdayShort = t("results.weekday.short").split(",");
-  const displayedHardFilters = uniqueDisplayItems(parsed.hardFilters);
-  const displayedSoftPreferences = uniqueDisplayItems(parsed.softPreferences);
-  const displayedNegativeFilters = uniqueDisplayItems(parsed.negativeFilters);
-  const displayedDishPreferences = uniqueDisplayStrings(parsed.dishPreferences);
+  const displayedHardFilters = parsed.hardFilters;
+  const displayedSoftPreferences = parsed.softPreferences;
+  const displayedNegativeFilters = parsed.negativeFilters;
+  const displayedDishPreferences = parsed.dishPreferences;
 
   const cancelRefine = () => {
     abortRef.current?.abort();
