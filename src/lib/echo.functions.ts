@@ -1443,6 +1443,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
 
     const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
+    echoLog.ok("places", Date.now() - _placesT0, {
+      total: totalCandidates,
+      perCuisine: Object.fromEntries(placeResults.map((r) => [r.cuisine, r.places.length])),
+      errors: placeResults.filter((r) => r.error).length,
+    });
     yield { type: "stage", stage: "places-done", count: totalCandidates };
     for (const r of placeResults) {
       if (!r.places.length && r.error) {
