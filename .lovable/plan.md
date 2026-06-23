@@ -1,48 +1,51 @@
-# 上下节点连通性核验结论
+## 目标
+当前 `src/lib/echo.functions.ts` 里只有 AI-verify / AI-copy / score / tabelog / yelp 等几个节点有日志，且格式不统一，缺少"开始时间、耗时、是否失败、输入输出关键指标"的全链路视图。本次只补**日志**，不动业务逻辑、不动 schema、不动 UI。
 
-已通读 `src/lib/echo.functions.ts` 关键拼接处（schema 定义、Pass1 调用、打分层、copyTargets 构造、Pass2 回填、photos 阶段），**两段式改造与上下游完全打通，无需再改任何代码**。
+## 日志规范（统一前缀）
+- 统一前缀：`[Echo/<stage>]`
+- 三段式：`start`（关键输入） → `ok in Xms`（关键输出指标） → `failed in Xms: <reason>`
+- 时间一律毫秒；关键指标用 `key=value` 格式便于 grep
+- 错误既打 `console.error` 也保留 message，便于在 worker logs 里 `grep "[Echo/" | grep failed`
 
-## 端到端数据流（已核验）
+## 要补/完善的节点
 
-```text
-candidatesForPrompt
-  ├─[Pass1] rankVerifyGroup (12家/批，并行)
-  │   └─ 输出: AiVerifyPick { placeId, verificationStatus, matchScore, hardFilterChecks, matchDetails }
-  ↓
-mergedGroups (Map<cuisine, AiPick[]>)         ← AiVerifyPick 是 AiPick 的子集，结构兼容
-  ↓
-三层打分 (Layer1 准入 + Layer2 贝叶斯 + Layer3 matchScore×0.47 + …)  ← 完全未动
-  ↓
-restaurants[] 初始化:
-  • aiSummary = pick?.aiSummary || "因资料不足暂时保留…"   ← Pass1 不返回，落到 fallback 文案
-  • pros / cons = []                                         ← Pass1 不返回，留空待 Pass2 填
-  ↓
-top5 / partial / failed 分桶 + builtList 排序
-  ↓
-copyTargets: 每个 cuisine 的前 5 家 (placeId + name + address + 3条 googleReviews + tabelog/yelp summary)
-  ↓
-[Pass2] rankCopyGroup (并行，复用 "rank" 心跳)
-  └─ 输出: AiCopyPick { placeId, aiSummary, pros, cons }
-  ↓
-copyById Map 回填：
-  • aiSummary 非空才覆盖（保留 Pass1 fallback 兜底）
-  • pros / cons 非空才覆盖
-  ↓
-yield { stage: "photos" } → resolvePhotoUrl → 返回 RestaurantSchema
-```
+| Stage | 现状 | 要补的字段 |
+|---|---|---|
+| `parseRequirements` | 仅失败时 warn | `start` + `ok in Xms cuisines=… budget=… diet=…`；fallback 命中标记 |
+| `places` (Google Places 召回) | 只有 per-cuisine `[recall]` | 节点级 `start cuisines=N` / `ok in Xms total=… perCuisine={…}` |
+| `rules-prefilter` | 已有计数 | 补 `in Xms` |
+| `visitTime` 过滤 | 已有 removed | 补 `in Xms remaining=…` |
+| `tabelog` / `yelp` 富化 | 已有 hit 数 | 补 `start total=N` / `ok in Xms hit=H miss=M errors=E` |
+| `AI-verify` per group | 有 ok/failed/ms | 加 `start candidates=N`；批次维度日志（B/Btotal）|
+| `AI-verify` 汇总 | 有 group 总耗时 | 加 `groups=… picksTotal=… failedGroups=…` |
+| `score` per cuisine | 有 pool/admitted/avg | 节点级 `[Echo/score] all done in Xms groups=…` |
+| `AI-copy` per group | 有 ok/failed/ms | 加 `start picks=N`；汇总加 `failedGroups=…` |
+| `AI-copy` 汇总 | 有总耗时 | 加 `picksFilled=… picksMissed=…` |
+| `photos` | 无 | `start restaurants=N` / `ok in Xms urls=…` |
+| 总线 | 无 | `[Echo/pipeline] start` 在入口；`[Echo/pipeline] done in Xms stages=…` 在末尾；异常路径打 `failed in Xms at <stage>` |
 
-## 关键兼容点
+## 实施步骤
+1. 在 `echo.functions.ts` 文件顶部新增一个小工具（不导出）：
+   ```ts
+   const echoLog = {
+     start: (stage: string, extra?: Record<string, unknown>) => { … console.log },
+     ok:    (stage: string, ms: number, extra?: …) => { … },
+     fail:  (stage: string, ms: number, err: unknown, extra?: …) => { … console.error },
+   };
+   ```
+   统一拼接 `[Echo/<stage>] start key=val …` 等格式。
+2. 按上表逐个节点：
+   - 在节点开始处记录 `const t0 = Date.now()` 并 `echoLog.start(...)`
+   - 在节点正常结束处 `echoLog.ok(stage, Date.now()-t0, {...指标})`
+   - try/catch 里 `echoLog.fail(...)`，不吞错误
+3. 入口（`searchRestaurants` generator 顶部）加 `[Echo/pipeline] start lang=… cuisines=…`；末尾 `done in Xms`；既有 catch 里追加 `failed at stage=<current>`（用一个游标变量记录当前 stage）。
+4. 不改任何 yield 出去的 `stage` 事件、不改前端、不改 schema。
 
-1. **Schema 兼容**：`AiVerifyPickSchema` ⊂ `AiPickSchema`，`mergedGroups` 用宽 schema 装窄数据，`pick?.aiSummary` 类型安全（永远 undefined → 走 fallback）。
-2. **失败降级闭环**：Pass1 单 group 失败 → `picks: []`，三层打分仍按 pool 全跑，admitted 但 matchScore=0 → finalScore 仍能产生（不丢店）；Pass2 单 group 失败 → 文案不回填，aiSummary 保留 Pass1 fallback 文案，pros/cons 保持 []，UI 不崩。
-3. **前端 UI 零改动**：Pass2 复用 `withHeartbeat(..., "rank")`，stage 序列仍是 `rank → photos → done`，无新增 stage、无需 i18n 改动。
-4. **类型一致**：`CopyGroupInput` 已在 1912 行定义，2330 行使用类型匹配。
-5. **placeId 串联**：`placeByRestaurantId` (2296 写入) → `copyTargets` 取 `place.placeId` (2341) → `copyById` (2366) → 回填时再次 `place.placeId` 查找 (2377-2379)，链路一致。
+## 验收
+- 运行一次完整搜索，复制 worker logs，按 `[Echo/` grep 应能看到：pipeline → parseRequirements → places → rules-prefilter → visitTime → tabelog → yelp → AI-verify(×groups) → score → AI-copy(×groups) → photos → pipeline done 的完整时间线。
+- 任意一个 group 的 AI-verify 或 AI-copy 失败时，日志里能直接看到 "stage / cuisine / 耗时 / 错误信息"，无需再查上下文。
 
-## 结论
-
-无需新增代码改动。建议下一轮直接实测：选 2-3 个 cuisine 跑一遍，观察日志：
-- `[Echo/AI-rank] all N group(s) done`
-- `[Echo/AI-copy] all M group(s) done`
-- 卡片 aiSummary / pros / cons 是否填入（top5）且无横向比较语
-- 落榜店（>top5）保留 Pass1 fallback 文案
+## 不做的事
+- 不引入第三方 logger / OpenTelemetry
+- 不改业务计算、不动 Prompt、不动 Schema
+- 不新增前端可见 stage、不改心跳
