@@ -1618,6 +1618,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         "tabelog",
       );
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
+      echoLog.ok("tabelog", Date.now() - _tabT0, {
+        hit: tabelogById.size,
+        total: allTargets.length,
+        miss: allTargets.length - tabelogById.size,
+      });
       if (allTargets.length > 0 && tabelogById.size === 0) {
         pushWarn({
           stage: "tabelog",
