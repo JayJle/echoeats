@@ -1706,6 +1706,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     //       2) 该品类内按 rating×log10(reviews+10) 排序的位次（越靠前越合适）
     //       3) cuisines 出现顺序（先到先得）
     {
+      const placeResultsBeforeDedup = placeResults;
       const ratingScore = (p: PlaceCandidate) =>
         (p.rating ?? 0) * Math.log10((p.userRatingCount ?? 0) + 10);
       const rankByCuisine = new Map<string, Map<string, number>>();
@@ -1745,6 +1746,18 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       if (removed > 0) {
         console.log(
           `[Echo/places] dedup: ${removed} duplicate(s) removed across cuisines (kept best-fit)`,
+        );
+      }
+      // Sanity check: 去重前后 unique placeId 数量必须相等，否则说明误删了餐厅。
+      const uniqueBefore = new Set<string>();
+      for (const r of placeResultsBeforeDedup) for (const p of r.places) uniqueBefore.add(p.placeId);
+      const uniqueAfter = new Set<string>();
+      for (const r of placeResults) for (const p of r.places) uniqueAfter.add(p.placeId);
+      if (uniqueAfter.size !== uniqueBefore.size) {
+        const missing = [...uniqueBefore].filter((id) => !uniqueAfter.has(id));
+        console.error(
+          `[Echo/places] DEDUP BUG: ${missing.length} place(s) lost during dedup (before=${uniqueBefore.size}, after=${uniqueAfter.size})`,
+          missing.slice(0, 10),
         );
       }
     }
