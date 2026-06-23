@@ -1870,13 +1870,19 @@ ${JSON.stringify(group.candidates, null, 2)}
 
 **输出且只输出一个 JSON 对象**，第一个字符是 \`{\`、最后一个字符是 \`}\`，**不要任何前置说明、markdown 包裹、\\\`\\\`\\\`json 围栏**。
 
+## 🔴 字段完整性铁律（再次强调）
+- 每个 pick **必须**有 \`matchScore\`，且必须是 JSON number（0–100 整数）。
+- 缺 \`matchScore\` = 整个输出无效 = 该批次直接作废。
+- 不允许字符串、null、undefined、空字符串、占位符。
+- 不允许只写 verificationStatus 不写 matchScore。
+
 Schema：
 {
   "picks": [
     {
       "placeId": "<候选的 placeId，原样回写>",
       "verificationStatus": "ok" | "unknown" | "fail",
-      "matchScore": <0–100 整数>,
+      "matchScore": <0–100 整数，必填，必须是 JSON number，禁止省略禁止 null 禁止字符串>,
       "hardFilterChecks": [
         { "filter": "<硬条件原文>", "status": "ok"|"unknown"|"fail", "note": "<20–40 字>", "confidence": <0–100> }
       ],
@@ -1899,9 +1905,24 @@ Schema：
 - 40–59：硬条件有 fail（非 blocking）或多条 unknown
 - 0–39：blocking fail 或料理保真 fail
 
+## 不确定时如何给分（必须给数字，不允许省略）
+- 硬条件全 ok、软偏好证据不足 → 给 **60–74**
+- 硬条件有 unknown、整体资料偏弱 → 给 **50–69**
+- 硬条件有 fail（非 blocking）或多条 unknown → 给 **40–55**
+- blocking fail / 料理保真 fail → 给 **0–39**
+- 完全没有评论数据可参考 → 仅依据 name / primaryType / rating 给一个保守分（通常 50–65），**仍然必须给数字**
+
+## 🔴 最终自检清单（输出前必做）
+在你提交 JSON 之前，从头到尾扫一遍 picks 数组，确认：
+1. \`picks.length === ${group.candidates.length}\`（与本批候选数严格相等）
+2. 每个 pick 都包含这 5 个字段：\`placeId\` / \`verificationStatus\` / \`matchScore\` / \`hardFilterChecks\` / \`matchDetails\`
+3. **每个 \`matchScore\` 都是 0–100 的 JSON number**（不是字符串、不是 null、不是 undefined、不是被省略）
+4. 如果发现任何一条缺 \`matchScore\`，立即补上一个保守估算分再输出
+
 ---
 
 # Few-shots
+
 
 ## 示例 A — 强匹配
 {
