@@ -2343,30 +2343,107 @@ Schema：
       totalCandidates: candidatesForPrompt.reduce((s, g) => s + g.candidates.length, 0),
     });
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
-    const groupResults = yield* withHeartbeat(
-      Promise.all(candidatesForPrompt.map(async (group) => {
+    // 每个 cuisine 内：先把候选按 BATCH_SIZE 切片 → Pass1 核验 → Pass2 仅打分，最终把 matchScore 回填到 picks。
+    type BatchAggregate = {
+      cuisine: string;
+      picks: z.infer<typeof AiPickSchema>[];
+      verifyOk: number;
+      verifyFail: number;
+      scoreOk: number;
+      scorePartial: number;
+      scoreFailed: number;
+      fallback60: number;
+    };
+    const groupResults: BatchAggregate[] = yield* withHeartbeat(
+      Promise.all(candidatesForPrompt.map(async (group): Promise<BatchAggregate> => {
         const BATCH_SIZE = 12;
-        const batches = [];
+        const batches: typeof group.candidates[] = [];
         for (let i = 0; i < group.candidates.length; i += BATCH_SIZE) {
           batches.push(group.candidates.slice(i, i + BATCH_SIZE));
         }
+        const placeByIdInGroup = new Map(group.candidates.map((c) => [c.placeId, c]));
+
+        const agg: BatchAggregate = {
+          cuisine: group.cuisine,
+          picks: [],
+          verifyOk: 0,
+          verifyFail: 0,
+          scoreOk: 0,
+          scorePartial: 0,
+          scoreFailed: 0,
+          fallback60: 0,
+        };
+
         const batchPicks = await Promise.all(batches.map(async (batch) => {
-          const res = await rankVerifyGroup({ ...group, candidates: batch });
-          return res.picks;
+          // Pass1: 核验
+          const verify = await rankVerifyGroup({ ...group, candidates: batch });
+          if (!verify.ok) {
+            agg.verifyFail++;
+            return [];
+          }
+          agg.verifyOk++;
+
+          if (!verify.picks.length) return [];
+
+          // Pass2: 仅打分。基于 Pass1 的核验结果 + 候选基本字段
+          const scoreInput: ScoreGroupInput = {
+            cuisine: group.cuisine,
+            candidates: verify.picks.map((p) => {
+              const base = placeByIdInGroup.get(p.placeId) as
+                | { name?: string; rating?: number | null; userRatingCount?: number | null }
+                | undefined;
+              return {
+                placeId: p.placeId,
+                name: base?.name ?? "",
+                rating: base?.rating ?? null,
+                userRatingCount: base?.userRatingCount ?? null,
+                verificationStatus: undefined,
+                hardFilterChecks: p.hardFilterChecks,
+                matchDetails: p.matchDetails,
+              };
+            }),
+          };
+          const score = await rankScoreGroup(scoreInput);
+          if (score.status === "ok") agg.scoreOk++;
+          else if (score.status === "partial") agg.scorePartial++;
+          else agg.scoreFailed++;
+          agg.fallback60 += score.fallbackIds.size;
+
+          // 回填 matchScore + matchTier
+          for (const p of verify.picks) {
+            const s = score.scores.get(p.placeId) ?? 60;
+            p.matchScore = s;
+            p.matchTier = tierFromScore(s);
+          }
+          return verify.picks;
         }));
-        return { cuisine: group.cuisine, picks: batchPicks.flat() };
+
+        agg.picks = batchPicks.flat();
+        return agg;
       })),
       "rank",
     );
     const _rankPicksTotal = groupResults.reduce((s, g) => s + g.picks.length, 0);
     const _rankFailedGroups = groupResults.filter((g) => g.picks.length === 0).length;
+    const _verifyOk = groupResults.reduce((s, g) => s + g.verifyOk, 0);
+    const _verifyFail = groupResults.reduce((s, g) => s + g.verifyFail, 0);
+    const _scoreOk = groupResults.reduce((s, g) => s + g.scoreOk, 0);
+    const _scorePartial = groupResults.reduce((s, g) => s + g.scorePartial, 0);
+    const _scoreFailed = groupResults.reduce((s, g) => s + g.scoreFailed, 0);
+    const _fallback60 = groupResults.reduce((s, g) => s + g.fallback60, 0);
     console.log(
-      `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
+      `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms verify(ok/fail)=${_verifyOk}/${_verifyFail} score(ok/partial/fail)=${_scoreOk}/${_scorePartial}/${_scoreFailed} fallback60=${_fallback60}`,
     );
     echoLog.ok("AI-rank", Date.now() - rankStartedAt, {
       groups: groupResults.length,
       picksTotal: _rankPicksTotal,
       failedGroups: _rankFailedGroups,
+      verifyOk: _verifyOk,
+      verifyFail: _verifyFail,
+      scoreOk: _scoreOk,
+      scorePartial: _scorePartial,
+      scoreFailed: _scoreFailed,
+      fallback60: _fallback60,
     });
     const mergedGroups = new Map<string, z.infer<typeof AiPickSchema>[]>();
     for (const result of groupResults) {
