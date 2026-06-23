@@ -766,6 +766,35 @@ const AiPickGroupSchema = z.object({
   picks: z.array(AiPickSchema),
 });
 
+// Pass 1 (核验) 输出 schema：不含文案字段
+const AiVerifyPickSchema = z.object({
+  placeId: z.string(),
+  verificationStatus: z.enum(["ok", "unknown", "fail"]).optional(),
+  matchScore: z.coerce.number().min(0).max(100).catch(0).default(0),
+  hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
+  matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
+});
+const AiVerifyGroupSchema = z.object({
+  picks: z.array(AiVerifyPickSchema),
+});
+
+// Pass 2 (文案) 输出 schema：只产 aiSummary + pros + cons
+const AiCopyPickSchema = z.object({
+  placeId: z.string(),
+  aiSummary: z.string().default(""),
+  pros: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
+  cons: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
+});
+const AiCopyGroupSchema = z.object({
+  picks: z.array(AiCopyPickSchema),
+});
+
 function tierFromScore(score: number): "perfect" | "high" | "partial" {
   if (score >= 92) return "perfect";
   if (score >= 80) return "high";
@@ -1653,182 +1682,369 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     type GroupForPrompt = (typeof candidatesForPrompt)[number];
 
-    // 单 cuisine 的 prompt：只塞当前 cuisine 的候选 + 该 cuisine 的扩展词，输出体量约为
-    // 原来的 1/N（N = cuisine 数），从根本上避免触发 maxOutputTokens 截断。
-    const buildPromptForGroup = (group: GroupForPrompt) => {
-  const exp = cuisineExpansions.get(group.cuisine);
-  const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
-  const neg =
-    exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
-  const fidelity = exp
-    ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
-    : `- 「${group.cuisine}」：（无额外扩展）`;
+    // ===== Pass 1：核验 + 初步 matchScore（不出文案）=====
+    const buildVerifyPromptForGroup = (group: GroupForPrompt) => {
+      const exp = cuisineExpansions.get(group.cuisine);
+      const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
+      const neg = exp && exp.negativeKeywords.length ? exp.negativeKeywords.join("、") : "（无）";
+      const fidelity = exp
+        ? `- 「${group.cuisine}」：本地化主词 = "${exp.primary}"；同义词 = ${syn}；反例（明显不是该料理）= ${neg}`
+        : `- 「${group.cuisine}」：（无额外扩展）`;
 
-  return `你是 Echo Eats 的餐厅匹配分析师。下面是 Google Places 返回的真实候选餐厅（针对料理：「${group.cuisine}」）。请对提供的所有候选餐厅进行深度核验与分类。${langDirective}
+      return `# 角色
 
-用户需求：
+你是 Echo Eats 的**餐厅核验分析师**。你的任务是把一批 Google Places 候选餐厅，按用户的硬条件 / 软偏好 / 避雷 / 菜品偏好逐家做"匹配核验"，并给出一个 0–100 的初步 matchScore。
+你**不是**导购文案写手；这一步**不要**写推荐理由、不要写优缺点。
+${langDirective}
+
+---
+
+# 上下文
 - 城市：${data.city}
 - 日期/时间：${data.dateTime}
-- 硬条件（带 weight 0-1）：${hardFiltersJson}
-- 偏好（带 weight）：${softJson === "[]" ? "无" : softJson}
+- 料理：${group.cuisine}
+- 硬条件（带 weight 0–1）：${hardFiltersJson}
+- 软偏好（带 weight）：${softJson === "[]" ? "无" : softJson}
 - 避雷（带 weight）：${negJson === "[]" ? "无" : negJson}
 - 菜品偏好：${data.dishPreferences.join("、") || "无"}
 
-## 验证与分类任务
-请核验列表中的**每一个**餐厅，并将其归入以下三个桶（Buckets）之一：
-1. **ok**：满足所有 weight >= 0.85 的硬条件，且没有明显的负面网评冲突。
-2. **unknown**：没有任何 weight >= 0.85 的条件明确判定为 "fail"，但至少有一个重要条件因为信息不足被标记为 "unknown"。
-3. **fail**：至少有一个 weight >= 0.85 的硬条件被明确判定为 "fail"（不满足）。
-
-## 料理保真（最高优先级）
+## 料理保真信息
 ${fidelity}
-判定方法：检查候选的 name / primaryType / editorialSummary / realWorldReviews。
-- 命中反例关键词且未命中主词/同义词 → **判定为 fail**。
 
-候选数据（JSON）：
+## 候选数据（JSON，本批共 ${group.candidates.length} 家）
 ${JSON.stringify(group.candidates, null, 2)}
 
-## 铁律
-- **核验所有候选**：必须对提供的列表中的每一家店给出核验结果。
-- **hardFilterChecks 长度一致**：对每个餐厅，hardFilterChecks 数组长度必须严格等于 ${hardFiltersList.length}。
-- **hardFilterChecks 是硬条件的唯一输出位置**：matchDetails 不得复述、改写或重复任何硬条件（包括 Google 评分阈值）。
-- **matchDetails 必须完整覆盖所有非硬条件**：按以下数组顺序逐条返回，长度必须严格等于 ${nonHardFilters.length}，不得遗漏、合并或新增：${JSON.stringify(nonHardFilters)}。
-- 每条 matchDetails.label 必须包含对应用户条件及简短证据；没有资料也必须保留该条件并写明资料不足。
-- **禁止同义重复**：如果 hardFilterChecks 已包含某个主题，matchDetails 不得用另一种语言或近义表达再次输出；尤其禁止重复 Google 评分、靠近车站/地铁、菜品口味等条件。
-- **状态判定依据**（基于整体语义判断，不要机械匹配关键词）：
-  - "ok": 你认为有明确证据支持该条件。
-  - "fail": 你认为有明确证据表明不满足该条件。
-  - "unknown": 资料不足、无法判断、或证据模糊。
-- **必须给 confidence（0–100 整数）**：每条 hardFilterChecks 和 matchDetails 都必须返回一个 confidence 字段，表示你对自己这条判断的把握度。
-  - 85–100：证据非常明确、直接、充分。
-  - 70–84：证据合理，可以下结论。
-  - 40–69：证据模糊、需要推断、间接相关 —— **务必在此区间，不要硬给 ok**。
-  - 0–39：基本是猜测或资料严重不足。
-  - **铁律**：如果你写 "ok" 但证据其实只是"评论赞美整体但没具体提到该条件"，confidence 必须 < 70；系统会自动把它降为 unknown。诚实评估自己的把握度，不要全部给 90+。
-- **面向用户写短句**：hardFilterChecks[].note 和 matchDetails[].label 只写简短结论与依据，建议 20–40 字；禁止展示 PrimaryType、reviewHighlights、editorialSummary、realWorldReviews 等内部字段名，禁止使用"字段 = 值"或连续箭头解释推理过程。
-- **Google 评分是确定性事实**：候选中的 googleRating/rating 来自 Google Places。遇到 Google/谷歌评分阈值条件时必须直接做数值比较；有数值时禁止标为 unknown，也不要用评论文本推断评分。
-- **禁止幻觉**：如果 realWorldReviews 为空，严禁编造评价。
+---
 
+# 规则约束
 
-## pros / cons 写作规范（与匹配判断完全解耦）
-pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的口碑点"。这一块**只描述这家店在 Google / Tabelog / Yelp 等平台上的真实评价口碑**，与"是否符合用户需求"完全无关——匹配性判断属于 hardFilterChecks 和 matchDetails，不要在 pros/cons 里重复。
-铁律：
-- **数据源限定**：pros/cons 的每一条都必须来自候选数据里的 googleReviews / tabelog / yelp / realWorldReviews / reviewHighlights 等**真实平台评论文本**。禁止用 editorialSummary、地址、营业时间、Google 评分数值、primaryType 等**非评论字段**拼凑 pros/cons。
-- **禁止回扣用户需求**：pros/cons 的文案里**严禁**出现"符合 / 匹配 / 满足 / 命中 / 您的要求 / 用户条件 / 用户需求 / 你想要的 XX"等任何把口碑和用户输入挂钩的措辞；也禁止"评论提到 {用户偏好的菜品/场景/地段}"这种回扣句式。即使某条评论同时印证了一个匹配条件，写进 pros/cons 时也只描述"食客觉得 XX 好/不好"，不要加"因此满足你的 XX 需求"之类的尾巴。
-- **与 matchDetails 去重**：如果某个点已经在 hardFilterChecks / matchDetails 里作为匹配证据出现，pros/cons 这边换一个纯口碑角度写，或者干脆不写，避免上下两块语义重复。
-- **来源标注**：每条 pros/cons 的 source 字段优先填上平台名（Google / Tabelog / Yelp）。
-- **宁缺毋滥**：当某家店在所有平台评论里都找不到足够支撑的口碑点（少于 2 条评论提及）时，pros 或 cons 直接返回空数组 []，不要为了凑数硬写；前端已经有"暂无可信网评 / 暂无明显差评"的兜底文案。
+## 必须做（DO）
+1. **逐家独立核验**：本批 ${group.candidates.length} 家，一家一家独立判定，**绝不在候选之间做横向比较**。matchScore 是该店对用户需求的**绝对契合度**（0–100 绝对刻度），不受同批其他店影响。
+2. **核验所有候选**：必须对列表中的**每一家**给出 picks 条目，一家都不能漏。
+3. **\`hardFilterChecks\` 长度必须严格等于 ${hardFiltersList.length}**，顺序与硬条件数组一致。
+4. **\`matchDetails\` 长度必须严格等于 ${nonHardFilters.length}**，顺序为：${JSON.stringify(nonHardFilters)}。
+5. **每条判定都给 confidence（0–100 整数）**：
+   - 85–100：证据非常明确、直接、充分
+   - 70–84：证据合理，可以下结论
+   - 40–69：证据模糊、间接、需要推断 —— **务必落在此区间，不要硬给 ok**
+   - 0–39：基本是猜测或资料严重不足
+6. **Google 评分是确定性事实**：遇到 Google 评分阈值条件，直接拿候选的 rating/googleRating 做数值比较；有数值时不允许 unknown，也不要用评论文本推断评分。
+7. **料理保真**：检查 name / primaryType / editorialSummary / realWorldReviews。命中反例关键词且未命中主词/同义词 → 该硬条件判 fail。
 
-输出 JSON 格式：{ "picks": [{ "placeId": "...", "verificationStatus": "ok", "matchScore": 88, ... }] }
-（注：此处 picks 数组应包含所有核验过的餐厅，不仅仅是推荐的）`;
-};
+## 禁止做（DON'T）
+1. **禁止横向比较**：任何字段里都不允许出现"相比之下""比同批其他店""在本批中""更胜一筹"等措辞。
+2. **禁止跨条引用**：每家店的判定只能引用**它自己**的 candidate 数据，禁止引用同批其他店的评论 / 地址 / 菜单。
+3. **禁止幻觉**：realWorldReviews 为空时严禁编造评价；没有数据就标 unknown。
+4. **禁止同义重复**：\`hardFilterChecks\` 已覆盖的主题，\`matchDetails\` 不得换种说法再写一遍（尤其 Google 评分、靠近车站、口味偏好）。
+5. **禁止输出文案**：不要写 aiSummary、不要写 pros/cons —— 这一步只做核验。
+6. **禁止泄露内部字段名**：note 和 label 里不要出现 "primaryType" / "editorialSummary" / "realWorldReviews" 等字段名，也不要 "字段 = 值"或连续箭头的推理链。
+7. **note / label 控制在 20–40 字**，简短结论 + 简短依据即可。
 
+## confidence 自检铁律
+如果你写了 status="ok" 但证据其实只是"评论赞美整体但没具体提到该条件"，confidence 必须 < 70 —— 系统会自动把它降为 unknown。**诚实评估，不要全部给 90+**。
 
-    // 每个 cuisine 独立调用 AI（主调用 + raw 文本兜底）。失败时返回空 picks，不抛出，
-    // 这样单个 cuisine 失败不会拖垮整次搜索。
-    const rankOneGroup = async (
+---
+
+# 输出约束
+
+**输出且只输出一个 JSON 对象**，第一个字符是 \`{\`、最后一个字符是 \`}\`，**不要任何前置说明、markdown 包裹、\\\`\\\`\\\`json 围栏**。
+
+Schema：
+{
+  "picks": [
+    {
+      "placeId": "<候选的 placeId，原样回写>",
+      "verificationStatus": "ok" | "unknown" | "fail",
+      "matchScore": <0–100 整数>,
+      "hardFilterChecks": [
+        { "filter": "<硬条件原文>", "status": "ok"|"unknown"|"fail", "note": "<20–40 字>", "confidence": <0–100> }
+      ],
+      "matchDetails": [
+        { "label": "<20–40 字结论+依据>", "status": "ok"|"unknown"|"fail", "confidence": <0–100> }
+      ]
+    }
+  ]
+}
+
+## verificationStatus 判定法
+- 任一 \`weight ≥ 0.85\` 的硬条件 status=fail → \`fail\`
+- 否则任一硬条件 status=unknown → \`unknown\`
+- 否则 → \`ok\`
+
+## matchScore 评分指引（绝对刻度）
+- 90–100：硬条件全 ok、软偏好多数命中、口碑顶级
+- 75–89：硬条件全 ok、软偏好部分命中
+- 60–74：硬条件有 unknown 或软偏好命中较少
+- 40–59：硬条件有 fail（非 blocking）或多条 unknown
+- 0–39：blocking fail 或料理保真 fail
+
+---
+
+# Few-shots
+
+## 示例 A — 强匹配
+{
+  "picks": [{
+    "placeId": "ChIJxxx",
+    "verificationStatus": "ok",
+    "matchScore": 88,
+    "hardFilterChecks": [
+      { "filter": "Google 评分 ≥ 4.3", "status": "ok", "note": "Google 评分 4.6，远超阈值", "confidence": 100 }
+    ],
+    "matchDetails": [
+      { "label": "氛围安静：多条评论提到环境清幽适合谈话", "status": "ok", "confidence": 78 }
+    ]
+  }]
+}
+
+## 示例 B — 证据弱必须降 confidence
+{
+  "picks": [{
+    "placeId": "ChIJyyy",
+    "verificationStatus": "unknown",
+    "matchScore": 62,
+    "hardFilterChecks": [
+      { "filter": "Google 评分 ≥ 4.3", "status": "ok", "note": "Google 评分 4.4", "confidence": 100 }
+    ],
+    "matchDetails": [
+      { "label": "适合约会：评论整体好评但未具体提及约会场景，资料不足", "status": "unknown", "confidence": 55 }
+    ]
+  }]
+}
+
+## 示例 C — 料理保真 fail
+{
+  "picks": [{
+    "placeId": "ChIJzzz",
+    "verificationStatus": "fail",
+    "matchScore": 12,
+    "hardFilterChecks": [
+      { "filter": "拉面（料理类型）", "status": "fail", "note": "主营意大利菜，非拉面店", "confidence": 95 }
+    ],
+    "matchDetails": []
+  }]
+}
+`;
+    };
+
+    const extractJson = (text: string): string => {
+      const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenced) return fenced[1].trim();
+      const m = text.match(/\{[\s\S]*\}/);
+      return m ? m[0] : text;
+    };
+
+    // 把 Pass1 的精简 pick 扩展成下游打分代码期望的 AiPickSchema 形状（aiSummary/pros/cons 留空，等 Pass2 回填）。
+    const expandToFullPick = (
+      picks: z.infer<typeof AiVerifyGroupSchema>["picks"],
+    ): z.infer<typeof AiPickSchema>[] =>
+      picks.map((p) => ({
+        placeId: p.placeId,
+        matchScore: p.matchScore,
+        matchTier: tierFromScore(p.matchScore),
+        aiSummary: "",
+        pros: [],
+        cons: [],
+        matchDetails: p.matchDetails,
+        hardFilterChecks: p.hardFilterChecks,
+      }));
+
+    const rankVerifyGroup = async (
       group: GroupForPrompt,
     ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
-      const prompt = buildPromptForGroup(group);
+      const prompt = buildVerifyPromptForGroup(group);
       const startedAt = Date.now();
-
-      const RAW_FORMAT_HARD_RULES = `\n\n**输出格式硬约束**：
-- 第一个字符必须是 "{"，最后一个字符必须是 "}"。
-- 不要任何前置说明、不要 markdown、不要 \`\`\`json 包裹、不要"以下是"之类的开场。
-- picks 数组必须逐一覆盖本批所有候选（本批最多 8 条）；每条 aiSummary ≤ 80 字、pros/cons 各 ≤ 3 条、matchDetails ≤ 5 条。`;
-
-      const extractJson = (text: string): string => {
-        const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-        if (fenced) return fenced[1].trim();
-        const m = text.match(/\{[\s\S]*\}/);
-        return m ? m[0] : text;
-      };
-
-      // 极简兜底：砍掉占 token 大头的 realWorldReviews + 截短 tabelog/yelp summary。
-      const buildSlimPrompt = (): string => {
-        const slim: GroupForPrompt = {
-          cuisine: group.cuisine,
-          candidates: group.candidates.map((c) => ({
-            ...c,
-            realWorldReviews: null,
-            editorialSummary: typeof c.editorialSummary === "string"
-              ? c.editorialSummary.slice(0, 60)
-              : c.editorialSummary,
-            tabelog: c.tabelog
-              ? { ...c.tabelog, summary: c.tabelog.summary ? c.tabelog.summary.slice(0, 30) : null }
-              : c.tabelog,
-            yelp: c.yelp
-              ? { ...c.yelp, summary: c.yelp.summary ? c.yelp.summary.slice(0, 30) : null }
-              : c.yelp,
-          })),
-        } as GroupForPrompt;
-        return buildPromptForGroup(slim) + RAW_FORMAT_HARD_RULES;
-      };
 
       try {
         const result = await generateText({
           model,
           prompt,
-          maxOutputTokens: 12000,
+          maxOutputTokens: 6000,
           output: Output.object({
-            schema: AiPickGroupSchema,
-            name: "echo_eats_picks",
-            description: `AI ranking of real candidates for cuisine "${group.cuisine}"`,
+            schema: AiVerifyGroupSchema,
+            name: "echo_eats_verify",
+            description: `Verify candidates for cuisine "${group.cuisine}"`,
           }),
         });
         console.log(
-          `[Echo/AI-rank] "${group.cuisine}" Output.object ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
+          `[Echo/AI-verify] "${group.cuisine}" Output.object ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
         );
-        return { cuisine: group.cuisine, picks: result.output.picks };
+        return { cuisine: group.cuisine, picks: expandToFullPick(result.output.picks) };
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
         console.warn(
-          `[Echo/AI-rank] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
+          `[Echo/AI-verify] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
         );
         try {
           const fb = await generateText({
             model,
             prompt:
               prompt +
-              `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。` +
-              RAW_FORMAT_HARD_RULES,
-            maxOutputTokens: 20000,
+              `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
+            maxOutputTokens: 10000,
           });
           const finishReason = (fb as { finishReason?: string }).finishReason;
           if (finishReason === "length" || finishReason === "max-tokens") {
             throw new Error(`truncated (finishReason=${finishReason})`);
           }
-          const parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          const parsed = AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
           console.log(
-            `[Echo/AI-rank] "${group.cuisine}" fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
+            `[Echo/AI-verify] "${group.cuisine}" raw fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
+          );
+          return { cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
+        } catch (e2) {
+          const m2 = e2 instanceof Error ? e2.message : String(e2);
+          console.error(`[Echo/AI-verify] "${group.cuisine}" failed: ${m2}`);
+          return { cuisine: group.cuisine, picks: [] };
+        }
+      }
+    };
+
+    // ===== Pass 2：文案（aiSummary + pros + cons），仅对每 cuisine 的 top5 跑 =====
+    type CopyPickInput = {
+      placeId: string;
+      name: string;
+      address: string;
+      googleReviews: string[];
+      tabelogSummary: string | null;
+      yelpSummary: string | null;
+    };
+    type CopyGroupInput = { cuisine: string; picks: CopyPickInput[] };
+
+    const buildCopyPromptForGroup = (group: CopyGroupInput) => {
+      return `# 角色
+
+你是 Echo Eats 的**评论摘录文案编辑**。你的任务是基于真实平台评论，给每家餐厅写一段 ≤80 字的总结（aiSummary），并摘录食客口碑中的优点（pros）和槽点（cons）。
+你**不知道**用户的硬条件 / 软偏好 / 避雷 / 菜品偏好是什么 —— 这是有意的，请只描述这家店本身的口碑特征。
+${langDirective}
+
+---
+
+# 上下文
+- 料理：${group.cuisine}
+- 本批候选（仅评论与基本信息，本批共 ${group.picks.length} 家）：
+${JSON.stringify(group.picks, null, 2)}
+
+每家店字段：placeId / name / address / googleReviews（≤3 条） / tabelogSummary / yelpSummary（可能为空）
+
+---
+
+# 规则约束
+
+## 必须做（DO）
+1. **逐家独立撰写**：一家一家独立写，每家店的文案**只引用它自己的**评论字段。
+2. **数据源限定**：pros/cons 的每一条**必须**来自 googleReviews / tabelogSummary / yelpSummary 的真实评论文本。
+3. **来源标注**：每条 pros/cons 的 \`source\` 字段填平台名（Google / Tabelog / Yelp）。
+4. **aiSummary ≤ 80 字**：客观描述这家店的特色、菜品强项、氛围、价位段。
+5. **宁缺毋滥**：评论里找不到足够支撑（同一主题 < 2 条评论提及）→ pros 或 cons 直接返回 \`[]\`，不要硬凑。
+
+## 禁止做（DON'T）
+1. **禁止横向比较**：任何字段不允许出现"相比之下""比其他选择更好""在本批中"等措辞。
+2. **禁止跨店引用**：A 店文案里禁止出现 B 店的店名、菜品、评论。
+3. **禁止回扣用户需求**：本批数据**没有**用户的任何条件信息；禁止写"符合您的 XX 需求""满足您要求的""您想要的 XX"等任何指向用户输入的措辞 —— 你根本不知道用户想要什么。
+4. **禁止用非评论字段拼凑 pros/cons**：地址、营业时间、Google 评分数值、primaryType、editorialSummary 都**不是**评论，不得作为 pros/cons 的依据。
+5. **禁止幻觉**：没有评论支撑就不要写；不要把笼统好评（"很棒""推荐"）当作具体优点。
+6. **pros 与 cons 不要写同一件事**：避免一边夸"分量大"一边吐槽"分量大"。
+7. **每条 pros/cons 文本 ≤ 30 字**，pros / cons 各最多 3 条。
+
+---
+
+# 输出约束
+
+**输出且只输出一个 JSON 对象**，第一个字符是 \`{\`、最后一个字符是 \`}\`，**不要任何前置说明、markdown 包裹**。
+
+Schema：
+{
+  "picks": [
+    {
+      "placeId": "<原样回写>",
+      "aiSummary": "<≤80 字客观描述>",
+      "pros": [{ "text": "<≤30 字优点>", "source": "Google" | "Tabelog" | "Yelp" }],
+      "cons": [{ "text": "<≤30 字槽点>", "source": "Google" | "Tabelog" | "Yelp" }]
+    }
+  ]
+}
+
+每家店都要出现在 picks 里，即使 pros / cons 都是空数组也要给出 placeId 和 aiSummary。
+
+---
+
+# Few-shots
+
+## 示例 A — 评论充分
+{
+  "picks": [{
+    "placeId": "ChIJaaa",
+    "aiSummary": "新宿小巷里的家庭式串烧店，主打炭火鸡肉串，人均预算亲民，氛围热闹随性。",
+    "pros": [
+      { "text": "炭火鸡腿串香气足，鸡皮焦脆", "source": "Google" },
+      { "text": "套餐定价实惠，性价比高", "source": "Tabelog" }
+    ],
+    "cons": [
+      { "text": "店内空间小、用餐时段较吵", "source": "Google" }
+    ]
+  }]
+}
+
+## 示例 B — 评论稀薄，宁缺毋滥
+{
+  "picks": [{
+    "placeId": "ChIJbbb",
+    "aiSummary": "中目黑站附近的小型怀石料理店，主打时令食材，环境安静。",
+    "pros": [],
+    "cons": []
+  }]
+}
+
+## 示例 C — 禁止违规对照
+错误（含横向比较 + 回扣用户）：
+{ "aiSummary": "相比本批其他店更适合您想要的安静约会环境" }
+正确：
+{ "aiSummary": "位于代官山小巷的法餐小馆，主打当季食材套餐，店内座位有限、灯光偏暗。" }
+`;
+    };
+
+    const rankCopyGroup = async (
+      group: CopyGroupInput,
+    ): Promise<{ cuisine: string; picks: z.infer<typeof AiCopyPickSchema>[] }> => {
+      if (!group.picks.length) return { cuisine: group.cuisine, picks: [] };
+      const prompt = buildCopyPromptForGroup(group);
+      const startedAt = Date.now();
+      try {
+        const result = await generateText({
+          model,
+          prompt,
+          maxOutputTokens: 4000,
+          output: Output.object({
+            schema: AiCopyGroupSchema,
+            name: "echo_eats_copy",
+            description: `Write aiSummary + pros + cons for cuisine "${group.cuisine}"`,
+          }),
+        });
+        console.log(
+          `[Echo/AI-copy] "${group.cuisine}" ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
+        );
+        return { cuisine: group.cuisine, picks: result.output.picks };
+      } catch (e1) {
+        const m1 = e1 instanceof Error ? e1.message : String(e1);
+        console.warn(
+          `[Echo/AI-copy] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
+        );
+        try {
+          const fb = await generateText({
+            model,
+            prompt: prompt + `\n\n再次强调：直接以 { 开头、以 } 结尾，不要 markdown。`,
+            maxOutputTokens: 6000,
+          });
+          const parsed = AiCopyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          console.log(
+            `[Echo/AI-copy] "${group.cuisine}" raw fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
           );
           return { cuisine: group.cuisine, picks: parsed.picks };
         } catch (e2) {
           const m2 = e2 instanceof Error ? e2.message : String(e2);
-          console.warn(
-            `[Echo/AI-rank] "${group.cuisine}" raw fallback failed (${m2}), retrying slim…`,
-          );
-          // 最后兜底：剥光大字段再跑一次，给足 token，避免空 picks 害死整组。
-          try {
-            const slimFb = await generateText({
-              model,
-              prompt: buildSlimPrompt(),
-              maxOutputTokens: 20000,
-            });
-            const slimFinish = (slimFb as { finishReason?: string }).finishReason;
-            if (slimFinish === "length" || slimFinish === "max-tokens") {
-              throw new Error(`slim truncated (finishReason=${slimFinish})`);
-            }
-            const parsed = AiPickGroupSchema.parse(JSON.parse(extractJson(slimFb.text || "")));
-            console.log(
-              `[Echo/AI-rank] "${group.cuisine}" slim fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
-            );
-            return { cuisine: group.cuisine, picks: parsed.picks };
-          } catch (e3) {
-            const m3 = e3 instanceof Error ? e3.message : String(e3);
-            console.error(`[Echo/AI-rank] "${group.cuisine}" failed: ${m3}`);
-            return { cuisine: group.cuisine, picks: [] };
-          }
+          console.error(`[Echo/AI-copy] "${group.cuisine}" failed: ${m2}`);
+          return { cuisine: group.cuisine, picks: [] };
         }
       }
     };
@@ -1844,7 +2060,7 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
           batches.push(group.candidates.slice(i, i + BATCH_SIZE));
         }
         const batchPicks = await Promise.all(batches.map(async (batch) => {
-          const res = await rankOneGroup({ ...group, candidates: batch });
+          const res = await rankVerifyGroup({ ...group, candidates: batch });
           return res.picks;
         }));
         return { cuisine: group.cuisine, picks: batchPicks.flat() };
@@ -2110,6 +2326,64 @@ pros = "多位食客称赞的口碑点"，cons = "多位食客抱怨/吐槽的�
       };
     }).filter((group) => group.restaurants.length + (group.partialRestaurants?.length ?? 0) + (group.failedRestaurants?.length ?? 0) > 0);
 
+    // ===== Pass 2：文案（aiSummary + pros + cons），仅对每 cuisine 的 top5 跑 =====
+    const copyTargets: CopyGroupInput[] = groups
+      .map((g) => {
+        const all = [
+          ...g.restaurants,
+          ...(g.partialRestaurants ?? []),
+          ...(g.failedRestaurants ?? []),
+        ];
+        return {
+          cuisine: g.cuisine,
+          picks: all.slice(0, 5).map((r) => {
+            const place = placeByRestaurantId.get(r.id);
+            const placeId = place?.placeId ?? r.id;
+            const review = place ? reviewById.get(place.placeId) : null;
+            return {
+              placeId,
+              name: r.name,
+              address: r.address,
+              googleReviews: (review?.reviewHighlights ?? []).slice(0, 3),
+              tabelogSummary: r.tabelog?.summary ?? null,
+              yelpSummary: r.yelp?.summary ?? null,
+            };
+          }),
+        };
+      })
+      .filter((g) => g.picks.length > 0);
+
+    if (copyTargets.length > 0) {
+      const copyStartedAt = Date.now();
+      // 复用 rank 心跳，避免新增前端 stage；UI 此时仍显示"AI 综合排序"。
+      const copyResults = yield* withHeartbeat(
+        Promise.all(copyTargets.map(rankCopyGroup)),
+        "rank",
+      );
+      console.log(
+        `[Echo/AI-copy] all ${copyResults.length} group(s) done in ${Date.now() - copyStartedAt}ms`,
+      );
+      const copyById = new Map<string, z.infer<typeof AiCopyPickSchema>>();
+      for (const cr of copyResults) {
+        for (const pick of cr.picks) copyById.set(pick.placeId, pick);
+      }
+      for (const g of groups) {
+        const allRs = [
+          ...g.restaurants,
+          ...(g.partialRestaurants ?? []),
+          ...(g.failedRestaurants ?? []),
+        ];
+        for (const r of allRs) {
+          const place = placeByRestaurantId.get(r.id);
+          if (!place) continue;
+          const copy = copyById.get(place.placeId);
+          if (!copy) continue;
+          if (copy.aiSummary) r.aiSummary = copy.aiSummary;
+          if (copy.pros.length) r.pros = copy.pros;
+          if (copy.cons.length) r.cons = copy.cons;
+        }
+      }
+    }
 
     yield { type: "stage", stage: "photos" };
     const allRestaurants = groups.flatMap((group) => [
