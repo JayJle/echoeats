@@ -1228,6 +1228,19 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const pushWarn = (w: { stage: string; cuisine?: string; message: string; retryable?: boolean }) => {
       if (warnings.length < 10) warnings.push(w);
     };
+    const _pipelineT0 = Date.now();
+    let _currentStage = "init";
+    echoLog.start("pipeline", {
+      city: data.city,
+      cuisines: data.cuisines.length,
+      mode: data.mode,
+      hard: data.hardFilters.length,
+      soft: data.softPreferences.length,
+      neg: data.negativeFilters.length,
+      dishes: data.dishPreferences.length,
+      visitTime: data.visitTime ? "yes" : "no",
+      lang: uiLang,
+    });
     try {
     const aiKey = process.env.LOVABLE_API_KEY;
     if (!aiKey) {
