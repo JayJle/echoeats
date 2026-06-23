@@ -2295,7 +2295,26 @@ Schema：
       if (!group.picks.length) return { cuisine: group.cuisine, picks: [] };
       const prompt = buildCopyPromptForGroup(group);
       const startedAt = Date.now();
+      const tag = `${group.cuisine}#n=${group.picks.length}`;
+      console.log(`[Echo/AI-copy]   batch=${tag} start`);
       echoLog.start("AI-copy", { cuisine: group.cuisine, picks: group.picks.length });
+      const finalize = (
+        picks: z.infer<typeof AiCopyPickSchema>[],
+        modeLabel: string,
+      ) => {
+        const got = new Set(picks.map((p) => p.placeId));
+        const missing = group.picks.filter((p) => !got.has(p.placeId)).map((p) => p.placeId);
+        if (missing.length === 0) {
+          console.log(
+            `[Echo/AI-copy]   batch=${tag} ok (${modeLabel}) in ${Date.now() - startedAt}ms picks=${picks.length}`,
+          );
+        } else {
+          console.warn(
+            `[Echo/AI-copy]   batch=${tag} PARTIAL (${modeLabel}) in ${Date.now() - startedAt}ms picks=${picks.length}/${group.picks.length} missing=${JSON.stringify(missing)}`,
+          );
+        }
+        return { cuisine: group.cuisine, picks };
+      };
       try {
         const result = await generateText({
           model,
@@ -2307,14 +2326,11 @@ Schema：
             description: `Write aiSummary + pros + cons for cuisine "${group.cuisine}"`,
           }),
         });
-        console.log(
-          `[Echo/AI-copy] "${group.cuisine}" ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
-        );
-        return { cuisine: group.cuisine, picks: result.output.picks };
+        return finalize(result.output.picks, "Output.object");
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
         console.warn(
-          `[Echo/AI-copy] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
+          `[Echo/AI-copy]   batch=${tag} Output.object failed (${m1}), retrying raw…`,
         );
         try {
           const fb = await generateText({
@@ -2323,17 +2339,17 @@ Schema：
             maxOutputTokens: 6000,
           });
           const parsed = AiCopyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
-          console.log(
-            `[Echo/AI-copy] "${group.cuisine}" raw fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
-          );
-          return { cuisine: group.cuisine, picks: parsed.picks };
+          return finalize(parsed.picks, "raw-fallback");
         } catch (e2) {
           const m2 = e2 instanceof Error ? e2.message : String(e2);
-          console.error(`[Echo/AI-copy] "${group.cuisine}" failed: ${m2}`);
+          console.error(
+            `[Echo/AI-copy]   batch=${tag} FAILED in ${Date.now() - startedAt}ms reason=${m2}`,
+          );
           return { cuisine: group.cuisine, picks: [] };
         }
       }
     };
+
 
     yield { type: "stage", stage: "rank" };
     _currentStage = "AI-rank";
