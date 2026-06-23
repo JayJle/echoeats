@@ -2157,7 +2157,12 @@ Schema：
     };
 
     yield { type: "stage", stage: "rank" };
+    _currentStage = "AI-rank";
     const rankStartedAt = Date.now();
+    echoLog.start("AI-rank", {
+      batches: candidatesForPrompt.length,
+      totalCandidates: candidatesForPrompt.reduce((s, g) => s + g.candidates.length, 0),
+    });
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
     const groupResults = yield* withHeartbeat(
       Promise.all(candidatesForPrompt.map(async (group) => {
@@ -2174,9 +2179,16 @@ Schema：
       })),
       "rank",
     );
+    const _rankPicksTotal = groupResults.reduce((s, g) => s + g.picks.length, 0);
+    const _rankFailedGroups = groupResults.filter((g) => g.picks.length === 0).length;
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
     );
+    echoLog.ok("AI-rank", Date.now() - rankStartedAt, {
+      groups: groupResults.length,
+      picksTotal: _rankPicksTotal,
+      failedGroups: _rankFailedGroups,
+    });
     const mergedGroups = new Map<string, z.infer<typeof AiPickSchema>[]>();
     for (const result of groupResults) {
       const existing = mergedGroups.get(result.cuisine) ?? [];
