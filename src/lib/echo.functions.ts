@@ -766,6 +766,35 @@ const AiPickGroupSchema = z.object({
   picks: z.array(AiPickSchema),
 });
 
+// Pass 1 (核验) 输出 schema：不含文案字段
+const AiVerifyPickSchema = z.object({
+  placeId: z.string(),
+  verificationStatus: z.enum(["ok", "unknown", "fail"]).optional(),
+  matchScore: z.coerce.number().min(0).max(100).catch(0).default(0),
+  hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
+  matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
+});
+const AiVerifyGroupSchema = z.object({
+  picks: z.array(AiVerifyPickSchema),
+});
+
+// Pass 2 (文案) 输出 schema：只产 aiSummary + pros + cons
+const AiCopyPickSchema = z.object({
+  placeId: z.string(),
+  aiSummary: z.string().default(""),
+  pros: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
+  cons: z.array(z.preprocess(
+    (v) => (typeof v === "string" ? { text: v, source: null } : v),
+    z.object({ text: z.string(), source: z.string().nullable().optional() }),
+  )).default([]),
+});
+const AiCopyGroupSchema = z.object({
+  picks: z.array(AiCopyPickSchema),
+});
+
 function tierFromScore(score: number): "perfect" | "high" | "partial" {
   if (score >= 92) return "perfect";
   if (score >= 80) return "high";
