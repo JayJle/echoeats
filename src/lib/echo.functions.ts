@@ -1643,6 +1643,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
       }
       yield { type: "stage", stage: "yelp", total: allTargets.length };
+      _currentStage = "yelp";
+      const _yelpT0 = Date.now();
+      echoLog.start("yelp", { total: allTargets.length, concurrency: 8 });
       const CONCURRENCY = 8;
       let cursor = 0;
       const runWorker = async () => {
