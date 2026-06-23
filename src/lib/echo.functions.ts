@@ -2208,6 +2208,8 @@ Schema：
     const negCount = data.negativeFilters.length;
     const dishCount = nonHardFilters.length - softCount - negCount;
 
+    _currentStage = "score";
+    const _scoreT0 = Date.now();
     const groups = data.cuisines.map((cuisine) => {
       const pool = placeResults.find((r) => r.cuisine === cuisine)?.places ?? [];
       const aiGroup = ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase());
