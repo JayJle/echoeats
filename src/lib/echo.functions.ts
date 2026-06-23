@@ -120,17 +120,8 @@ function conditionKey(text: string): string {
     .replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
-function uniqueConditions(items: WeightedCondition[]): WeightedCondition[] {
-  const unique = new Map<string, WeightedCondition>();
-  for (const item of items) {
-    const key = conditionKey(item.text);
-    if (!key) continue;
-    const existing = unique.get(key);
-    if (!existing) unique.set(key, item);
-    else if (item.weight > existing.weight) unique.set(key, { ...existing, weight: item.weight });
-  }
-  return [...unique.values()];
-}
+// uniqueConditions 已被新的 dedupeParsedConditions 取代（按整体扁平化 + weight 最高保留）。
+
 
 function uniqueStrings(items: string[]): string[] {
   const unique = new Map<string, string>();
