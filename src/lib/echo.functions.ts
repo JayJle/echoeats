@@ -1694,6 +1694,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     // 全量候选按每批 8 家核验，避免固定前 25 截断，同时控制单次模型输入输出体积。
     const AI_BATCH_SIZE = 8;
+    // 每个 cuisine 进入 AI 阶段的硬上限，按 rating×log(reviews) 截断尾部，省 token。
+    const POOL_CAP = 30;
     const candidateGroups = placeResults
       .filter((r) => r.places.length)
       .map((r) => {
@@ -1702,9 +1704,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
           return sb - sa;
         });
+        let capped = ranked;
+        if (ranked.length > POOL_CAP) {
+          capped = ranked.slice(0, POOL_CAP);
+          console.log(
+            `[Echo/places] cuisine="${r.cuisine}" pool capped ${ranked.length} → ${POOL_CAP} (dropped tail ${ranked.length - POOL_CAP})`,
+          );
+        }
         return {
           cuisine: r.cuisine,
-          candidates: ranked.map((p) => {
+          candidates: capped.map((p) => {
             const review = reviewById.get(p.placeId) ?? null;
             const tabelog = tabelogById.get(p.placeId) ?? null;
             const yelp = yelpById.get(p.placeId) ?? null;
@@ -1749,6 +1758,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           }),
         };
       });
+
     const candidatesForPrompt = candidateGroups.flatMap((group) => {
       const batches: typeof candidateGroups = [];
       for (let i = 0; i < group.candidates.length; i += AI_BATCH_SIZE) {
