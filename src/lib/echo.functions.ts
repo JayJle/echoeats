@@ -1542,6 +1542,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       (f) => f.weight >= 0.85 && verifyGoogleRatingFilter(f.text, 5, isEn) !== null,
     );
 
+    _currentStage = "rules-prefilter";
+    const _rulesT0 = Date.now();
     let rulesRemoved = { businessStatus: 0, price: 0, rating: 0 };
     placeResults = placeResults.map((r) => {
       if (!r.places.length) return r;
