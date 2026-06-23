@@ -1295,6 +1295,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       stage: "places",
       message: isEn ? `Searching candidates in ${data.city}…` : `搜索 ${data.city} 候选餐厅…`,
     };
+    _currentStage = "places";
+    const _placesT0 = Date.now();
+    echoLog.start("places", { cuisines: data.cuisines.length, country });
 
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
