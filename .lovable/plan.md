@@ -1,53 +1,41 @@
-## 目标
+## 背景
 
-同一家餐厅当前可能同时出现在多个品类候选池里（例如「拉面」「定食」「日本料理」都召回了同一家店），最终展示也重复。要在候选池构建阶段按 `placeId` 全局去重，每家店**只**留在最匹配的品类下。
+用户强调："去重只是去重，不能因为去重把本来存在的餐厅删掉。"
 
-## 归属判定规则（"最适合的品类"）
+## 当前实现复核（src/lib/echo.functions.ts 1704-1751）
 
-仅用已有信号，不引入新的 LLM/API 调用：
+- 每个 `placeId` 在 `bestByPid` 里**必然**被赋一个归属品类（首次遇到走 `!prev` 分支无条件写入）。
+- 过滤时只删除"不属于该品类"的副本，归属品类那一份保留。
+- 结论：一家店原本出现 N 次 → 去重后恰好剩 1 次；原本只出现 1 次 → 不动。**任何餐厅都不会因去重而消失。**
 
-1. **首要分数**：该品类的多路召回中，命中了多少条 route（recall route tags 数量）。命中路数多 = 更贴合该品类。
-2. **次要分数（同分时）**：该品类内按 `rating × log10(reviews+10)` 排序后的位次（位次越靠前越合适）。
-3. **再同分**：保留先出现的品类（`placeResults` 数组顺序，与用户的 cuisines 顺序一致）。
+## 计划：加一道防御性自检
 
-## 改动点（src/lib/echo.functions.ts）
+在去重块末尾追加一段 sanity check，确保未来代码改动也不会引入"误删"：
 
-全部集中在一处，不动 prompt / AI 流程 / Tabelog / Yelp / 多路召回结构。
-
-### 1) 让 recall route tags 可按 (cuisine, placeId) 查询
-
-当前 `recallSourcesById: Map<placeId, string[]>` 在多个 cuisine 之间是**会被覆盖**的（每个 cuisine 迭代里 `recallSourcesById.set(pid, ...)`），后处理的 cuisine 会盖掉前一个。新增一个并行 map：
-
-```text
-recallSourcesByCuisine: Map<cuisine, Map<placeId, string[]>>
+```ts
+const uniqueBefore = new Set<string>();
+for (const r of placeResultsBeforeDedup) for (const p of r.places) uniqueBefore.add(p.placeId);
+const uniqueAfter = new Set<string>();
+for (const r of placeResults) for (const p of r.places) uniqueAfter.add(p.placeId);
+if (uniqueAfter.size !== uniqueBefore.size) {
+  const missing = [...uniqueBefore].filter((id) => !uniqueAfter.has(id));
+  console.error(
+    `[Echo/places] DEDUP BUG: ${missing.length} place(s) lost during dedup`,
+    missing.slice(0, 10),
+  );
+}
 ```
 
-在现有 `for (const [pid, tags] of recallSourcesMap)` 旁，额外把这份 map 存进 `recallSourcesByCuisine.set(cuisine, new Map(recallSourcesMap))`。`recallSourcesById` 保持原状以免影响下游用到它的地方。
-
-### 2) 在 `candidateGroups` 构建之前，做全局去重
-
-在 `placeResults` 过滤 / POOL_CAP 之前插入一步 dedupe：
-
-- 遍历 `placeResults`，对每个 `(cuisine, place)` 计算：
-  - `routeHits = recallSourcesByCuisine.get(cuisine)?.get(place.placeId)?.length ?? 0`
-  - `rank = ranked.indexOf(place)`（即在该品类按 rating×log(reviews) 排序后的位次）
-- 用一个 `Map<placeId, { cuisine, routeHits, rank }>` 选出每个 placeId 的最佳归属（routeHits desc → rank asc → cuisine 出现顺序）。
-- 重写 `placeResults`：每个 cuisine 的 places 过滤掉 "不是它"的 placeId。
-- 加日志：`[Echo/places] dedup: X duplicates removed across cuisines (kept best-fit)`，并在 debug 级别列出每个被搬走的店 `place="..." from="A" → kept-in="B" (hitsA=.. hitsB=..)`。
-
-### 3) POOL_CAP 之后保持原逻辑
-
-去重在 POOL_CAP **之前**，这样某品类被搬走一些店后，剩下的尾部仍有机会进入前 30，不会被错误截断。
+实现细节：
+- 在进入去重块前先把 `placeResults` 的引用快照成 `placeResultsBeforeDedup`（浅引用即可，去重是 `.map` 生成新数组，旧引用不受影响）。
+- 用 `console.error` 而非抛错——不阻断生产流程，但日志里立刻能发现。
 
 ## 不动的部分
 
-- 8 路召回（primary / recommend / synonyms×2 / dishes / scene / time / budget）保持。
-- POOL_CAP = 30 保持。
-- AI verify / score / copy 三段 prompt、batch size、Tabelog/Yelp、photos、quick mode 全部不动。
-- `recallSourcesById` 保留，避免影响下游引用。
+- 归属选择规则（routeHits → rank → cuisineIdx）保持不变。
+- 8 路召回、POOL_CAP=30、AI prompt 链路全部不动。
 
 ## 预期效果
 
-- 结果列表不再出现"同一家店在多个品类卡片里重复"。
-- Token：去重后进入 AI 的候选总数下降（重复店一律只算一次），对召回重复严重的搜索能再省一截。
-- 召回质量：每家店去到它"被该品类多条 route 都命中"的那一组，符合用户"放到最适合的品类里"的直觉。
+- 行为完全不变（当前实现已经满足"不删店"原则）。
+- 多了一道防御日志，任何后续修改若不小心删掉店会立刻在控制台报警。
