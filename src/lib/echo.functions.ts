@@ -2009,14 +2009,15 @@ ${JSON.stringify(group.candidates, null, 2)}
       return m ? m[0] : text;
     };
 
-    // 把 Pass1 的精简 pick 扩展成下游打分代码期望的 AiPickSchema 形状（aiSummary/pros/cons 留空，等 Pass2 回填）。
+    // 把 Pass1 的精简 pick 扩展成下游打分代码期望的 AiPickSchema 形状。
+    // matchScore 在此阶段固定为 0（占位），由 Pass2 回填；Pass2 失败/缺失则在 batch 层兜底为 60。
     const expandToFullPick = (
       picks: z.infer<typeof AiVerifyGroupSchema>["picks"],
     ): z.infer<typeof AiPickSchema>[] =>
       picks.map((p) => ({
         placeId: p.placeId,
-        matchScore: p.matchScore,
-        matchTier: tierFromScore(p.matchScore),
+        matchScore: 0,
+        matchTier: tierFromScore(0),
         aiSummary: "",
         pros: [],
         cons: [],
@@ -2024,13 +2025,18 @@ ${JSON.stringify(group.candidates, null, 2)}
         hardFilterChecks: p.hardFilterChecks,
       }));
 
+    type VerifyOutcome =
+      | { ok: true; cuisine: string; picks: z.infer<typeof AiPickSchema>[] }
+      | { ok: false; cuisine: string; reason: string };
+
     const rankVerifyGroup = async (
       group: GroupForPrompt,
-    ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
+    ): Promise<VerifyOutcome> => {
       const prompt = buildVerifyPromptForGroup(group);
       const startedAt = Date.now();
+      const tag = `${group.cuisine}#n=${group.candidates.length}`;
+      console.log(`[Echo/AI-verify] batch=${tag} start`);
       echoLog.start("AI-verify", { cuisine: group.cuisine, candidates: group.candidates.length });
-
 
       try {
         const result = await generateText({
@@ -2044,13 +2050,13 @@ ${JSON.stringify(group.candidates, null, 2)}
           }),
         });
         console.log(
-          `[Echo/AI-verify] "${group.cuisine}" Output.object ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
+          `[Echo/AI-verify] batch=${tag} ok in ${Date.now() - startedAt}ms picks=${result.output.picks.length}`,
         );
-        return { cuisine: group.cuisine, picks: expandToFullPick(result.output.picks) };
+        return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(result.output.picks) };
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
         console.warn(
-          `[Echo/AI-verify] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
+          `[Echo/AI-verify] batch=${tag} Output.object failed (${m1}), retrying raw…`,
         );
         try {
           const fb = await generateText({
@@ -2066,16 +2072,118 @@ ${JSON.stringify(group.candidates, null, 2)}
           }
           const parsed = AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
           console.log(
-            `[Echo/AI-verify] "${group.cuisine}" raw fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
+            `[Echo/AI-verify] batch=${tag} raw-fallback ok in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
           );
-          return { cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
+          return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
         } catch (e2) {
           const m2 = e2 instanceof Error ? e2.message : String(e2);
-          console.error(`[Echo/AI-verify] "${group.cuisine}" failed: ${m2}`);
-          return { cuisine: group.cuisine, picks: [] };
+          console.error(
+            `[Echo/AI-verify] batch=${tag} FAILED in ${Date.now() - startedAt}ms reason=${m2}`,
+          );
+          return { ok: false, cuisine: group.cuisine, reason: m2 };
         }
       }
     };
+
+    // ===== Pass 2：仅打分。失败 / partial 兜底为 60 =====
+    type ScoreOutcome = {
+      cuisine: string;
+      scores: Map<string, number>;
+      fallbackIds: Set<string>;
+      status: "ok" | "partial" | "failed";
+      reason?: string;
+    };
+
+    const rankScoreGroup = async (group: ScoreGroupInput): Promise<ScoreOutcome> => {
+      const tag = `${group.cuisine}#n=${group.candidates.length}`;
+      const startedAt = Date.now();
+      const expectedIds = group.candidates.map((c) => c.placeId);
+      const fallbackAll = (reason: string): ScoreOutcome => {
+        const scores = new Map<string, number>();
+        const fallbackIds = new Set<string>();
+        for (const id of expectedIds) {
+          scores.set(id, 60);
+          fallbackIds.add(id);
+        }
+        return { cuisine: group.cuisine, scores, fallbackIds, status: "failed", reason };
+      };
+
+      if (!group.candidates.length) {
+        return { cuisine: group.cuisine, scores: new Map(), fallbackIds: new Set(), status: "ok" };
+      }
+
+      console.log(`[Echo/AI-score]  batch=${tag} start`);
+      echoLog.start("AI-score", { cuisine: group.cuisine, candidates: group.candidates.length });
+      const prompt = buildScorePromptForGroup(group);
+
+      const finalize = (
+        parsedScores: { placeId: string; matchScore: number }[],
+        modeLabel: string,
+      ): ScoreOutcome => {
+        const scoreMap = new Map<string, number>();
+        for (const s of parsedScores) {
+          if (typeof s.matchScore === "number" && !Number.isNaN(s.matchScore)) {
+            scoreMap.set(s.placeId, Math.max(0, Math.min(100, Math.round(s.matchScore))));
+          }
+        }
+        const fallbackIds = new Set<string>();
+        for (const id of expectedIds) {
+          if (!scoreMap.has(id)) {
+            scoreMap.set(id, 60);
+            fallbackIds.add(id);
+          }
+        }
+        const status: "ok" | "partial" = fallbackIds.size === 0 ? "ok" : "partial";
+        if (status === "ok") {
+          console.log(
+            `[Echo/AI-score]  batch=${tag} ok (${modeLabel}) in ${Date.now() - startedAt}ms scored=${scoreMap.size}`,
+          );
+        } else {
+          console.warn(
+            `[Echo/AI-score]  batch=${tag} PARTIAL (${modeLabel}) in ${Date.now() - startedAt}ms scored=${scoreMap.size - fallbackIds.size}/${expectedIds.length} fallback60=${fallbackIds.size} missing=${JSON.stringify([...fallbackIds])}`,
+          );
+        }
+        return { cuisine: group.cuisine, scores: scoreMap, fallbackIds, status };
+      };
+
+      try {
+        const result = await generateText({
+          model,
+          prompt,
+          maxOutputTokens: 2000,
+          output: Output.object({
+            schema: AiScoreGroupSchema,
+            name: "echo_eats_score",
+            description: `Score candidates for cuisine "${group.cuisine}"`,
+          }),
+        });
+        return finalize(result.output.scores, "Output.object");
+      } catch (e1) {
+        const m1 = e1 instanceof Error ? e1.message : String(e1);
+        console.warn(
+          `[Echo/AI-score]  batch=${tag} Output.object failed (${m1}), retrying raw…`,
+        );
+        try {
+          const fb = await generateText({
+            model,
+            prompt:
+              prompt +
+              `\n\n再次强调：纯 JSON 输出，{ 开头 } 结尾，不要 markdown、不要解释。`,
+            maxOutputTokens: 3000,
+          });
+          const parsed = AiScoreGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          return finalize(parsed.scores, "raw-fallback");
+        } catch (e2) {
+          const m2 = e2 instanceof Error ? e2.message : String(e2);
+          console.error(
+            `[Echo/AI-score]  batch=${tag} FAILED in ${Date.now() - startedAt}ms reason=${m2} → fallback60 all`,
+          );
+          return fallbackAll(m2);
+        }
+      }
+    };
+
+
 
     // ===== Pass 2：文案（aiSummary + pros + cons），仅对每 cuisine 的 top5 跑 =====
     type CopyPickInput = {
