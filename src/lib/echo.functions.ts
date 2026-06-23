@@ -817,11 +817,10 @@ const AiPickGroupSchema = z.object({
   picks: z.array(AiPickSchema),
 });
 
-// Pass 1 (核验) 输出 schema：不含文案字段
+// Pass 1 (核验) 输出 schema：只产 verificationStatus + hardFilterChecks + matchDetails；不含 matchScore，也不含文案
 const AiVerifyPickSchema = z.object({
   placeId: z.string(),
   verificationStatus: z.enum(["ok", "unknown", "fail"]).optional(),
-  matchScore: z.coerce.number().min(0).max(100).catch(0).default(0),
   hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
   matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
 });
@@ -829,7 +828,16 @@ const AiVerifyGroupSchema = z.object({
   picks: z.array(AiVerifyPickSchema),
 });
 
-// Pass 2 (文案) 输出 schema：只产 aiSummary + pros + cons
+// Pass 2 (仅打分) 输出 schema：极简两字段，最大化模型遵循率
+const AiScorePickSchema = z.object({
+  placeId: z.string(),
+  matchScore: z.coerce.number().min(0).max(100),
+});
+const AiScoreGroupSchema = z.object({
+  scores: z.array(AiScorePickSchema),
+});
+
+// Pass 3 (文案) 输出 schema：只产 aiSummary + pros + cons
 const AiCopyPickSchema = z.object({
   placeId: z.string(),
   aiSummary: z.string().default(""),
@@ -1787,7 +1795,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     type GroupForPrompt = (typeof candidatesForPrompt)[number];
 
-    // ===== Pass 1：核验 + 初步 matchScore（不出文案）=====
+    // ===== Pass 1：核验（不出 matchScore，也不出文案）=====
     const buildVerifyPromptForGroup = (group: GroupForPrompt) => {
       const exp = cuisineExpansions.get(group.cuisine);
       const syn = exp && exp.synonyms.length ? exp.synonyms.join("、") : "（无）";
@@ -1798,8 +1806,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
       return `# 角色
 
-你是 Echo Eats 的**餐厅核验分析师**。你的任务是把一批 Google Places 候选餐厅，按用户的硬条件 / 软偏好 / 避雷 / 菜品偏好逐家做"匹配核验"，并给出一个 0–100 的初步 matchScore。
-你**不是**导购文案写手；这一步**不要**写推荐理由、不要写优缺点。
+你是 Echo Eats 的**餐厅核验分析师**。你的任务是把一批 Google Places 候选餐厅，按用户的硬条件 / 软偏好 / 避雷 / 菜品偏好逐家做"匹配核验"。
+你**不是**导购文案写手，**也不打分** —— 这一步只产核验结论；matchScore 由下一步专门处理，**绝对不要**在本步输出里写 matchScore / score / rating 等字段。
 ${langDirective}
 
 ---
@@ -1824,7 +1832,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 # 规则约束
 
 ## 必须做（DO）
-1. **逐家独立核验**：本批 ${group.candidates.length} 家，一家一家独立判定，**绝不在候选之间做横向比较**。matchScore 是该店对用户需求的**绝对契合度**（0–100 绝对刻度），不受同批其他店影响。
+1. **逐家独立核验**：本批 ${group.candidates.length} 家，一家一家独立判定，**绝不在候选之间做横向比较**。
 2. **核验所有候选**：必须对列表中的**每一家**给出 picks 条目，一家都不能漏。
 3. **\`hardFilterChecks\` 长度必须严格等于 ${hardFiltersList.length}**，顺序与硬条件数组一致。
 4. **\`matchDetails\` 长度必须严格等于 ${nonHardFilters.length}**，顺序为：${JSON.stringify(nonHardFilters)}。
@@ -1836,29 +1844,13 @@ ${JSON.stringify(group.candidates, null, 2)}
 6. **Google 评分是确定性事实**：遇到 Google 评分阈值条件，直接拿候选的 rating/googleRating 做数值比较；有数值时不允许 unknown，也不要用评论文本推断评分。
 7. **料理保真**：检查 name / primaryType / editorialSummary / realWorldReviews。命中反例关键词且未命中主词/同义词 → 该硬条件判 fail。
 
-## 🔴 matchScore 强制输出铁律（最高优先级，违反即整批作废）
-
-**这是本次 prompt 最重要的一条规则，生成每一个 pick 时反复确认：**
-
-1. **每个 pick 必须包含 \`matchScore\` 字段**：本批 ${group.candidates.length} 家 → 必须有 ${group.candidates.length} 个 \`matchScore\`，**一个都不能漏**。
-2. \`matchScore\` 必须是 **JSON number 类型**的 0–100 整数。**严禁**以下任何写法：
-   - ❌ 漏写字段（pick 里只有 placeId / verificationStatus / hardFilterChecks，没有 matchScore）
-   - ❌ \`"matchScore": null\`
-   - ❌ \`"matchScore": "88"\`（字符串）
-   - ❌ \`"matchScore": "unknown"\` / \`"matchScore": "N/A"\` / \`"matchScore": ""\`
-   - ❌ \`"matchScore": undefined\`
-3. **不确定也必须给数字**：即使资料严重不足、证据模糊，也必须按下方"matchScore 评分指引"给一个保守估算分（参考"不确定时如何给分"小节），**绝对禁止**因为"不好评估""信息不足""无法判断"而省略该字段。资料不足应反映在低 confidence 与 verificationStatus="unknown"，而**不是**省略 matchScore。
-4. **\`verificationStatus\` 和 \`matchScore\` 必须成对出现**：写了 verificationStatus 就一定要写 matchScore，反之亦然。
-5. 输出前**逐 pick 自查**：每个 pick 是否同时具备 \`placeId\`、\`verificationStatus\`、\`matchScore\`(number)、\`hardFilterChecks\`、\`matchDetails\` 这 5 个字段。少任何一个都视为非法输出。
-
-
 ## 禁止做（DON'T）
 1. **禁止横向比较**：任何字段里都不允许出现"相比之下""比同批其他店""在本批中""更胜一筹"等措辞。
 2. **禁止跨条引用**：每家店的判定只能引用**它自己**的 candidate 数据，禁止引用同批其他店的评论 / 地址 / 菜单。
 3. **禁止幻觉**：realWorldReviews 为空时严禁编造评价；没有数据就标 unknown。
-4. **禁止同义重复**：\`hardFilterChecks\` 已覆盖的主题，\`matchDetails\` 不得换种说法再写一遍（尤其 Google 评分、靠近车站、口味偏好）。
-5. **禁止输出文案**：不要写 aiSummary、不要写 pros/cons —— 这一步只做核验。
-6. **禁止泄露内部字段名**：note 和 label 里不要出现 "primaryType" / "editorialSummary" / "realWorldReviews" 等字段名，也不要 "字段 = 值"或连续箭头的推理链。
+4. **禁止同义重复**：\`hardFilterChecks\` 已覆盖的主题，\`matchDetails\` 不得换种说法再写一遍。
+5. **禁止输出文案 / 打分字段**：不要写 aiSummary、不要写 pros/cons、**不要写 matchScore / score / rating** —— 这一步只做核验。
+6. **禁止泄露内部字段名**：note 和 label 里不要出现 "primaryType" / "editorialSummary" / "realWorldReviews" 等字段名。
 7. **note / label 控制在 20–40 字**，简短结论 + 简短依据即可。
 
 ## confidence 自检铁律
@@ -1868,13 +1860,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 
 # 输出约束
 
-**输出且只输出一个 JSON 对象**，第一个字符是 \`{\`、最后一个字符是 \`}\`，**不要任何前置说明、markdown 包裹、\\\`\\\`\\\`json 围栏**。
-
-## 🔴 字段完整性铁律（再次强调）
-- 每个 pick **必须**有 \`matchScore\`，且必须是 JSON number（0–100 整数）。
-- 缺 \`matchScore\` = 整个输出无效 = 该批次直接作废。
-- 不允许字符串、null、undefined、空字符串、占位符。
-- 不允许只写 verificationStatus 不写 matchScore。
+**输出且只输出一个 JSON 对象**，第一个字符是 \`{\`、最后一个字符是 \`}\`，**不要任何前置说明、markdown 包裹**。
 
 Schema：
 {
@@ -1882,7 +1868,6 @@ Schema：
     {
       "placeId": "<候选的 placeId，原样回写>",
       "verificationStatus": "ok" | "unknown" | "fail",
-      "matchScore": <0–100 整数，必填，必须是 JSON number，禁止省略禁止 null 禁止字符串>,
       "hardFilterChecks": [
         { "filter": "<硬条件原文>", "status": "ok"|"unknown"|"fail", "note": "<20–40 字>", "confidence": <0–100> }
       ],
@@ -1898,38 +1883,20 @@ Schema：
 - 否则任一硬条件 status=unknown → \`unknown\`
 - 否则 → \`ok\`
 
-## matchScore 评分指引（绝对刻度）
-- 90–100：硬条件全 ok、软偏好多数命中、口碑顶级
-- 75–89：硬条件全 ok、软偏好部分命中
-- 60–74：硬条件有 unknown 或软偏好命中较少
-- 40–59：硬条件有 fail（非 blocking）或多条 unknown
-- 0–39：blocking fail 或料理保真 fail
-
-## 不确定时如何给分（必须给数字，不允许省略）
-- 硬条件全 ok、软偏好证据不足 → 给 **60–74**
-- 硬条件有 unknown、整体资料偏弱 → 给 **50–69**
-- 硬条件有 fail（非 blocking）或多条 unknown → 给 **40–55**
-- blocking fail / 料理保真 fail → 给 **0–39**
-- 完全没有评论数据可参考 → 仅依据 name / primaryType / rating 给一个保守分（通常 50–65），**仍然必须给数字**
-
-## 🔴 最终自检清单（输出前必做）
-在你提交 JSON 之前，从头到尾扫一遍 picks 数组，确认：
-1. \`picks.length === ${group.candidates.length}\`（与本批候选数严格相等）
-2. 每个 pick 都包含这 5 个字段：\`placeId\` / \`verificationStatus\` / \`matchScore\` / \`hardFilterChecks\` / \`matchDetails\`
-3. **每个 \`matchScore\` 都是 0–100 的 JSON number**（不是字符串、不是 null、不是 undefined、不是被省略）
-4. 如果发现任何一条缺 \`matchScore\`，立即补上一个保守估算分再输出
+## 最终自检清单（输出前必做）
+1. \`picks.length === ${group.candidates.length}\`
+2. 每个 pick 都包含这 4 个字段：\`placeId\` / \`verificationStatus\` / \`hardFilterChecks\` / \`matchDetails\`
+3. **没有任何 pick 写了 matchScore 字段**（打分是下一步的事）
 
 ---
 
 # Few-shots
-
 
 ## 示例 A — 强匹配
 {
   "picks": [{
     "placeId": "ChIJxxx",
     "verificationStatus": "ok",
-    "matchScore": 88,
     "hardFilterChecks": [
       { "filter": "Google 评分 ≥ 4.3", "status": "ok", "note": "Google 评分 4.6，远超阈值", "confidence": 100 }
     ],
@@ -1939,12 +1906,11 @@ Schema：
   }]
 }
 
-## 示例 B — 证据弱必须降 confidence
+## 示例 B — 证据弱
 {
   "picks": [{
     "placeId": "ChIJyyy",
     "verificationStatus": "unknown",
-    "matchScore": 62,
     "hardFilterChecks": [
       { "filter": "Google 评分 ≥ 4.3", "status": "ok", "note": "Google 评分 4.4", "confidence": 100 }
     ],
@@ -1959,7 +1925,6 @@ Schema：
   "picks": [{
     "placeId": "ChIJzzz",
     "verificationStatus": "fail",
-    "matchScore": 12,
     "hardFilterChecks": [
       { "filter": "拉面（料理类型）", "status": "fail", "note": "主营意大利菜，非拉面店", "confidence": 95 }
     ],
@@ -1969,6 +1934,74 @@ Schema：
 `;
     };
 
+    // ===== Pass 2：仅打分 =====
+    type ScoreCandidateBrief = {
+      placeId: string;
+      name: string;
+      rating: number | null;
+      userRatingCount: number | null;
+      verificationStatus: "ok" | "unknown" | "fail" | undefined;
+      hardFilterChecks: z.infer<typeof HardFilterCheckSchema>[];
+      matchDetails: z.infer<typeof MatchDetailSchema>[];
+    };
+    type ScoreGroupInput = { cuisine: string; candidates: ScoreCandidateBrief[] };
+
+    const buildScorePromptForGroup = (group: ScoreGroupInput) => {
+      return `# 角色
+
+你是 Echo Eats 的**评分器**。你的**唯一任务**是为每家餐厅输出一个 0–100 的 matchScore 整数，**别的什么都不要做**。
+
+---
+
+# 上下文
+- 料理：${group.cuisine}
+- 硬条件（带 weight）：${hardFiltersJson}
+- 软偏好（带 weight）：${softJson === "[]" ? "无" : softJson}
+- 避雷（带 weight）：${negJson === "[]" ? "无" : negJson}
+- 菜品偏好：${data.dishPreferences.join("、") || "无"}
+
+## 候选 + 上一步核验结果（共 ${group.candidates.length} 家）
+${JSON.stringify(group.candidates, null, 2)}
+
+每家字段：placeId / name / rating / userRatingCount / verificationStatus / hardFilterChecks / matchDetails
+
+---
+
+# 评分规则（绝对刻度，逐家独立打分，不做横向比较）
+- 90–100：硬条件全 ok、软偏好多数命中、口碑顶级
+- 75–89：硬条件全 ok、软偏好部分命中
+- 60–74：硬条件全 ok、软偏好证据不足
+- 50–69：硬条件有 unknown / 整体资料偏弱
+- 40–55：硬条件有 fail（非 blocking）或多条 unknown
+- 0–39：blocking fail（weight ≥ 0.85 且 status=fail）或 verificationStatus=fail
+
+# 🔴 输出铁律（违反即整批作废）
+1. \`scores\` 数组长度**必须等于 ${group.candidates.length}**，一家都不能漏。
+2. 每个元素只有**两个字段**：\`placeId\`（原样回写）和 \`matchScore\`（**JSON number，0–100 整数**）。
+3. **严禁**以下任何写法：
+   - ❌ 漏写 matchScore 字段
+   - ❌ \`"matchScore": null\` / \`"matchScore": "88"\` / \`"matchScore": "unknown"\` / \`"matchScore": "N/A"\`
+   - ❌ 添加任何其它字段（verificationStatus / note / reason / confidence 都不要写）
+4. **不确定也必须给数字**：资料不足就按"硬条件全 ok 软偏好弱"给 60–74，绝对不要省略字段。
+5. 输出且只输出一个 JSON 对象，第一个字符 \`{\`、最后一个字符 \`}\`，**不要 markdown，不要解释，不要前后说明**。
+
+# 输出 Schema
+{
+  "scores": [
+    { "placeId": "<原样回写>", "matchScore": <0–100 整数> }
+  ]
+}
+
+# 最终自检（提交前必做）
+1. scores.length === ${group.candidates.length}
+2. 每个元素只有 placeId 和 matchScore 两个 key
+3. 每个 matchScore 都是 JSON number（不是字符串、不是 null、不是 undefined）
+4. 如有漏，立即补一个保守估算分再输出
+`;
+    };
+
+
+
     const extractJson = (text: string): string => {
       const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
       if (fenced) return fenced[1].trim();
@@ -1976,14 +2009,15 @@ Schema：
       return m ? m[0] : text;
     };
 
-    // 把 Pass1 的精简 pick 扩展成下游打分代码期望的 AiPickSchema 形状（aiSummary/pros/cons 留空，等 Pass2 回填）。
+    // 把 Pass1 的精简 pick 扩展成下游打分代码期望的 AiPickSchema 形状。
+    // matchScore 在此阶段固定为 0（占位），由 Pass2 回填；Pass2 失败/缺失则在 batch 层兜底为 60。
     const expandToFullPick = (
       picks: z.infer<typeof AiVerifyGroupSchema>["picks"],
     ): z.infer<typeof AiPickSchema>[] =>
       picks.map((p) => ({
         placeId: p.placeId,
-        matchScore: p.matchScore,
-        matchTier: tierFromScore(p.matchScore),
+        matchScore: 0,
+        matchTier: tierFromScore(0),
         aiSummary: "",
         pros: [],
         cons: [],
@@ -1991,13 +2025,18 @@ Schema：
         hardFilterChecks: p.hardFilterChecks,
       }));
 
+    type VerifyOutcome =
+      | { ok: true; cuisine: string; picks: z.infer<typeof AiPickSchema>[] }
+      | { ok: false; cuisine: string; reason: string };
+
     const rankVerifyGroup = async (
       group: GroupForPrompt,
-    ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
+    ): Promise<VerifyOutcome> => {
       const prompt = buildVerifyPromptForGroup(group);
       const startedAt = Date.now();
+      const tag = `${group.cuisine}#n=${group.candidates.length}`;
+      console.log(`[Echo/AI-verify] batch=${tag} start`);
       echoLog.start("AI-verify", { cuisine: group.cuisine, candidates: group.candidates.length });
-
 
       try {
         const result = await generateText({
@@ -2011,13 +2050,13 @@ Schema：
           }),
         });
         console.log(
-          `[Echo/AI-verify] "${group.cuisine}" Output.object ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
+          `[Echo/AI-verify] batch=${tag} ok in ${Date.now() - startedAt}ms picks=${result.output.picks.length}`,
         );
-        return { cuisine: group.cuisine, picks: expandToFullPick(result.output.picks) };
+        return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(result.output.picks) };
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
         console.warn(
-          `[Echo/AI-verify] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
+          `[Echo/AI-verify] batch=${tag} Output.object failed (${m1}), retrying raw…`,
         );
         try {
           const fb = await generateText({
@@ -2033,16 +2072,118 @@ Schema：
           }
           const parsed = AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
           console.log(
-            `[Echo/AI-verify] "${group.cuisine}" raw fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
+            `[Echo/AI-verify] batch=${tag} raw-fallback ok in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
           );
-          return { cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
+          return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
         } catch (e2) {
           const m2 = e2 instanceof Error ? e2.message : String(e2);
-          console.error(`[Echo/AI-verify] "${group.cuisine}" failed: ${m2}`);
-          return { cuisine: group.cuisine, picks: [] };
+          console.error(
+            `[Echo/AI-verify] batch=${tag} FAILED in ${Date.now() - startedAt}ms reason=${m2}`,
+          );
+          return { ok: false, cuisine: group.cuisine, reason: m2 };
         }
       }
     };
+
+    // ===== Pass 2：仅打分。失败 / partial 兜底为 60 =====
+    type ScoreOutcome = {
+      cuisine: string;
+      scores: Map<string, number>;
+      fallbackIds: Set<string>;
+      status: "ok" | "partial" | "failed";
+      reason?: string;
+    };
+
+    const rankScoreGroup = async (group: ScoreGroupInput): Promise<ScoreOutcome> => {
+      const tag = `${group.cuisine}#n=${group.candidates.length}`;
+      const startedAt = Date.now();
+      const expectedIds = group.candidates.map((c) => c.placeId);
+      const fallbackAll = (reason: string): ScoreOutcome => {
+        const scores = new Map<string, number>();
+        const fallbackIds = new Set<string>();
+        for (const id of expectedIds) {
+          scores.set(id, 60);
+          fallbackIds.add(id);
+        }
+        return { cuisine: group.cuisine, scores, fallbackIds, status: "failed", reason };
+      };
+
+      if (!group.candidates.length) {
+        return { cuisine: group.cuisine, scores: new Map(), fallbackIds: new Set(), status: "ok" };
+      }
+
+      console.log(`[Echo/AI-score]  batch=${tag} start`);
+      echoLog.start("AI-score", { cuisine: group.cuisine, candidates: group.candidates.length });
+      const prompt = buildScorePromptForGroup(group);
+
+      const finalize = (
+        parsedScores: { placeId: string; matchScore: number }[],
+        modeLabel: string,
+      ): ScoreOutcome => {
+        const scoreMap = new Map<string, number>();
+        for (const s of parsedScores) {
+          if (typeof s.matchScore === "number" && !Number.isNaN(s.matchScore)) {
+            scoreMap.set(s.placeId, Math.max(0, Math.min(100, Math.round(s.matchScore))));
+          }
+        }
+        const fallbackIds = new Set<string>();
+        for (const id of expectedIds) {
+          if (!scoreMap.has(id)) {
+            scoreMap.set(id, 60);
+            fallbackIds.add(id);
+          }
+        }
+        const status: "ok" | "partial" = fallbackIds.size === 0 ? "ok" : "partial";
+        if (status === "ok") {
+          console.log(
+            `[Echo/AI-score]  batch=${tag} ok (${modeLabel}) in ${Date.now() - startedAt}ms scored=${scoreMap.size}`,
+          );
+        } else {
+          console.warn(
+            `[Echo/AI-score]  batch=${tag} PARTIAL (${modeLabel}) in ${Date.now() - startedAt}ms scored=${scoreMap.size - fallbackIds.size}/${expectedIds.length} fallback60=${fallbackIds.size} missing=${JSON.stringify([...fallbackIds])}`,
+          );
+        }
+        return { cuisine: group.cuisine, scores: scoreMap, fallbackIds, status };
+      };
+
+      try {
+        const result = await generateText({
+          model,
+          prompt,
+          maxOutputTokens: 2000,
+          output: Output.object({
+            schema: AiScoreGroupSchema,
+            name: "echo_eats_score",
+            description: `Score candidates for cuisine "${group.cuisine}"`,
+          }),
+        });
+        return finalize(result.output.scores, "Output.object");
+      } catch (e1) {
+        const m1 = e1 instanceof Error ? e1.message : String(e1);
+        console.warn(
+          `[Echo/AI-score]  batch=${tag} Output.object failed (${m1}), retrying raw…`,
+        );
+        try {
+          const fb = await generateText({
+            model,
+            prompt:
+              prompt +
+              `\n\n再次强调：纯 JSON 输出，{ 开头 } 结尾，不要 markdown、不要解释。`,
+            maxOutputTokens: 3000,
+          });
+          const parsed = AiScoreGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          return finalize(parsed.scores, "raw-fallback");
+        } catch (e2) {
+          const m2 = e2 instanceof Error ? e2.message : String(e2);
+          console.error(
+            `[Echo/AI-score]  batch=${tag} FAILED in ${Date.now() - startedAt}ms reason=${m2} → fallback60 all`,
+          );
+          return fallbackAll(m2);
+        }
+      }
+    };
+
+
 
     // ===== Pass 2：文案（aiSummary + pros + cons），仅对每 cuisine 的 top5 跑 =====
     type CopyPickInput = {
@@ -2154,7 +2295,26 @@ Schema：
       if (!group.picks.length) return { cuisine: group.cuisine, picks: [] };
       const prompt = buildCopyPromptForGroup(group);
       const startedAt = Date.now();
+      const tag = `${group.cuisine}#n=${group.picks.length}`;
+      console.log(`[Echo/AI-copy]   batch=${tag} start`);
       echoLog.start("AI-copy", { cuisine: group.cuisine, picks: group.picks.length });
+      const finalize = (
+        picks: z.infer<typeof AiCopyPickSchema>[],
+        modeLabel: string,
+      ) => {
+        const got = new Set(picks.map((p) => p.placeId));
+        const missing = group.picks.filter((p) => !got.has(p.placeId)).map((p) => p.placeId);
+        if (missing.length === 0) {
+          console.log(
+            `[Echo/AI-copy]   batch=${tag} ok (${modeLabel}) in ${Date.now() - startedAt}ms picks=${picks.length}`,
+          );
+        } else {
+          console.warn(
+            `[Echo/AI-copy]   batch=${tag} PARTIAL (${modeLabel}) in ${Date.now() - startedAt}ms picks=${picks.length}/${group.picks.length} missing=${JSON.stringify(missing)}`,
+          );
+        }
+        return { cuisine: group.cuisine, picks };
+      };
       try {
         const result = await generateText({
           model,
@@ -2166,14 +2326,11 @@ Schema：
             description: `Write aiSummary + pros + cons for cuisine "${group.cuisine}"`,
           }),
         });
-        console.log(
-          `[Echo/AI-copy] "${group.cuisine}" ok in ${Date.now() - startedAt}ms, picks=${result.output.picks.length}`,
-        );
-        return { cuisine: group.cuisine, picks: result.output.picks };
+        return finalize(result.output.picks, "Output.object");
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
         console.warn(
-          `[Echo/AI-copy] "${group.cuisine}" Output.object failed (${m1}), retrying raw…`,
+          `[Echo/AI-copy]   batch=${tag} Output.object failed (${m1}), retrying raw…`,
         );
         try {
           const fb = await generateText({
@@ -2182,17 +2339,17 @@ Schema：
             maxOutputTokens: 6000,
           });
           const parsed = AiCopyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
-          console.log(
-            `[Echo/AI-copy] "${group.cuisine}" raw fallback ok in ${Date.now() - startedAt}ms, picks=${parsed.picks.length}`,
-          );
-          return { cuisine: group.cuisine, picks: parsed.picks };
+          return finalize(parsed.picks, "raw-fallback");
         } catch (e2) {
           const m2 = e2 instanceof Error ? e2.message : String(e2);
-          console.error(`[Echo/AI-copy] "${group.cuisine}" failed: ${m2}`);
+          console.error(
+            `[Echo/AI-copy]   batch=${tag} FAILED in ${Date.now() - startedAt}ms reason=${m2}`,
+          );
           return { cuisine: group.cuisine, picks: [] };
         }
       }
     };
+
 
     yield { type: "stage", stage: "rank" };
     _currentStage = "AI-rank";
@@ -2202,30 +2359,107 @@ Schema：
       totalCandidates: candidatesForPrompt.reduce((s, g) => s + g.candidates.length, 0),
     });
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
-    const groupResults = yield* withHeartbeat(
-      Promise.all(candidatesForPrompt.map(async (group) => {
+    // 每个 cuisine 内：先把候选按 BATCH_SIZE 切片 → Pass1 核验 → Pass2 仅打分，最终把 matchScore 回填到 picks。
+    type BatchAggregate = {
+      cuisine: string;
+      picks: z.infer<typeof AiPickSchema>[];
+      verifyOk: number;
+      verifyFail: number;
+      scoreOk: number;
+      scorePartial: number;
+      scoreFailed: number;
+      fallback60: number;
+    };
+    const groupResults: BatchAggregate[] = yield* withHeartbeat(
+      Promise.all(candidatesForPrompt.map(async (group): Promise<BatchAggregate> => {
         const BATCH_SIZE = 12;
-        const batches = [];
+        const batches: typeof group.candidates[] = [];
         for (let i = 0; i < group.candidates.length; i += BATCH_SIZE) {
           batches.push(group.candidates.slice(i, i + BATCH_SIZE));
         }
+        const placeByIdInGroup = new Map(group.candidates.map((c) => [c.placeId, c]));
+
+        const agg: BatchAggregate = {
+          cuisine: group.cuisine,
+          picks: [],
+          verifyOk: 0,
+          verifyFail: 0,
+          scoreOk: 0,
+          scorePartial: 0,
+          scoreFailed: 0,
+          fallback60: 0,
+        };
+
         const batchPicks = await Promise.all(batches.map(async (batch) => {
-          const res = await rankVerifyGroup({ ...group, candidates: batch });
-          return res.picks;
+          // Pass1: 核验
+          const verify = await rankVerifyGroup({ ...group, candidates: batch });
+          if (!verify.ok) {
+            agg.verifyFail++;
+            return [];
+          }
+          agg.verifyOk++;
+
+          if (!verify.picks.length) return [];
+
+          // Pass2: 仅打分。基于 Pass1 的核验结果 + 候选基本字段
+          const scoreInput: ScoreGroupInput = {
+            cuisine: group.cuisine,
+            candidates: verify.picks.map((p) => {
+              const base = placeByIdInGroup.get(p.placeId) as
+                | { name?: string; rating?: number | null; userRatingCount?: number | null }
+                | undefined;
+              return {
+                placeId: p.placeId,
+                name: base?.name ?? "",
+                rating: base?.rating ?? null,
+                userRatingCount: base?.userRatingCount ?? null,
+                verificationStatus: undefined,
+                hardFilterChecks: p.hardFilterChecks,
+                matchDetails: p.matchDetails,
+              };
+            }),
+          };
+          const score = await rankScoreGroup(scoreInput);
+          if (score.status === "ok") agg.scoreOk++;
+          else if (score.status === "partial") agg.scorePartial++;
+          else agg.scoreFailed++;
+          agg.fallback60 += score.fallbackIds.size;
+
+          // 回填 matchScore + matchTier
+          for (const p of verify.picks) {
+            const s = score.scores.get(p.placeId) ?? 60;
+            p.matchScore = s;
+            p.matchTier = tierFromScore(s);
+          }
+          return verify.picks;
         }));
-        return { cuisine: group.cuisine, picks: batchPicks.flat() };
+
+        agg.picks = batchPicks.flat();
+        return agg;
       })),
       "rank",
     );
     const _rankPicksTotal = groupResults.reduce((s, g) => s + g.picks.length, 0);
     const _rankFailedGroups = groupResults.filter((g) => g.picks.length === 0).length;
+    const _verifyOk = groupResults.reduce((s, g) => s + g.verifyOk, 0);
+    const _verifyFail = groupResults.reduce((s, g) => s + g.verifyFail, 0);
+    const _scoreOk = groupResults.reduce((s, g) => s + g.scoreOk, 0);
+    const _scorePartial = groupResults.reduce((s, g) => s + g.scorePartial, 0);
+    const _scoreFailed = groupResults.reduce((s, g) => s + g.scoreFailed, 0);
+    const _fallback60 = groupResults.reduce((s, g) => s + g.fallback60, 0);
     console.log(
-      `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
+      `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms verify(ok/fail)=${_verifyOk}/${_verifyFail} score(ok/partial/fail)=${_scoreOk}/${_scorePartial}/${_scoreFailed} fallback60=${_fallback60}`,
     );
     echoLog.ok("AI-rank", Date.now() - rankStartedAt, {
       groups: groupResults.length,
       picksTotal: _rankPicksTotal,
       failedGroups: _rankFailedGroups,
+      verifyOk: _verifyOk,
+      verifyFail: _verifyFail,
+      scoreOk: _scoreOk,
+      scorePartial: _scorePartial,
+      scoreFailed: _scoreFailed,
+      fallback60: _fallback60,
     });
     const mergedGroups = new Map<string, z.infer<typeof AiPickSchema>[]>();
     for (const result of groupResults) {
