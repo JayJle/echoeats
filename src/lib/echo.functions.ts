@@ -2482,7 +2482,12 @@ Schema：
       .filter((g) => g.picks.length > 0);
 
     if (copyTargets.length > 0) {
+      _currentStage = "AI-copy";
       const copyStartedAt = Date.now();
+      echoLog.start("AI-copy", {
+        groups: copyTargets.length,
+        picksTotal: copyTargets.reduce((s, g) => s + g.picks.length, 0),
+      });
       // 复用 rank 心跳，避免新增前端 stage；UI 此时仍显示"AI 综合排序"。
       const copyResults = yield* withHeartbeat(
         Promise.all(copyTargets.map(rankCopyGroup)),
@@ -2492,9 +2497,21 @@ Schema：
         `[Echo/AI-copy] all ${copyResults.length} group(s) done in ${Date.now() - copyStartedAt}ms`,
       );
       const copyById = new Map<string, z.infer<typeof AiCopyPickSchema>>();
+      let _picksFilled = 0;
       for (const cr of copyResults) {
-        for (const pick of cr.picks) copyById.set(pick.placeId, pick);
+        for (const pick of cr.picks) {
+          copyById.set(pick.placeId, pick);
+          _picksFilled++;
+        }
       }
+      const _picksRequested = copyTargets.reduce((s, g) => s + g.picks.length, 0);
+      echoLog.ok("AI-copy", Date.now() - copyStartedAt, {
+        groups: copyResults.length,
+        picksRequested: _picksRequested,
+        picksFilled: _picksFilled,
+        picksMissed: _picksRequested - _picksFilled,
+        failedGroups: copyResults.filter((r) => r.picks.length === 0).length,
+      });
       for (const g of groups) {
         const allRs = [
           ...g.restaurants,
@@ -2514,11 +2531,14 @@ Schema：
     }
 
     yield { type: "stage", stage: "photos" };
+    _currentStage = "photos";
+    const _photosT0 = Date.now();
     const allRestaurants = groups.flatMap((group) => [
       ...group.restaurants,
       ...(group.partialRestaurants ?? []),
       ...(group.failedRestaurants ?? []),
     ]);
+    echoLog.start("photos", { restaurants: allRestaurants.length });
     yield* withHeartbeat(Promise.all(allRestaurants.map(async (restaurant) => {
       const place = placeByRestaurantId.get(restaurant.id);
       const urls = await Promise.all((place?.photoNames ?? []).slice(0, 6).map((name) => resolvePhotoUrl(name, 800)));
