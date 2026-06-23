@@ -1668,6 +1668,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         "yelp",
       );
       console.log(`[Yelp] hit ${yelpById.size}/${allTargets.length}`);
+      echoLog.ok("yelp", Date.now() - _yelpT0, {
+        hit: yelpById.size,
+        total: allTargets.length,
+        miss: allTargets.length - yelpById.size,
+      });
       if (allTargets.length > 0 && yelpById.size === 0) {
         pushWarn({
           stage: "yelp",
