@@ -245,7 +245,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
     const prompt = `你是 Echo Eats 的需求结构化引擎。用户填写了餐厅搜索表单：
 
 - 城市：${data.city}
-- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : data.autoInferCuisines ? "（用户跳过了料理选择并要求 AI 自动识别，请从「其它需求」推断 1-3 个料理候选；推断不出来再填 [\"餐厅\"]）" : "（用户跳过了料理选择并要求按所有品类搜索，cuisines 字段直接填 [\"餐厅\"]）"}
+- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : data.autoInferCuisines ? "（用户跳过了料理选择并要求 AI 自动识别，请从「其它需求」推断 1-2 个料理候选；推断不出来再填 [\"餐厅\"]）" : "（用户跳过了料理选择并要求按所有品类搜索，cuisines 字段直接填 [\"餐厅\"]）"}
 - 日期：${data.date || (data.uiLanguage === "en" ? "（用户未指定，dateTime 字段必须填英文字符串 \"Unspecified\"，不要填中文，也不要把日期/营业时间当 hardFilter）" : "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）")}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
@@ -253,7 +253,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 ## 字段说明
 
-- city：原样回传。cuisines：若用户已选则原样回传；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-3 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
+- city：原样回传。cuisines：若用户已选则原样回传；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-2 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
 - dateTime：直接用日期字符串，如 "2026/05/20"。
 - hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
 - dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight）。
@@ -277,10 +277,10 @@ export const parseRequirements = createServerFn({ method: "POST" })
 1. 这类条件**必须**进 \`cuisineLevelConstraints\`（带 weight，规则同下文权重表）。
 2. **同时**把同一条复制进 \`softPreferences\`（保留排序信号，weight 相同）。
 3. **绝对不要**进 \`hardFilters\`（会让 Google Maps 文本搜索查不到候选）。
-4. 当**用户输入的 cuisines 为空时**，模型必须根据这些约束在 \`cuisines\` 字段里**主动产出 1–3 个匹配品类**，替代之前那种 \`["餐厅"]\` 的兜底。例：
-   - 「东京、用餐 1 小时内、想轻一点」→ cuisines: ["拉面","乌冬","定食"]
-   - 「大阪、带 3 岁小孩、想吃饱」→ cuisines: ["家庭餐厅","回转寿司","お好み焼き"]
-   - 「京都、想慢慢吃、安静」→ cuisines: ["怀石","会席料理","日本料理"]
+4. 当**用户输入的 cuisines 为空时**，模型必须根据这些约束在 \`cuisines\` 字段里**主动产出 1–2 个匹配品类**，替代之前那种 \`["餐厅"]\` 的兜底。例：
+   - 「东京、用餐 1 小时内、想轻一点」→ cuisines: ["拉面","定食"]
+   - 「大阪、带 3 岁小孩、想吃饱」→ cuisines: ["家庭餐厅","回转寿司"]
+   - 「京都、想慢慢吃、安静」→ cuisines: ["怀石","会席料理"]
 5. 当用户**已显式提供 cuisines** 时，**不要覆盖** cuisines；在 \`searchStrategy\` 里说明会按这些品类级约束做排序倾斜即可。
 
 ## hardFilters 判定规则（关键，务必严格执行）
@@ -395,7 +395,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
       const model = gateway(modelId);
       const effectivePrompt = opts?.forceInfer
         ? prompt +
-          `\n\n## 强制识别品类（重试指令）\n用户已**明确要求**自动识别料理品类。即使「其它需求」线索很弱，也必须从菜品、口味、人群、场景、时段、价位中任选维度，给出 1-3 个最相关的**具体**料理品类。**禁止**返回 ["餐厅"] / ["restaurants"] / ["レストラン"] / ["음식점"] 等通用兜底词。`
+          `\n\n## 强制识别品类（重试指令）\n用户已**明确要求**自动识别料理品类。即使「其它需求」线索很弱，也必须从菜品、口味、人群、场景、时段、价位中任选维度，给出 1-2 个最相关的**具体**料理品类。**禁止**返回 ["餐厅"] / ["restaurants"] / ["レストラン"] / ["음식점"] 等通用兜底词。`
         : prompt;
       const { output } = await generateText({
         model,
