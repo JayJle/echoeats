@@ -1,53 +1,52 @@
-## 目标
+# 修复 AI-score PARTIAL fallback60（最小改动）
 
-彻底消除 Pass1 verify 节点的 `No output generated.` 错误和 ~20s 的 raw fallback 延迟。
-做法：去掉 `Output.object` 结构化输出，首发就走 raw JSON + 应用层 zod 校验（即当前的 fallback 路径），不再依赖 Gemini 的 constrained decoding。
+## 现象
+上次 brunch 日志里出现 2 个 batch PARTIAL：
+- `法式西餐#n=10` → scored 10/10 fallback60=1 missing=["ChIJB0t…"]
+- `早餐店#n=8` → scored 8/8 fallback60=1 missing=["ChIJI0t…"]
 
-## 改动范围
+含义：`Output.object` 成功返回了一个 score 数组，但里面**少了 1 个 place_id**，缺的那家被一刀切判 60 分。
 
-只改一个函数：`src/lib/echo.functions.ts` 中的 `rankVerifyGroup`（约 2032–2086 行）。
-其他逻辑（prompt 构造、Pass2 打分、Pass2 仍用 Output.object）**全部不动**。
+## 根因
+Gemini 在 schema 约束下偶尔会漏 1 个数组元素（不是 schema 错、不是解析错，就是"忘了写"）。当前代码只要 Output.object 不 throw 就直接 finalize → 漏的全部 60 分兜底。
 
-## 改动细节
+## 方案（不改 prompt、不改 schema）
+在 `src/lib/echo.functions.ts` `rankScoreGroup`（~2093-2180）里，**在 finalize 判定 PARTIAL 之前插一次 miss-only 重试**：
 
-### 1. 删掉首发 Output.object 调用，直接走 raw
+1. Output.object 首发拿到 `parsed.scores`
+2. 算 `missingIds = expectedIds.filter(id => !returnedMap.has(id))`
+3. 如果 `missingIds.length === 0` → 走原 finalize（ok）
+4. 否则用**同一个 prompt 构造函数**对一个子 group 跑一次 Output.object：
+   ```ts
+   const retryGroup = {
+     cuisine: group.cuisine,
+     candidates: group.candidates.filter(c => missingIds.includes(c.placeId))
+   };
+   const retryPrompt = buildScorePromptForGroup(retryGroup);
+   const retry = await generateText({ model, prompt: retryPrompt, maxOutputTokens: 1000, output: Output.object({...}) });
+   ```
+5. 合并 `retry.output.scores` 进首发结果数组，再调 finalize
+   - modeLabel 改成 `"Output.object+miss-retry"` 便于日志区分
+6. 还缺的（极少概率） → finalize 内部继续 60 分兜底（保留现有逻辑）
+7. 重试本身如果 throw → 吞掉错误，直接走原 finalize（partial），不阻塞主流程
 
-将 `rankVerifyGroup` 内部的 try/catch 双层结构简化为单次调用：
-
-- 模型调用：`generateText({ model, prompt: prompt + JSON 强约束尾巴, maxOutputTokens: 10000 })`
-- 解析：`AiVerifyGroupSchema.parse(JSON.parse(extractJson(text)))`
-- 校验 `finishReason`：如果是 `length`/`max-tokens`，抛 truncated 错误
-- 成功日志：`[Echo/AI-verify] batch=${tag} ok in Xms picks=N`
-- 失败日志：`[Echo/AI-verify] batch=${tag} FAILED in Xms reason=...`
-
-### 2. 增加一层"解析失败时"的兜底重试（可选保险）
-
-如果首次 raw 调用解析失败（JSON 不合法或 zod parse 抛错），自动重试 1 次，prompt 末尾再加一条更强的"只输出 JSON"指令。
-两次都失败才 return `{ ok: false }`，行为和当前一致（该 cuisine 整批 verifyFail）。
-
-### 3. 日志埋点保持兼容
-
-- 保留 `[Echo/AI-verify] batch=... start` / `... ok` / `... FAILED` 的现有格式
-- 去掉 `raw-fallback ok` 这条日志（不再有 fallback 概念）
-- `echoLog.start("AI-verify", ...)` 保留
+外层 `catch (e1)` 的 raw-fallback / `fallbackAll` 路径**完全不动**。
 
 ## 不动的部分
+- buildScorePromptForGroup（prompt 一字不改）
+- AiScoreGroupSchema
+- Output.object 调用方式
+- rankVerifyGroup / Pass2 文案 / AI-copy
+- 日志格式（仅 modeLabel 加后缀 `+miss-retry`）
 
-- `AiVerifyGroupSchema` / `AiVerifyPickSchema` / 各 sub-schema（`.catch()` 兜底继续生效）
-- `buildVerifyPromptForGroup` 整段 prompt
-- Pass2 (`scoreGroup`) 的 Output.object 调用（picks 数量更少、schema 更窄、目前没出过空响应问题）
-- `expandToFullPick` 等下游处理
+## 预期效果
+- 漏 1-2 个 id 的 PARTIAL 大概率被补齐（typical retry 成功率 ~95%+）
+- 极端情况仍 fallback60（兜底安全网保留）
+- 单次重试只针对 missing 子集（1-2 家），<1s 额外延迟，无明显成本
 
 ## 验证
-
-1. 跑一次完整搜索（5–10 家 × 多 cuisine 并发），观察日志：
-   - 每个 batch 都应该只有一行 `ok in Xms`，无 `Output.object failed` / `raw-fallback`
-   - 单 batch 耗时应稳定在 15–25s（原首发成功的水平），不再有 40s+ 的尖刺
-2. 检查结果页面：`hardFilterChecks` / `matchDetails` 数组长度、字段完整性与之前一致
-3. 触发一次故意失败（临时改坏 prompt）确认 `FAILED` 分支仍返回 `{ ok: false }`，Pass2 正确跳过
-
-## 后续可选
-
-如果观察到 raw 解析失败率 > 1%（zod parse 抛错 / JSON 不合法），再考虑：
-- 切换到 `google/gemini-2.5-flash`（生产稳定版）
-- 或对该 cuisine 自动按"每家店 1 次调用"拆分重试
+跑一次 brunch / 任意多 cuisine 查询，看日志：
+- 期望大部分 batch 仍是 `ok (Output.object)`
+- 出现 missing 时变成 `ok (Output.object+miss-retry)`
+- `PARTIAL (Output.object+miss-retry)` 极少出现，`fallback60=0` 占比显著上升
+- `[Echo/AI-rank]` 汇总行 `fallback60=` 数应从 ~2/batch 降到 ~0
