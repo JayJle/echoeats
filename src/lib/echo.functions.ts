@@ -2446,6 +2446,12 @@ Schema：
         ...(failedRestaurants.length ? { failedRestaurants } : {}),
       };
     }).filter((group) => group.restaurants.length + (group.partialRestaurants?.length ?? 0) + (group.failedRestaurants?.length ?? 0) > 0);
+    echoLog.ok("score", Date.now() - _scoreT0, {
+      groups: groups.length,
+      restaurants: groups.reduce((s, g) => s + g.restaurants.length, 0),
+      partial: groups.reduce((s, g) => s + (g.partialRestaurants?.length ?? 0), 0),
+      failed: groups.reduce((s, g) => s + (g.failedRestaurants?.length ?? 0), 0),
+    });
 
     // ===== Pass 2：文案（aiSummary + pros + cons），仅对每 cuisine 的 top5 跑 =====
     const copyTargets: CopyGroupInput[] = groups
