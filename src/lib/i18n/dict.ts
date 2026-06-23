@@ -74,6 +74,9 @@ export const dict: Record<Lang, Dict> = {
     "step3.voice.listening": "正在聆听… 点击停止",
     "step3.voice.orType": "或者手动输入",
     "step3.voice.firstTip": "试试语音输入，比打字快很多 🎤",
+    "step3.parsedPreview": "AI 已理解的需求",
+
+
 
     "stage.parse.label": "理解你的需求",
     "stage.parse.hint": "AI 在拆解预算、氛围、避雷点…",
