@@ -817,11 +817,10 @@ const AiPickGroupSchema = z.object({
   picks: z.array(AiPickSchema),
 });
 
-// Pass 1 (核验) 输出 schema：不含文案字段
+// Pass 1 (核验) 输出 schema：只产 verificationStatus + hardFilterChecks + matchDetails；不含 matchScore，也不含文案
 const AiVerifyPickSchema = z.object({
   placeId: z.string(),
   verificationStatus: z.enum(["ok", "unknown", "fail"]).optional(),
-  matchScore: z.coerce.number().min(0).max(100).catch(0).default(0),
   hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
   matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
 });
@@ -829,7 +828,16 @@ const AiVerifyGroupSchema = z.object({
   picks: z.array(AiVerifyPickSchema),
 });
 
-// Pass 2 (文案) 输出 schema：只产 aiSummary + pros + cons
+// Pass 2 (仅打分) 输出 schema：极简两字段，最大化模型遵循率
+const AiScorePickSchema = z.object({
+  placeId: z.string(),
+  matchScore: z.coerce.number().min(0).max(100),
+});
+const AiScoreGroupSchema = z.object({
+  scores: z.array(AiScorePickSchema),
+});
+
+// Pass 3 (文案) 输出 schema：只产 aiSummary + pros + cons
 const AiCopyPickSchema = z.object({
   placeId: z.string(),
   aiSummary: z.string().default(""),
