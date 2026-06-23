@@ -1701,6 +1701,56 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       }
     }
 
+    // ===== 跨品类去重：按 placeId 全局唯一，分配到"最适合"的品类 =====
+    // 评分：1) 该品类多路召回命中的 route 数（越多越贴合）
+    //       2) 该品类内按 rating×log10(reviews+10) 排序的位次（越靠前越合适）
+    //       3) cuisines 出现顺序（先到先得）
+    {
+      const ratingScore = (p: PlaceCandidate) =>
+        (p.rating ?? 0) * Math.log10((p.userRatingCount ?? 0) + 10);
+      const rankByCuisine = new Map<string, Map<string, number>>();
+      for (const r of placeResults) {
+        const ranked = [...r.places].sort((a, b) => ratingScore(b) - ratingScore(a));
+        const m = new Map<string, number>();
+        ranked.forEach((p, i) => m.set(p.placeId, i));
+        rankByCuisine.set(r.cuisine, m);
+      }
+      const bestByPid = new Map<
+        string,
+        { cuisine: string; cuisineIdx: number; hits: number; rank: number }
+      >();
+      placeResults.forEach((r, idx) => {
+        const tagMap = recallSourcesByCuisine.get(r.cuisine);
+        const rankMap = rankByCuisine.get(r.cuisine)!;
+        for (const p of r.places) {
+          const hits = tagMap?.get(p.placeId)?.length ?? 0;
+          const rank = rankMap.get(p.placeId) ?? 9999;
+          const prev = bestByPid.get(p.placeId);
+          const better =
+            !prev ||
+            hits > prev.hits ||
+            (hits === prev.hits && rank < prev.rank) ||
+            (hits === prev.hits && rank === prev.rank && idx < prev.cuisineIdx);
+          if (better) {
+            bestByPid.set(p.placeId, { cuisine: r.cuisine, cuisineIdx: idx, hits, rank });
+          }
+        }
+      });
+      let removed = 0;
+      placeResults = placeResults.map((r) => {
+        const kept = r.places.filter((p) => bestByPid.get(p.placeId)?.cuisine === r.cuisine);
+        removed += r.places.length - kept.length;
+        return { ...r, places: kept };
+      });
+      if (removed > 0) {
+        console.log(
+          `[Echo/places] dedup: ${removed} duplicate(s) removed across cuisines (kept best-fit)`,
+        );
+      }
+    }
+
+
+
     // 全量候选按每批 8 家核验，避免固定前 25 截断，同时控制单次模型输入输出体积。
     const AI_BATCH_SIZE = 8;
     // 每个 cuisine 进入 AI 阶段的硬上限，按 rating×log(reviews) 截断尾部，省 token。
