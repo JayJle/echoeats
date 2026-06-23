@@ -117,34 +117,57 @@ function StepRequirements() {
     },
   };
 
+  // 每个阶段期望走完的毫秒数（视觉节奏，与真实耗时无关）
+  const STAGE_EXPECTED_MS: Record<"deep" | "quick", Record<StageKey, number>> = {
+    deep: { parse: 4000, search: 8000, reviews: 30000, rank: 8000 },
+    quick: { parse: 4000, search: 6000, reviews: 6000, rank: 5000 },
+  };
+
   const setRangeForStage = (mode: "quick" | "deep", stage: StageKey) => {
     const [lo, hi] = STAGE_RANGES[mode][stage];
     currentRangeRef.current = [lo, hi];
+    stageExpectedMsRef.current = STAGE_EXPECTED_MS[mode][stage];
+    // 不瞬移 display，只抬 target 让动画自然走过去
     targetProgressRef.current = Math.max(targetProgressRef.current, lo);
-    lastChunkAtRef.current = performance.now();
   };
 
   const startProgressLoop = () => {
     if (rafProgressRef.current != null) return;
+    lastFrameAtRef.current = performance.now();
+    jitterRef.current = { at: 0, factor: 1 };
     const tick = () => {
       const now = performance.now();
-      const [lo, hi] = currentRangeRef.current;
-      // 兜底蠕动：>800ms 没新 chunk → 缓慢向 hi*0.9 处爬升
-      if (now - lastChunkAtRef.current > 800) {
-        const ceiling = lo + (hi - lo) * 0.9;
-        if (targetProgressRef.current < ceiling) {
-          targetProgressRef.current = Math.min(
-            ceiling,
-            targetProgressRef.current + 0.025,
-          );
-        }
+      const dt = Math.min(64, now - lastFrameAtRef.current); // clamp tab-switch 跳跃
+      lastFrameAtRef.current = now;
+
+      // ±20% 抖动，每 ~500ms 重抽
+      if (now - jitterRef.current.at > 500) {
+        jitterRef.current = {
+          at: now,
+          factor: 1 + (Math.random() - 0.5) * 0.4,
+        };
       }
-      setDisplayProgress((d) => {
-        const next = d + (targetProgressRef.current - d) * 0.08;
-        return Math.abs(next - targetProgressRef.current) < 0.05
-          ? targetProgressRef.current
-          : next;
-      });
+
+      const [lo, hi] = currentRangeRef.current;
+      const expected = Math.max(500, stageExpectedMsRef.current);
+      const vBase = (hi - lo) / expected; // %/ms
+      const v = vBase * jitterRef.current.factor;
+
+      const target = targetProgressRef.current;
+      const ceiling = Math.min(target, hi - 0.5);
+
+      const d = displayProgressRef.current;
+      let next = d;
+      if (d < ceiling) {
+        next = Math.min(ceiling, d + v * dt);
+      } else if (d < hi - 0.1) {
+        // 超过软上限：1/6 速继续爬，永不停滞
+        next = Math.min(hi - 0.1, d + (v * dt) / 6);
+      }
+      if (next !== d) {
+        displayProgressRef.current = next;
+        setDisplayProgress(next);
+      }
       rafProgressRef.current = requestAnimationFrame(tick);
     };
     rafProgressRef.current = requestAnimationFrame(tick);
@@ -174,16 +197,21 @@ function StepRequirements() {
 
     // 重置进度
     targetProgressRef.current = 0;
+    displayProgressRef.current = 0;
     setDisplayProgress(0);
     reviewMaxRef.current = 0;
     tabelogMaxRef.current = 0;
     yelpMaxRef.current = 0;
-    lastChunkAtRef.current = performance.now();
     startProgressLoop();
 
     try {
       setCurrentStage("parse");
       setRangeForStage(mode, "parse");
+      // parse 是单次 LLM，没有子事件 → 把 target 抬到该阶段末，让动画匀速跑完
+      targetProgressRef.current = Math.max(
+        targetProgressRef.current,
+        STAGE_RANGES[mode].parse[1],
+      );
       const parsed = await parseFn({
         data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
         signal: ac.signal,
@@ -198,11 +226,15 @@ function StepRequirements() {
 
       setCurrentStage("search");
       setRangeForStage(mode, "search");
+      // search 阶段也没有子事件 → 同样把 target 抬到该阶段末
+      targetProgressRef.current = Math.max(
+        targetProgressRef.current,
+        STAGE_RANGES[mode].search[1],
+      );
       clearTimers();
 
       const bumpTarget = (v: number) => {
         targetProgressRef.current = Math.max(targetProgressRef.current, v);
-        lastChunkAtRef.current = performance.now();
       };
       const computeReviewsTarget = () => {
         const [lo, hi] = STAGE_RANGES[mode].reviews;
@@ -224,6 +256,7 @@ function StepRequirements() {
           if (chunk.stage === "places" || chunk.stage === "places-done") {
             setCurrentStage("search");
             setRangeForStage(mode, "search");
+            bumpTarget(STAGE_RANGES[mode].search[1]);
           } else if (
             chunk.stage === "reviews" ||
             chunk.stage === "tabelog" ||
@@ -235,6 +268,8 @@ function StepRequirements() {
           } else if (chunk.stage === "rank" || chunk.stage === "rank-fallback") {
             setCurrentStage("rank");
             setRangeForStage(mode, "rank");
+            // rank 没有子事件 → 抬到末端
+            bumpTarget(STAGE_RANGES[mode].rank[1]);
           }
         } else if (chunk.type === "review-progress") {
           if (chunk.total > 0) reviewMaxRef.current = chunk.done / chunk.total;
@@ -245,26 +280,29 @@ function StepRequirements() {
         } else if (chunk.type === "yelp-progress") {
           if (chunk.total > 0) yelpMaxRef.current = chunk.done / chunk.total;
           bumpTarget(computeReviewsTarget());
-        } else if (chunk.type === "heartbeat") {
-          const [lo, hi] = currentRangeRef.current;
-          const ceiling = lo + (hi - lo) * 0.95;
-          targetProgressRef.current = Math.min(
-            ceiling,
-            targetProgressRef.current + 0.3,
-          );
-          lastChunkAtRef.current = performance.now();
         }
+        // heartbeat 不再调整 target，仅作存活信号（后端用来防 edge gateway 切流）
       });
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       clearTimers();
       setCurrentStage("rank");
       setRangeForStage(mode, "rank");
+      // 收尾：让动画匀速走完最后一段
+      stageExpectedMsRef.current = 600;
       targetProgressRef.current = 100;
       setResults(response);
-      // 让进度条收尾动画再跳转
-      setTimeout(() => {
-        if (myRunId === runIdRef.current) navigate({ to: "/results" });
-      }, 220);
+
+      // 轮询等 display 接近 100 再跳转；兜底 800ms
+      const startedAt = performance.now();
+      const waitAndNavigate = () => {
+        if (myRunId !== runIdRef.current) return;
+        if (displayProgressRef.current >= 99.5 || performance.now() - startedAt > 800) {
+          navigate({ to: "/results" });
+        } else {
+          requestAnimationFrame(waitAndNavigate);
+        }
+      };
+      requestAnimationFrame(waitAndNavigate);
     } catch (err) {
       if (ac.signal.aborted || myRunId !== runIdRef.current) return;
       const msg = err instanceof Error ? err.message : t("err.fetchFailed");
@@ -281,7 +319,7 @@ function StepRequirements() {
         // 给收尾动画一点时间再停 loop
         setTimeout(() => {
           if (myRunId === runIdRef.current) stopProgressLoop();
-        }, 400);
+        }, 900);
       }
     }
   };
