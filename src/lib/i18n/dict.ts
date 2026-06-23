@@ -305,6 +305,9 @@ export const dict: Record<Lang, Dict> = {
     "step3.voice.listening": "Listening… tap to stop",
     "step3.voice.orType": "Or type it instead",
     "step3.voice.firstTip": "Try voice input — it's much faster 🎤",
+    "step3.parsedPreview": "What we understood",
+
+
 
     "stage.parse.label": "Understanding your request",
     "stage.parse.hint": "AI is parsing budget, vibe, dealbreakers…",
