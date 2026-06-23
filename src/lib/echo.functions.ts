@@ -1567,6 +1567,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       return { ...r, places: kept };
     });
     console.log(`[rules-prefilter] removed businessStatus=${rulesRemoved.businessStatus} price=${rulesRemoved.price} rating=${rulesRemoved.rating}; candidate-pool=${placeResults.reduce((s, r) => s + r.places.length, 0)}`);
+    echoLog.ok("rules-prefilter", Date.now() - _rulesT0, {
+      businessStatus: rulesRemoved.businessStatus,
+      price: rulesRemoved.price,
+      rating: rulesRemoved.rating,
+      remaining: placeResults.reduce((s, r) => s + r.places.length, 0),
+    });
 
     // 把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
     for (const r of placeResults) {
