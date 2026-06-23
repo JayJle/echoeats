@@ -112,15 +112,7 @@ const ParsedSchema = z.object({
 
 type WeightedCondition = z.infer<typeof WeightedConditionSchema>;
 
-function conditionKey(text: string): string {
-  const source = text.split(/\s*(?:→|->|=>)\s*/, 1)[0] || text;
-  return source
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[\s\p{P}\p{S}]+/gu, "");
-}
-
-// uniqueConditions 已被新的 dedupeParsedConditions 取代（按整体扁平化 + weight 最高保留）。
+// 旧的 conditionKey / uniqueConditions 已被 semanticClusterMerge（AI 语义聚类）取代。
 
 
 function uniqueStrings(items: string[]): string[] {
@@ -134,64 +126,200 @@ function uniqueStrings(items: string[]): string[] {
 }
 
 function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
-  // 兜底字符串归一去重（语义去重应该已经在 parseRequirements 的 prompt 里由 AI 完成）。
-  // 这里只做最后一道防线：把 hard/soft/neg 合并扁平化，按 conditionKey 去重，
-  // 同一 key 在多桶出现时保留 weight 最高的那条，并放回它原本的 bucket。
-  // 三桶最终互斥。
-  type Bucket = "hard" | "soft" | "neg";
-  const BUCKET_TIE_RANK: Record<Bucket, number> = { neg: 0, hard: 1, soft: 2 };
-  type Entry = { bucket: Bucket; item: WeightedCondition; key: string };
-  const all: Entry[] = [
-    ...parsed.hardFilters.map((item) => ({ bucket: "hard" as Bucket, item, key: conditionKey(item.text) })),
-    ...parsed.softPreferences.map((item) => ({ bucket: "soft" as Bucket, item, key: conditionKey(item.text) })),
-    ...parsed.negativeFilters.map((item) => ({ bucket: "neg" as Bucket, item, key: conditionKey(item.text) })),
-  ].filter((e) => e.key);
+  // 兜底：仅做最严格的"完全相同字符串"去重，不再做关键词归一聚类
+  // （真正的语义聚类去重在 semanticClusterMerge 里由 AI 完成）。
+  const exactDedupe = (arr: WeightedCondition[]): WeightedCondition[] => {
+    const seen = new Map<string, WeightedCondition>();
+    for (const item of arr) {
+      const key = item.text.trim();
+      if (!key) continue;
+      const existing = seen.get(key);
+      if (!existing || item.weight > existing.weight) seen.set(key, item);
+    }
+    return [...seen.values()];
+  };
+  const dishDedupe = (arr: string[]): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const d of arr) {
+      const k = d.trim();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(k);
+    }
+    return out;
+  };
+  return {
+    ...parsed,
+    cuisines: uniqueStrings(parsed.cuisines),
+    hardFilters: exactDedupe(parsed.hardFilters),
+    softPreferences: exactDedupe(parsed.softPreferences),
+    negativeFilters: exactDedupe(parsed.negativeFilters),
+    dishPreferences: dishDedupe(parsed.dishPreferences),
+  };
+}
 
-  const winners = new Map<string, Entry>();
-  for (const entry of all) {
-    const existing = winners.get(entry.key);
-    if (!existing) {
-      winners.set(entry.key, entry);
-      continue;
-    }
-    if (entry.item.weight > existing.item.weight) {
-      winners.set(entry.key, entry);
-    } else if (entry.item.weight === existing.item.weight) {
-      // tie-break: neg > hard > soft（保持现有行为）
-      if (BUCKET_TIE_RANK[entry.bucket] < BUCKET_TIE_RANK[existing.bucket]) {
-        winners.set(entry.key, entry);
-      }
-    }
+// ---- 第二阶段：语义聚类去重（独立 AI 调用，不依赖关键词） ----
+// 把第一阶段抽出的所有 hard/soft/neg 条目（以及 dishPreferences）打平交给 AI，
+// 让 AI 给每条标"语义簇 id"。代码再按簇取 weight 最高那条作为最终保留，
+// bucket 也跟随最高 weight 那条所在的 bucket。
+const SemanticClusterOutput = z.object({
+  clusters: z
+    .array(
+      z.object({
+        ids: z.array(z.number().int().nonnegative()).min(1),
+      }),
+    )
+    .default([]),
+  dishClusters: z
+    .array(
+      z.object({
+        ids: z.array(z.number().int().nonnegative()).min(1),
+      }),
+    )
+    .default([]),
+});
+
+type FlatEntry = {
+  id: number;
+  bucket: "hard" | "soft" | "neg";
+  item: WeightedCondition;
+};
+
+async function semanticClusterMerge(
+  parsed: z.infer<typeof ParsedSchema>,
+  gateway: ReturnType<typeof createLovableAiGatewayProvider>,
+  uiLanguage: "zh" | "en",
+): Promise<z.infer<typeof ParsedSchema>> {
+  const flat: FlatEntry[] = [];
+  let nextId = 0;
+  for (const item of parsed.hardFilters) flat.push({ id: nextId++, bucket: "hard", item });
+  for (const item of parsed.softPreferences) flat.push({ id: nextId++, bucket: "soft", item });
+  for (const item of parsed.negativeFilters) flat.push({ id: nextId++, bucket: "neg", item });
+
+  const dishList = parsed.dishPreferences.map((text, id) => ({ id, text }));
+
+  // 没有任何条目就直接返回，避免无意义调用
+  if (flat.length <= 1 && dishList.length <= 1) return parsed;
+
+  const conditionLines = flat
+    .map((e) => `${e.id}\t[${e.bucket}\tw=${e.item.weight.toFixed(2)}]\t${e.item.text}`)
+    .join("\n");
+  const dishLines = dishList.map((d) => `${d.id}\t${d.text}`).join("\n");
+
+  const clusterPrompt = `你的任务是把下面这些餐厅需求条目按**整体语义**聚类。
+
+判定原则：
+- 同一个诉求的不同措辞、不同强度、肯定与否定的等价改写 → 同一簇。
+  例：「环境稍微好一点」「环境好」「最重要的是环境一定要好」 → 同一簇（都是"环境质量"诉求）。
+  例：「不要吵」「想要安静」 → 同一簇（都是"安静"诉求）。
+- 相反方向 → 不同簇。例：「要安静」 vs 「要热闹」 不可合并。
+- 不同维度 → 不同簇。例：「环境好」 vs 「服务好」 vs 「菜品精致」 → 三个不同簇。
+- 不要按关键词字面匹配；按整句语义判断。
+- 价位定位相关的条目要小心：「不能低端」和「不要太奢华」是**不同**诉求（一个排除低端，一个排除高端），不可合并。
+- Google 评分阈值同维度，但不同阈值（4.0 vs 4.3）也要放同一簇——后续会取更严格的。
+
+dishPreferences（菜品）聚类原则：同义词、别名、单复数、繁简、中英文对照算同一簇（如「拉面」 vs 「ラーメン」 vs 「ramen」）。
+
+输出 JSON：
+- clusters：条件条目的语义簇分组，每个簇是一组 id（来自下方条件列表的第一列数字）。每个 id 必须**恰好**出现在一个簇中。单独成簇也要返回 \`{"ids":[X]}\`。
+- dishClusters：菜品聚类，结构同上，id 来自下方菜品列表。
+
+条件列表（格式：id\\t[bucket\\tweight]\\t原文）：
+${conditionLines || "(空)"}
+
+菜品列表（格式：id\\t名称）：
+${dishLines || "(空)"}`;
+
+  let clustersOut: z.infer<typeof SemanticClusterOutput>;
+  try {
+    const { output } = await generateText({
+      model: gateway("google/gemini-2.5-flash"),
+      prompt: clusterPrompt,
+      maxOutputTokens: 2000,
+      output: Output.object({
+        schema: SemanticClusterOutput,
+        name: "semantic_clusters",
+        description: "Cluster restaurant requirement entries by semantic intent",
+      }),
+    });
+    clustersOut = SemanticClusterOutput.parse(output);
+  } catch (e) {
+    console.warn(
+      "[semanticClusterMerge] 聚类失败，退回精确字符串去重：",
+      e instanceof Error ? e.message : e,
+    );
+    return parsed;
+  }
+
+  // 校验 & 兜底：所有未出现在 clusters 里的 id 自动成单独簇
+  const STRENGTH: Record<"hard" | "soft" | "neg", number> = { hard: 3, neg: 2, soft: 1 };
+  const usedIds = new Set<number>();
+  const clusters: number[][] = [];
+  for (const c of clustersOut.clusters) {
+    const ids = c.ids.filter((id) => id >= 0 && id < flat.length && !usedIds.has(id));
+    if (!ids.length) continue;
+    ids.forEach((id) => usedIds.add(id));
+    clusters.push(ids);
+  }
+  for (const e of flat) {
+    if (!usedIds.has(e.id)) clusters.push([e.id]);
   }
 
   const hardFilters: WeightedCondition[] = [];
   const softPreferences: WeightedCondition[] = [];
   const negativeFilters: WeightedCondition[] = [];
-  for (const e of winners.values()) {
-    if (e.bucket === "hard") hardFilters.push(e.item);
-    else if (e.bucket === "soft") softPreferences.push(e.item);
-    else negativeFilters.push(e.item);
+  let mergedCount = 0;
+
+  for (const ids of clusters) {
+    const entries = ids.map((id) => flat[id]);
+    if (entries.length > 1) mergedCount += entries.length - 1;
+    // 按 weight 取最高；并列时按 strength（hard > neg > soft）；再并列取较早出现的
+    let winner = entries[0];
+    for (const e of entries.slice(1)) {
+      if (
+        e.item.weight > winner.item.weight ||
+        (e.item.weight === winner.item.weight && STRENGTH[e.bucket] > STRENGTH[winner.bucket])
+      ) {
+        winner = e;
+      }
+    }
+    const maxWeight = entries.reduce((m, e) => Math.max(m, e.item.weight), 0);
+    const finalItem: WeightedCondition = { text: winner.item.text, weight: maxWeight };
+    // 一致性：weight >= 0.8 且赢家是 soft，提升到 hard（保留与下游 promotion 一致的行为）
+    let finalBucket = winner.bucket;
+    if (finalBucket === "soft" && maxWeight >= 0.8) finalBucket = "hard";
+    if (finalBucket === "hard") hardFilters.push(finalItem);
+    else if (finalBucket === "soft") softPreferences.push(finalItem);
+    else negativeFilters.push(finalItem);
   }
 
-  const mergedCount = all.length - winners.size;
+  // 菜品聚类
+  const usedDishIds = new Set<number>();
+  const dishClusters: number[][] = [];
+  for (const c of clustersOut.dishClusters) {
+    const ids = c.ids.filter((id) => id >= 0 && id < dishList.length && !usedDishIds.has(id));
+    if (!ids.length) continue;
+    ids.forEach((id) => usedDishIds.add(id));
+    dishClusters.push(ids);
+  }
+  for (const d of dishList) {
+    if (!usedDishIds.has(d.id)) dishClusters.push([d.id]);
+  }
+  const dishPreferences = dishClusters.map((ids) => dishList[ids[0]].text);
+
   if (mergedCount > 0) {
-    console.warn(
-      `[parseRequirements] AI missed semantic dedupe, fallback merged ${mergedCount} item(s)`,
+    console.log(
+      `[semanticClusterMerge] 合并了 ${mergedCount} 条重复诉求（${flat.length} → ${clusters.length}）`,
     );
   }
-
-  const dishPreferences = [...new Map(
-    parsed.dishPreferences
-      .map((dish) => [conditionKey(dish), dish.trim()] as const)
-      .filter(([key, dish]) => key && dish),
-  ).values()];
+  void uiLanguage;
 
   return {
     ...parsed,
-    cuisines: uniqueStrings(parsed.cuisines),
-    negativeFilters,
     hardFilters,
     softPreferences,
+    negativeFilters,
     dishPreferences,
   };
 }
@@ -341,31 +469,18 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - **氛围 / 装修 / 服务态度** 这类主观偏好基线 ≤ 0.7。
 - 避雷条目：「不要 X」=0.7，「绝对不要 X」=1.0。
 
-## 边界与去重
+## 边界
 
 - 否定句一律进 negativeFilters，不要再复制到 hardFilters。
-- 同一条只放一个数组里，不要重复。
 - 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
 
-## 语义去重规则（最终输出前必须执行，关键，务必严格执行）
+## 完整抽取规则（关键，务必严格执行）
 
-在你最终输出 hardFilters / softPreferences / negativeFilters / dishPreferences 之前，必须对所有条目做一次**基于整句语义**的合并。这一步不可省略。
+**本步禁止做任何语义去重或合并。** 用户对同一个诉求的多次表达（强度不同、措辞不同、前后矛盾、肯定否定改写），必须**每一次都单独输出一条**，不要因为前面已经出现过类似表达就忽略后面的。后续有专门的聚类步骤会把同一诉求合并并取最高权重；如果你在这一步把后面更强的那次表达漏掉，最终结果就会错。
 
-1. **判定"同一诉求"按整句语义**，不要按关键词或字面重合判定。同一个诉求的不同措辞、不同强度、肯定与否定的等价改写，都算同一条。
-2. **不同诉求即使用词重叠也不算同一条**。判定原则：
-   - 同方向同维度 = 同一条。例："要安静"、"想找个安静的地方"、"不要吵"——同一诉求，必须合并。
-   - 相反方向 ≠ 同一条。例："要安静" vs "要热闹"——相反诉求，不可合并。
-   - 不同维度 ≠ 同一条。例："环境好" vs "服务好"、"装修精致" vs "菜品精致"——不同维度，不可合并。
-3. **同一诉求只能出现一次，且只能出现在 hard / soft / neg 三类中的一类里**。归类按该诉求在用户原文中**最强烈**的那次表达决定：
-   - 出现"必须 / 一定 / 务必 / 不能没有 / 不可以没有 / must / required / need" 等强制信号 → hardFilters。
-   - 只出现"希望 / 最好 / 喜欢 / 想要 / prefer / would like / nice to have" → softPreferences。
-   - 只出现"不要 / 别 / 讨厌 / 避免 / no / without / avoid" → negativeFilters。
-   - 同一诉求同时有正向和负向表达（如"要安静"+"不要吵"），统一归为最强烈那次表达对应的类（通常是 hardFilters 或 softPreferences，不要再单独留一条 negativeFilters）。
-4. 合并后的 weight 取该诉求所有表达中**最高**的那个值。
-5. text 字段的"原话片段"部分，使用最能体现最强烈表达的那句用户原文；"→ 标准化条件"部分用一句话概括该诉求。
-6. dishPreferences 同样要按菜品语义去重：同义词、别名、单复数、繁简、中英文对照（如"拉面" vs "ラーメン" vs "ramen"，"刺身" vs "sashimi"）算同一道菜，只保留一次。
+举例：用户原文出现"环境稍微好一点"、"环境好"、"最重要的是环境一定要好"三次——你**必须**输出三条独立条目（分别带各自原话和各自 weight），**不要**自行合并成一条，**不要**只保留第一次出现的。把"必须/一定/最重要"这类强度信号原原本本反映在对应那条的 weight 上（这里"最重要的是环境一定要好"必须给 1.0）。
 
-**反例**（错误，禁止）：用户原文出现"我希望环境好"、"环境一定要好"、"环境必须好"三次——这是**一个**诉求的三次重复表达，最终只能输出**一条**：text="环境必须好 → 环境/氛围佳"，weight=1.0，放在 hardFilters 里（因为出现了"必须/一定"强制信号）。**绝对不要**输出三条独立的 hard/soft/neg 条目。
+dishPreferences 同理：把用户提到的所有菜品都列出来，不在这一步做同义词合并。
 
 ## 示例
 
@@ -581,13 +696,14 @@ export const parseRequirements = createServerFn({ method: "POST" })
         const second = await runOnce("openai/gpt-5-mini");
         parsed = sanitizeVisitTime(await enforceInferIfRequested(second));
       }
-      const beforeDedupe = {
+      const beforeCluster = {
         hard: parsed.hardFilters.length,
         soft: parsed.softPreferences.length,
         neg: parsed.negativeFilters.length,
+        dishes: parsed.dishPreferences.length,
       };
-      // 注：runOnce 里已经在 return 前调用了 dedupeParsedConditions（line 425），
-      // 这里只是把"AI 自身合并 vs 字符串兜底" 的差异记一下，方便观察 prompt 效果。
+      // 第二阶段：独立 AI 调用做语义聚类去重；失败时退回原结果
+      parsed = await semanticClusterMerge(parsed, gateway, data.uiLanguage);
       echoLog.ok("parseRequirements", Date.now() - _parseT0, {
         cuisines: parsed.cuisines.length,
         hard: parsed.hardFilters.length,
@@ -596,7 +712,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         dishes: parsed.dishPreferences.length,
         visitTime: parsed.visitTime ? "yes" : "no",
         mode: parsed.mode,
-        afterAiDedupe: `${beforeDedupe.hard}/${beforeDedupe.soft}/${beforeDedupe.neg}`,
+        beforeCluster: `${beforeCluster.hard}/${beforeCluster.soft}/${beforeCluster.neg}/${beforeCluster.dishes}`,
       });
       return parsed;
     } catch (e) {
