@@ -2117,6 +2117,7 @@ Schema：
       if (!group.picks.length) return { cuisine: group.cuisine, picks: [] };
       const prompt = buildCopyPromptForGroup(group);
       const startedAt = Date.now();
+      echoLog.start("AI-copy", { cuisine: group.cuisine, picks: group.picks.length });
       try {
         const result = await generateText({
           model,
