@@ -2326,6 +2326,64 @@ Schema：
       };
     }).filter((group) => group.restaurants.length + (group.partialRestaurants?.length ?? 0) + (group.failedRestaurants?.length ?? 0) > 0);
 
+    // ===== Pass 2：文案（aiSummary + pros + cons），仅对每 cuisine 的 top5 跑 =====
+    const copyTargets: CopyGroupInput[] = groups
+      .map((g) => {
+        const all = [
+          ...g.restaurants,
+          ...(g.partialRestaurants ?? []),
+          ...(g.failedRestaurants ?? []),
+        ];
+        return {
+          cuisine: g.cuisine,
+          picks: all.slice(0, 5).map((r) => {
+            const place = placeByRestaurantId.get(r.id);
+            const placeId = place?.placeId ?? r.id;
+            const review = place ? reviewById.get(place.placeId) : null;
+            return {
+              placeId,
+              name: r.name,
+              address: r.address,
+              googleReviews: (review?.reviewHighlights ?? []).slice(0, 3),
+              tabelogSummary: r.tabelog?.summary ?? null,
+              yelpSummary: r.yelp?.summary ?? null,
+            };
+          }),
+        };
+      })
+      .filter((g) => g.picks.length > 0);
+
+    if (copyTargets.length > 0) {
+      const copyStartedAt = Date.now();
+      // 复用 rank 心跳，避免新增前端 stage；UI 此时仍显示"AI 综合排序"。
+      const copyResults = yield* withHeartbeat(
+        Promise.all(copyTargets.map(rankCopyGroup)),
+        "rank",
+      );
+      console.log(
+        `[Echo/AI-copy] all ${copyResults.length} group(s) done in ${Date.now() - copyStartedAt}ms`,
+      );
+      const copyById = new Map<string, z.infer<typeof AiCopyPickSchema>>();
+      for (const cr of copyResults) {
+        for (const pick of cr.picks) copyById.set(pick.placeId, pick);
+      }
+      for (const g of groups) {
+        const allRs = [
+          ...g.restaurants,
+          ...(g.partialRestaurants ?? []),
+          ...(g.failedRestaurants ?? []),
+        ];
+        for (const r of allRs) {
+          const place = placeByRestaurantId.get(r.id);
+          if (!place) continue;
+          const copy = copyById.get(place.placeId);
+          if (!copy) continue;
+          if (copy.aiSummary) r.aiSummary = copy.aiSummary;
+          if (copy.pros.length) r.pros = copy.pros;
+          if (copy.cons.length) r.cons = copy.cons;
+        }
+      }
+    }
 
     yield { type: "stage", stage: "photos" };
     const allRestaurants = groups.flatMap((group) => [
