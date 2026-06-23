@@ -1959,6 +1959,8 @@ Schema：
     ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
       const prompt = buildVerifyPromptForGroup(group);
       const startedAt = Date.now();
+      echoLog.start("AI-verify", { cuisine: group.cuisine, candidates: group.candidates.length });
+
 
       try {
         const result = await generateText({
