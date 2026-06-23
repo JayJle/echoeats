@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { useQueryStore } from "@/lib/store";
+import { useQueryStore, type ParsedRequirements } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { useServerFn } from "@tanstack/react-start";
 import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
@@ -55,6 +55,19 @@ function StepRequirements() {
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef(0);
+
+  // —— 平滑进度条状态 ——
+  const [displayProgress, setDisplayProgress] = useState(0);
+  const targetProgressRef = useRef(0);
+  const lastChunkAtRef = useRef<number>(0);
+  const rafProgressRef = useRef<number | null>(null);
+  const currentRangeRef = useRef<[number, number]>([0, 100]);
+  const reviewMaxRef = useRef(0);
+  const tabelogMaxRef = useRef(0);
+  const yelpMaxRef = useRef(0);
+
+  // —— 提前展示解析出的需求 ——
+  const [parsedPreview, setParsedPreview] = useState<ParsedRequirements | null>(null);
 
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
