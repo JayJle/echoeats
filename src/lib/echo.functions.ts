@@ -5,6 +5,38 @@ import { createLovableAiGatewayProvider } from "./ai-gateway";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
+// ---- 节点级日志小工具：统一 [Echo/<stage>] start / ok / fail 前缀 ----
+function _echoFmt(extra?: Record<string, unknown>): string {
+  if (!extra) return "";
+  return Object.entries(extra)
+    .map(([k, v]) => {
+      if (v === null || v === undefined) return `${k}=null`;
+      if (typeof v === "string") return `${k}="${v}"`;
+      if (typeof v === "number" || typeof v === "boolean") return `${k}=${v}`;
+      return `${k}=${JSON.stringify(v)}`;
+    })
+    .join(" ");
+}
+const echoLog = {
+  start: (stage: string, extra?: Record<string, unknown>) => {
+    console.log(`[Echo/${stage}] start ${_echoFmt(extra)}`.trim());
+  },
+  ok: (stage: string, ms: number, extra?: Record<string, unknown>) => {
+    console.log(`[Echo/${stage}] ok in ${ms}ms ${_echoFmt(extra)}`.trim());
+  },
+  fail: (
+    stage: string,
+    ms: number,
+    err: unknown,
+    extra?: Record<string, unknown>,
+  ) => {
+    const m = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[Echo/${stage}] failed in ${ms}ms reason="${m}" ${_echoFmt(extra)}`.trim(),
+    );
+  },
+};
+
 const ParseInput = z.object({
   city: z.string().min(1),
   cuisines: z.array(z.string()).default([]),
@@ -483,20 +515,39 @@ export const parseRequirements = createServerFn({ method: "POST" })
       return parsed;
     };
 
+    const _parseT0 = Date.now();
+    echoLog.start("parseRequirements", {
+      city: data.city,
+      cuisines: data.cuisines.length,
+      autoInfer: data.autoInferCuisines,
+      freeTextLen: (data.freeText ?? "").length,
+      uiLang: data.uiLanguage,
+    });
     try {
+      let parsed: z.infer<typeof ParsedSchema>;
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        return sanitizeVisitTime(await enforceInferIfRequested(first));
+        parsed = sanitizeVisitTime(await enforceInferIfRequested(first));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        return sanitizeVisitTime(await enforceInferIfRequested(second));
+        parsed = sanitizeVisitTime(await enforceInferIfRequested(second));
       }
-
+      echoLog.ok("parseRequirements", Date.now() - _parseT0, {
+        cuisines: parsed.cuisines.length,
+        hard: parsed.hardFilters.length,
+        soft: parsed.softPreferences.length,
+        neg: parsed.negativeFilters.length,
+        dishes: parsed.dishPreferences.length,
+        visitTime: parsed.visitTime ? "yes" : "no",
+        mode: parsed.mode,
+      });
+      return parsed;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // 兜底：返回最小可用结构，避免整页崩溃
+      echoLog.fail("parseRequirements", Date.now() - _parseT0, e, { fallback: "yes" });
       console.warn("[parseRequirements] AI 解析失败，使用兜底结构：", msg);
       return ParsedSchema.parse({
         city: data.city,
@@ -1177,6 +1228,19 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const pushWarn = (w: { stage: string; cuisine?: string; message: string; retryable?: boolean }) => {
       if (warnings.length < 10) warnings.push(w);
     };
+    const _pipelineT0 = Date.now();
+    let _currentStage = "init";
+    echoLog.start("pipeline", {
+      city: data.city,
+      cuisines: data.cuisines.length,
+      mode: data.mode,
+      hard: data.hardFilters.length,
+      soft: data.softPreferences.length,
+      neg: data.negativeFilters.length,
+      dishes: data.dishPreferences.length,
+      visitTime: data.visitTime ? "yes" : "no",
+      lang: uiLang,
+    });
     try {
     const aiKey = process.env.LOVABLE_API_KEY;
     if (!aiKey) {
@@ -1231,6 +1295,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       stage: "places",
       message: isEn ? `Searching candidates in ${data.city}…` : `搜索 ${data.city} 候选餐厅…`,
     };
+    _currentStage = "places";
+    const _placesT0 = Date.now();
+    echoLog.start("places", { cuisines: data.cuisines.length, country });
 
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
@@ -1376,6 +1443,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
 
     const totalCandidates = placeResults.reduce((s, r) => s + r.places.length, 0);
+    echoLog.ok("places", Date.now() - _placesT0, {
+      total: totalCandidates,
+      perCuisine: Object.fromEntries(placeResults.map((r) => [r.cuisine, r.places.length])),
+      errors: placeResults.filter((r) => r.error).length,
+    });
     yield { type: "stage", stage: "places-done", count: totalCandidates };
     for (const r of placeResults) {
       if (!r.places.length && r.error) {
@@ -1423,6 +1495,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     // 日期/时间硬筛：明确 closed 的候选属于不可用基础淘汰项，不参与后续补足。
     const visitMatchById = new Map<string, "open" | "unknown">();
     if (data.visitTime && data.visitTime.weekday != null && data.visitTime.hhmm) {
+      _currentStage = "visitTime";
+      const _vtT0 = Date.now();
       const w = data.visitTime.weekday;
       const t = data.visitTime.hhmm;
       let totalRemoved = 0;
@@ -1440,7 +1514,14 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         }
         return { ...r, places: kept };
       });
+      const _vtRemaining = placeResults.reduce((s, r) => s + r.places.length, 0);
       console.log(`[visitTime] weekday=${w} hhmm=${t} removed=${totalRemoved}`);
+      echoLog.ok("visitTime", Date.now() - _vtT0, {
+        weekday: w,
+        hhmm: t,
+        removed: totalRemoved,
+        remaining: _vtRemaining,
+      });
     }
 
     // 规则初筛：只用 Google Places 直接返回的字段
@@ -1461,6 +1542,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       (f) => f.weight >= 0.85 && verifyGoogleRatingFilter(f.text, 5, isEn) !== null,
     );
 
+    _currentStage = "rules-prefilter";
+    const _rulesT0 = Date.now();
     let rulesRemoved = { businessStatus: 0, price: 0, rating: 0 };
     placeResults = placeResults.map((r) => {
       if (!r.places.length) return r;
@@ -1484,6 +1567,12 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       return { ...r, places: kept };
     });
     console.log(`[rules-prefilter] removed businessStatus=${rulesRemoved.businessStatus} price=${rulesRemoved.price} rating=${rulesRemoved.rating}; candidate-pool=${placeResults.reduce((s, r) => s + r.places.length, 0)}`);
+    echoLog.ok("rules-prefilter", Date.now() - _rulesT0, {
+      businessStatus: rulesRemoved.businessStatus,
+      price: rulesRemoved.price,
+      rating: rulesRemoved.rating,
+      remaining: placeResults.reduce((s, r) => s + r.places.length, 0),
+    });
 
     // 把 Google Places 一手 reviews 作为基线证据塞入（零幻觉）。
     for (const r of placeResults) {
@@ -1503,6 +1592,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
       }
       yield { type: "stage", stage: "tabelog", total: allTargets.length };
+      _currentStage = "tabelog";
+      const _tabT0 = Date.now();
+      echoLog.start("tabelog", { total: allTargets.length, concurrency: 8 });
       const CONCURRENCY = 8;
       let cursor = 0;
       const runWorker = async () => {
@@ -1526,6 +1618,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         "tabelog",
       );
       console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
+      echoLog.ok("tabelog", Date.now() - _tabT0, {
+        hit: tabelogById.size,
+        total: allTargets.length,
+        miss: allTargets.length - tabelogById.size,
+      });
       if (allTargets.length > 0 && tabelogById.size === 0) {
         pushWarn({
           stage: "tabelog",
@@ -1546,6 +1643,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
       }
       yield { type: "stage", stage: "yelp", total: allTargets.length };
+      _currentStage = "yelp";
+      const _yelpT0 = Date.now();
+      echoLog.start("yelp", { total: allTargets.length, concurrency: 8 });
       const CONCURRENCY = 8;
       let cursor = 0;
       const runWorker = async () => {
@@ -1568,6 +1668,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         "yelp",
       );
       console.log(`[Yelp] hit ${yelpById.size}/${allTargets.length}`);
+      echoLog.ok("yelp", Date.now() - _yelpT0, {
+        hit: yelpById.size,
+        total: allTargets.length,
+        miss: allTargets.length - yelpById.size,
+      });
       if (allTargets.length > 0 && yelpById.size === 0) {
         pushWarn({
           stage: "yelp",
@@ -1854,6 +1959,8 @@ Schema：
     ): Promise<{ cuisine: string; picks: z.infer<typeof AiPickSchema>[] }> => {
       const prompt = buildVerifyPromptForGroup(group);
       const startedAt = Date.now();
+      echoLog.start("AI-verify", { cuisine: group.cuisine, candidates: group.candidates.length });
+
 
       try {
         const result = await generateText({
@@ -2010,6 +2117,7 @@ Schema：
       if (!group.picks.length) return { cuisine: group.cuisine, picks: [] };
       const prompt = buildCopyPromptForGroup(group);
       const startedAt = Date.now();
+      echoLog.start("AI-copy", { cuisine: group.cuisine, picks: group.picks.length });
       try {
         const result = await generateText({
           model,
@@ -2050,7 +2158,12 @@ Schema：
     };
 
     yield { type: "stage", stage: "rank" };
+    _currentStage = "AI-rank";
     const rankStartedAt = Date.now();
+    echoLog.start("AI-rank", {
+      batches: candidatesForPrompt.length,
+      totalCandidates: candidatesForPrompt.reduce((s, g) => s + g.candidates.length, 0),
+    });
     // 用心跳包裹整个并行排序，避免边缘网关因为长时间静默切流。
     const groupResults = yield* withHeartbeat(
       Promise.all(candidatesForPrompt.map(async (group) => {
@@ -2067,9 +2180,16 @@ Schema：
       })),
       "rank",
     );
+    const _rankPicksTotal = groupResults.reduce((s, g) => s + g.picks.length, 0);
+    const _rankFailedGroups = groupResults.filter((g) => g.picks.length === 0).length;
     console.log(
       `[Echo/AI-rank] all ${groupResults.length} group(s) done in ${Date.now() - rankStartedAt}ms`,
     );
+    echoLog.ok("AI-rank", Date.now() - rankStartedAt, {
+      groups: groupResults.length,
+      picksTotal: _rankPicksTotal,
+      failedGroups: _rankFailedGroups,
+    });
     const mergedGroups = new Map<string, z.infer<typeof AiPickSchema>[]>();
     for (const result of groupResults) {
       const existing = mergedGroups.get(result.cuisine) ?? [];
@@ -2089,6 +2209,8 @@ Schema：
     const negCount = data.negativeFilters.length;
     const dishCount = nonHardFilters.length - softCount - negCount;
 
+    _currentStage = "score";
+    const _scoreT0 = Date.now();
     const groups = data.cuisines.map((cuisine) => {
       const pool = placeResults.find((r) => r.cuisine === cuisine)?.places ?? [];
       const aiGroup = ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase());
@@ -2325,6 +2447,12 @@ Schema：
         ...(failedRestaurants.length ? { failedRestaurants } : {}),
       };
     }).filter((group) => group.restaurants.length + (group.partialRestaurants?.length ?? 0) + (group.failedRestaurants?.length ?? 0) > 0);
+    echoLog.ok("score", Date.now() - _scoreT0, {
+      groups: groups.length,
+      restaurants: groups.reduce((s, g) => s + g.restaurants.length, 0),
+      partial: groups.reduce((s, g) => s + (g.partialRestaurants?.length ?? 0), 0),
+      failed: groups.reduce((s, g) => s + (g.failedRestaurants?.length ?? 0), 0),
+    });
 
     // ===== Pass 2：文案（aiSummary + pros + cons），仅对每 cuisine 的 top5 跑 =====
     const copyTargets: CopyGroupInput[] = groups
@@ -2354,7 +2482,12 @@ Schema：
       .filter((g) => g.picks.length > 0);
 
     if (copyTargets.length > 0) {
+      _currentStage = "AI-copy";
       const copyStartedAt = Date.now();
+      echoLog.start("AI-copy", {
+        groups: copyTargets.length,
+        picksTotal: copyTargets.reduce((s, g) => s + g.picks.length, 0),
+      });
       // 复用 rank 心跳，避免新增前端 stage；UI 此时仍显示"AI 综合排序"。
       const copyResults = yield* withHeartbeat(
         Promise.all(copyTargets.map(rankCopyGroup)),
@@ -2364,9 +2497,21 @@ Schema：
         `[Echo/AI-copy] all ${copyResults.length} group(s) done in ${Date.now() - copyStartedAt}ms`,
       );
       const copyById = new Map<string, z.infer<typeof AiCopyPickSchema>>();
+      let _picksFilled = 0;
       for (const cr of copyResults) {
-        for (const pick of cr.picks) copyById.set(pick.placeId, pick);
+        for (const pick of cr.picks) {
+          copyById.set(pick.placeId, pick);
+          _picksFilled++;
+        }
       }
+      const _picksRequested = copyTargets.reduce((s, g) => s + g.picks.length, 0);
+      echoLog.ok("AI-copy", Date.now() - copyStartedAt, {
+        groups: copyResults.length,
+        picksRequested: _picksRequested,
+        picksFilled: _picksFilled,
+        picksMissed: _picksRequested - _picksFilled,
+        failedGroups: copyResults.filter((r) => r.picks.length === 0).length,
+      });
       for (const g of groups) {
         const allRs = [
           ...g.restaurants,
@@ -2386,20 +2531,33 @@ Schema：
     }
 
     yield { type: "stage", stage: "photos" };
+    _currentStage = "photos";
+    const _photosT0 = Date.now();
     const allRestaurants = groups.flatMap((group) => [
       ...group.restaurants,
       ...(group.partialRestaurants ?? []),
       ...(group.failedRestaurants ?? []),
     ]);
+    echoLog.start("photos", { restaurants: allRestaurants.length });
     yield* withHeartbeat(Promise.all(allRestaurants.map(async (restaurant) => {
       const place = placeByRestaurantId.get(restaurant.id);
       const urls = await Promise.all((place?.photoNames ?? []).slice(0, 6).map((name) => resolvePhotoUrl(name, 800)));
       restaurant.photoUrls = urls.filter((url): url is string => Boolean(url));
     })), "photos");
+    echoLog.ok("photos", Date.now() - _photosT0, {
+      restaurants: allRestaurants.length,
+      withPhotos: allRestaurants.filter((r) => r.photoUrls && r.photoUrls.length > 0).length,
+    });
 
     const missing = data.cuisines.filter((cuisine) =>
       !placeResults.some((group) => group.cuisine.toLowerCase() === cuisine.toLowerCase() && group.places.length),
     );
+    echoLog.ok("pipeline", Date.now() - _pipelineT0, {
+      groups: groups.length,
+      restaurants: groups.reduce((s, g) => s + g.restaurants.length, 0),
+      missing: missing.length,
+      warnings: warnings.length,
+    });
     yield {
       type: "result",
       payload: {
@@ -2413,6 +2571,7 @@ Schema：
     };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      echoLog.fail("pipeline", Date.now() - _pipelineT0, e, { atStage: _currentStage });
       console.error("[searchRestaurants] uncaught:", msg);
       yield {
         type: "result",
