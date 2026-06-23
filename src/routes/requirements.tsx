@@ -701,7 +701,7 @@ function StepRequirements() {
 
         {loading && currentStage && (
           <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-4">
-            <Progress value={progressValue} className="h-1" />
+            <Progress value={displayProgress} className="h-1" />
             <ul className="space-y-3">
               {stages.map((s, i) => {
                 const state =
@@ -742,6 +742,71 @@ function StepRequirements() {
                 );
               })}
             </ul>
+            {parsedPreview && (
+              <div className="animate-fade-in border-t border-border/60 pt-3 space-y-2">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                  {t("step3.parsedPreview")}
+                </p>
+                {(parsedPreview.city || parsedPreview.cuisines.length > 0) && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {parsedPreview.city && (
+                      <span className="px-2 py-0.5 text-xs rounded-full bg-muted text-foreground border border-border">
+                        {parsedPreview.city}
+                      </span>
+                    )}
+                    {parsedPreview.cuisines.map((c, i) => (
+                      <span
+                        key={`cu-${i}`}
+                        className={
+                          parsedPreview.cuisinesInferred
+                            ? "px-2 py-0.5 text-xs rounded-full bg-primary/10 text-primary border border-primary/20"
+                            : "px-2 py-0.5 text-xs rounded-full bg-muted text-foreground border border-border"
+                        }
+                      >
+                        {parsedPreview.cuisinesInferred && <span className="mr-0.5">✨</span>}
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {parsedPreview.hardFilters.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {parsedPreview.hardFilters.map((f, i) => (
+                      <span key={`h-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
+                        {f.text}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {parsedPreview.softPreferences.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {parsedPreview.softPreferences.map((f, i) => (
+                      <span key={`s-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground">
+                        {f.text}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {parsedPreview.negativeFilters.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {parsedPreview.negativeFilters.map((f, i) => (
+                      <span key={`n-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
+                        {f.text}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {parsedPreview.dishPreferences.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {parsedPreview.dishPreferences.map((f, i) => (
+                      <span key={`d-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-accent text-accent-foreground">
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex justify-end pt-1">
               <Button type="button" variant="ghost" size="sm" onClick={handleCancel}>
                 {t("step3.cancel")}
