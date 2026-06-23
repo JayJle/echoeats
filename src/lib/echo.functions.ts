@@ -2153,7 +2153,35 @@ ${JSON.stringify(group.candidates, null, 2)}
             description: `Score candidates for cuisine "${group.cuisine}"`,
           }),
         });
-        return finalize(result.output.scores, "Output.object");
+        const firstScores = result.output.scores;
+        const returnedIds = new Set(firstScores.map((s) => s.placeId));
+        const missingIds = expectedIds.filter((id) => !returnedIds.has(id));
+        if (missingIds.length === 0) {
+          return finalize(firstScores, "Output.object");
+        }
+        // miss-only 定向重试：只对漏掉的 place_id 再跑一次同样的 prompt
+        try {
+          const retryGroup: ScoreGroupInput = {
+            cuisine: group.cuisine,
+            candidates: group.candidates.filter((c) => missingIds.includes(c.placeId)),
+          };
+          const retryPrompt = buildScorePromptForGroup(retryGroup);
+          const retry = await generateText({
+            model,
+            prompt: retryPrompt,
+            maxOutputTokens: 1000,
+            output: Output.object({
+              schema: AiScoreGroupSchema,
+              name: "echo_eats_score",
+              description: `Score candidates for cuisine "${group.cuisine}"`,
+            }),
+          });
+          const merged = [...firstScores, ...retry.output.scores];
+          return finalize(merged, "Output.object+miss-retry");
+        } catch {
+          // 重试失败,沿用首发结果走 PARTIAL → 缺的进入 fallback60
+          return finalize(firstScores, "Output.object");
+        }
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
         console.warn(
