@@ -2060,7 +2060,7 @@ Schema：
           batches.push(group.candidates.slice(i, i + BATCH_SIZE));
         }
         const batchPicks = await Promise.all(batches.map(async (batch) => {
-          const res = await rankOneGroup({ ...group, candidates: batch });
+          const res = await rankVerifyGroup({ ...group, candidates: batch });
           return res.picks;
         }));
         return { cuisine: group.cuisine, picks: batchPicks.flat() };
