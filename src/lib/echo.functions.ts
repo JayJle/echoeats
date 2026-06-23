@@ -704,13 +704,14 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         const second = await runOnce("openai/gpt-5-mini");
         parsed = sanitizeVisitTime(await enforceInferIfRequested(second));
       }
-      const beforeDedupe = {
+      const beforeCluster = {
         hard: parsed.hardFilters.length,
         soft: parsed.softPreferences.length,
         neg: parsed.negativeFilters.length,
+        dishes: parsed.dishPreferences.length,
       };
-      // 注：runOnce 里已经在 return 前调用了 dedupeParsedConditions（line 425），
-      // 这里只是把"AI 自身合并 vs 字符串兜底" 的差异记一下，方便观察 prompt 效果。
+      // 第二阶段：独立 AI 调用做语义聚类去重；失败时退回原结果
+      parsed = await semanticClusterMerge(parsed, gateway, data.uiLanguage);
       echoLog.ok("parseRequirements", Date.now() - _parseT0, {
         cuisines: parsed.cuisines.length,
         hard: parsed.hardFilters.length,
@@ -719,7 +720,7 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         dishes: parsed.dishPreferences.length,
         visitTime: parsed.visitTime ? "yes" : "no",
         mode: parsed.mode,
-        afterAiDedupe: `${beforeDedupe.hard}/${beforeDedupe.soft}/${beforeDedupe.neg}`,
+        beforeCluster: `${beforeCluster.hard}/${beforeCluster.soft}/${beforeCluster.neg}/${beforeCluster.dishes}`,
       });
       return parsed;
     } catch (e) {
