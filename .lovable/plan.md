@@ -1,49 +1,77 @@
-## 问题判断
+# 三段式 AI 流水线改造方案
 
-上一次失败的直接原因是：Pass1 核验节点输出的 JSON 里，部分候选缺少必填字段 `matchScore`。因为结构化输出校验要求每个 `pick` 都必须有 `matchScore`，所以整批被判定为 schema 不匹配，随后进入 raw fallback；fallback 再次解析时仍然缺字段，于是该 batch 返回空 picks，导致耗时被拉长且该组结果质量下降。
+把原来的 Pass1（核验+打分+文案）拆成三段独立调用，每段单独 schema、单独日志、单独兜底。目标：彻底解决 `matchScore` 漏发，并让任何一段失败都能精确定位。
 
-## 关于“能不能从 prompt 根治漏 matchScore”
+## 一、Pass 拆分
 
-不能 100% 根治。原因是模型生成不是传统程序执行，prompt 可以显著降低漏字段概率，但无法数学保证每次都不漏。真正的工程保证仍然需要 schema / 解析 / 兜底 / 超时这些防护。
+### Pass1 —— 纯核验
+- 输入：候选餐厅基础信息 + 用户硬条件/软偏好
+- Schema `AiVerifyPickSchema`：仅 `placeId` / `verificationStatus` / `hardFilterChecks[]` / `matchDetails[]`
+- 不再输出 `matchScore` / `aiSummary` / `pros` / `cons`
+- prompt 重点：硬条件证据加权 → `fail / unknown / ok`，禁止跨候选比较，禁止幻觉
 
-但这次按你的要求，先不动兜底和超时逻辑，只把 prompt 里的 `matchScore` 要求凸显到非常明确，让模型在输出前自检：
+### Pass2 —— 纯打分（新增）
+- 输入：Pass1 的核验结果 + 候选基础信息
+- Schema `AiScoreSchema = z.object({ scores: z.array(z.object({ placeId: z.string(), matchScore: z.number().int().min(0).max(100) })) })`
+- prompt 极简：只让模型输出整数分，禁止任何其它字段、禁止字符串/null/"unknown"
+- 输出后回填到 Pass1 的 picks
 
-- 每个 `pick` 必须包含 `matchScore`
-- `matchScore` 必须是 JSON number，不允许字符串、不允许 null、不允许省略
-- 不确定时也必须给估算分，而不是跳过
-- `verificationStatus` 和 `matchScore` 要成对输出
-- 输出前逐条检查：候选数 = picks 数，且每个 pick 都有 placeId / verificationStatus / matchScore / hardFilterChecks / matchDetails
+### Pass3 —— 文案（原 Pass2 不动）
+- 仅在 Pass2 完成、`matchScore` 已回填后，对 Top N 生成 `aiSummary / pros / cons`
 
-## 实施范围
+## 二、Pass2 失败兜底（按你确认）
 
-只修改 `src/lib/echo.functions.ts` 里 Pass1 的 `buildVerifyPromptForGroup` prompt 文案。
+| 情况 | 兜底 |
+|---|---|
+| Pass2 整段失败（超时/解析失败/schema 失败） | 该 batch 所有候选 `matchScore = 60`，verification 保留，继续进入 Pass3 |
+| Pass2 部分缺失（partial） | 缺失的 placeId 兜底 `matchScore = 60`，其余正常 |
+| 兜底命中时 | 该 pick 打 `scoreFallback: true` 标记（仅日志/调试用，不影响前端展示） |
 
-## 具体修改
+60 是中性值，避免兜底数据把好的挤掉或把差的捧上来，对排序影响最小。
 
-1. 在 `# 规则约束` 的 `必须做（DO）` 部分新增高优先级条款：
-   - `matchScore` 是强制字段
-   - 每家候选都必须给
-   - 没有足够证据也要按评分指引给保守分
-   - 禁止因为不确定而省略
+## 三、全节点失败日志（关键）
 
-2. 在 `# 输出约束` 的 Schema 前新增醒目的“字段完整性铁律”：
-   - 缺 `matchScore` 等于整个输出无效
-   - `matchScore` 必须为 0–100 整数 JSON number
-   - 不允许 `"matchScore": "88"`、`"matchScore": null`、漏写字段
+每一段调用都打三条日志：start / 结束 / 异常，包含 batchId、候选数、耗时。
 
-3. 在 `matchScore 评分指引` 下面增加“不确定时如何给分”：
-   - 硬条件 ok、软偏好不明确：60–74
-   - 硬条件 unknown：50–69
-   - blocking fail / 料理保真 fail：0–39
-   - 不允许因为无法精确评分而省略字段
+```text
+[Echo/AI-verify] batch=<id> n=<count> start
+[Echo/AI-verify] batch=<id> ok in <ms>ms picks=<n>
+[Echo/AI-verify] batch=<id> FAILED in <ms>ms reason=<schema|timeout|parse|http> err=<msg>
 
-4. 在 Few-shots 前增加“最终自检清单”：
-   - picks 数量必须等于本批候选数
-   - 每条 pick 必须含 `placeId`、`verificationStatus`、`matchScore`、`hardFilterChecks`、`matchDetails`
-   - 每个 `matchScore` 必须是数字
+[Echo/AI-score]  batch=<id> n=<count> start
+[Echo/AI-score]  batch=<id> ok in <ms>ms scored=<n>
+[Echo/AI-score]  batch=<id> PARTIAL in <ms>ms scored=<n>/<expected> missing=[placeId...]
+[Echo/AI-score]  batch=<id> FAILED in <ms>ms reason=<...> err=<...>  → 全量兜底 60
 
-5. 保持之前“两段 prompt / Pass1 核验 + Pass2 文案”的结构不变，不改变下游 scoring、batch 并发、fallback、模型和业务逻辑。
+[Echo/AI-copy]   batch=<id> n=<topN> start
+[Echo/AI-copy]   batch=<id> ok in <ms>ms
+[Echo/AI-copy]   batch=<id> PARTIAL missing=[placeId...]
+[Echo/AI-copy]   batch=<id> FAILED reason=<...> err=<...>
+```
 
-## 预期效果
+额外汇总日志（一次 echo 请求结束时）：
 
-这会降低模型漏发 `matchScore` 的概率，并让模型在 prompt 层更重视字段完整性；但它不是绝对保证。如果修改后日志仍然出现漏字段，就说明仅靠 prompt 不够，下一步应再加宽松 schema、batch 超时，或换更稳定的模型。
+```text
+[Echo/Summary] req=<id> batches=<n> verify(ok/fail)=a/b score(ok/partial/fail)=a/b/c copy(ok/partial/fail)=a/b/c fallback60=<n>
+```
+
+→ 以后任何 batch 出问题，直接 grep 一行就能定位是哪一段挂的、挂在哪几个 placeId。
+
+## 四、改动范围
+
+仅改 `src/lib/echo.functions.ts`：
+1. 拆 prompt：`buildVerifyPromptForGroup`（去掉 matchScore 相关段）/ 新增 `buildScorePromptForGroup` / 保留 `buildCopyPrompt`
+2. 拆 schema：`AiVerifyPickSchema`（去 matchScore）/ 新增 `AiScoreSchema` / 保留文案 schema
+3. 拆调用：`runVerifyPass()` → `runScorePass()` → `runCopyPass()`，串行
+4. `expandToFullPick` 临时 `matchScore=0`，等 Pass2 回填；Pass2 失败/缺失则回填 60
+5. 全节点日志按上文格式插入
+
+不改：业务打分公式、批次并发、模型、前端、Supabase。
+
+## 五、预期效果
+
+- Pass2 输出只有 2 个字段，模型几乎不可能漏 → matchScore 漏发问题根治
+- 任一段失败都不再"整 batch 丢"：verify 失败才丢整批，score/copy 失败都有兜底
+- 日志可逐段追责，下次再出问题能直接说"是 Pass2 在 batch X 超时，已兜底 60"
+
+待你批准后开始实施。
