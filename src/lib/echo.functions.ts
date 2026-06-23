@@ -515,20 +515,39 @@ export const parseRequirements = createServerFn({ method: "POST" })
       return parsed;
     };
 
+    const _parseT0 = Date.now();
+    echoLog.start("parseRequirements", {
+      city: data.city,
+      cuisines: data.cuisines.length,
+      autoInfer: data.autoInferCuisines,
+      freeTextLen: (data.freeText ?? "").length,
+      uiLang: data.uiLanguage,
+    });
     try {
+      let parsed: z.infer<typeof ParsedSchema>;
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        return sanitizeVisitTime(await enforceInferIfRequested(first));
+        parsed = sanitizeVisitTime(await enforceInferIfRequested(first));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        return sanitizeVisitTime(await enforceInferIfRequested(second));
+        parsed = sanitizeVisitTime(await enforceInferIfRequested(second));
       }
-
+      echoLog.ok("parseRequirements", Date.now() - _parseT0, {
+        cuisines: parsed.cuisines.length,
+        hard: parsed.hardFilters.length,
+        soft: parsed.softPreferences.length,
+        neg: parsed.negativeFilters.length,
+        dishes: parsed.dishPreferences.length,
+        visitTime: parsed.visitTime ? "yes" : "no",
+        mode: parsed.mode,
+      });
+      return parsed;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // 兜底：返回最小可用结构，避免整页崩溃
+      echoLog.fail("parseRequirements", Date.now() - _parseT0, e, { fallback: "yes" });
       console.warn("[parseRequirements] AI 解析失败，使用兜底结构：", msg);
       return ParsedSchema.parse({
         city: data.city,
