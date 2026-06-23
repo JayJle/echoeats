@@ -1,51 +1,49 @@
-## 目标
-当前 `src/lib/echo.functions.ts` 里只有 AI-verify / AI-copy / score / tabelog / yelp 等几个节点有日志，且格式不统一，缺少"开始时间、耗时、是否失败、输入输出关键指标"的全链路视图。本次只补**日志**，不动业务逻辑、不动 schema、不动 UI。
+## 问题判断
 
-## 日志规范（统一前缀）
-- 统一前缀：`[Echo/<stage>]`
-- 三段式：`start`（关键输入） → `ok in Xms`（关键输出指标） → `failed in Xms: <reason>`
-- 时间一律毫秒；关键指标用 `key=value` 格式便于 grep
-- 错误既打 `console.error` 也保留 message，便于在 worker logs 里 `grep "[Echo/" | grep failed`
+上一次失败的直接原因是：Pass1 核验节点输出的 JSON 里，部分候选缺少必填字段 `matchScore`。因为结构化输出校验要求每个 `pick` 都必须有 `matchScore`，所以整批被判定为 schema 不匹配，随后进入 raw fallback；fallback 再次解析时仍然缺字段，于是该 batch 返回空 picks，导致耗时被拉长且该组结果质量下降。
 
-## 要补/完善的节点
+## 关于“能不能从 prompt 根治漏 matchScore”
 
-| Stage | 现状 | 要补的字段 |
-|---|---|---|
-| `parseRequirements` | 仅失败时 warn | `start` + `ok in Xms cuisines=… budget=… diet=…`；fallback 命中标记 |
-| `places` (Google Places 召回) | 只有 per-cuisine `[recall]` | 节点级 `start cuisines=N` / `ok in Xms total=… perCuisine={…}` |
-| `rules-prefilter` | 已有计数 | 补 `in Xms` |
-| `visitTime` 过滤 | 已有 removed | 补 `in Xms remaining=…` |
-| `tabelog` / `yelp` 富化 | 已有 hit 数 | 补 `start total=N` / `ok in Xms hit=H miss=M errors=E` |
-| `AI-verify` per group | 有 ok/failed/ms | 加 `start candidates=N`；批次维度日志（B/Btotal）|
-| `AI-verify` 汇总 | 有 group 总耗时 | 加 `groups=… picksTotal=… failedGroups=…` |
-| `score` per cuisine | 有 pool/admitted/avg | 节点级 `[Echo/score] all done in Xms groups=…` |
-| `AI-copy` per group | 有 ok/failed/ms | 加 `start picks=N`；汇总加 `failedGroups=…` |
-| `AI-copy` 汇总 | 有总耗时 | 加 `picksFilled=… picksMissed=…` |
-| `photos` | 无 | `start restaurants=N` / `ok in Xms urls=…` |
-| 总线 | 无 | `[Echo/pipeline] start` 在入口；`[Echo/pipeline] done in Xms stages=…` 在末尾；异常路径打 `failed in Xms at <stage>` |
+不能 100% 根治。原因是模型生成不是传统程序执行，prompt 可以显著降低漏字段概率，但无法数学保证每次都不漏。真正的工程保证仍然需要 schema / 解析 / 兜底 / 超时这些防护。
 
-## 实施步骤
-1. 在 `echo.functions.ts` 文件顶部新增一个小工具（不导出）：
-   ```ts
-   const echoLog = {
-     start: (stage: string, extra?: Record<string, unknown>) => { … console.log },
-     ok:    (stage: string, ms: number, extra?: …) => { … },
-     fail:  (stage: string, ms: number, err: unknown, extra?: …) => { … console.error },
-   };
-   ```
-   统一拼接 `[Echo/<stage>] start key=val …` 等格式。
-2. 按上表逐个节点：
-   - 在节点开始处记录 `const t0 = Date.now()` 并 `echoLog.start(...)`
-   - 在节点正常结束处 `echoLog.ok(stage, Date.now()-t0, {...指标})`
-   - try/catch 里 `echoLog.fail(...)`，不吞错误
-3. 入口（`searchRestaurants` generator 顶部）加 `[Echo/pipeline] start lang=… cuisines=…`；末尾 `done in Xms`；既有 catch 里追加 `failed at stage=<current>`（用一个游标变量记录当前 stage）。
-4. 不改任何 yield 出去的 `stage` 事件、不改前端、不改 schema。
+但这次按你的要求，先不动兜底和超时逻辑，只把 prompt 里的 `matchScore` 要求凸显到非常明确，让模型在输出前自检：
 
-## 验收
-- 运行一次完整搜索，复制 worker logs，按 `[Echo/` grep 应能看到：pipeline → parseRequirements → places → rules-prefilter → visitTime → tabelog → yelp → AI-verify(×groups) → score → AI-copy(×groups) → photos → pipeline done 的完整时间线。
-- 任意一个 group 的 AI-verify 或 AI-copy 失败时，日志里能直接看到 "stage / cuisine / 耗时 / 错误信息"，无需再查上下文。
+- 每个 `pick` 必须包含 `matchScore`
+- `matchScore` 必须是 JSON number，不允许字符串、不允许 null、不允许省略
+- 不确定时也必须给估算分，而不是跳过
+- `verificationStatus` 和 `matchScore` 要成对输出
+- 输出前逐条检查：候选数 = picks 数，且每个 pick 都有 placeId / verificationStatus / matchScore / hardFilterChecks / matchDetails
 
-## 不做的事
-- 不引入第三方 logger / OpenTelemetry
-- 不改业务计算、不动 Prompt、不动 Schema
-- 不新增前端可见 stage、不改心跳
+## 实施范围
+
+只修改 `src/lib/echo.functions.ts` 里 Pass1 的 `buildVerifyPromptForGroup` prompt 文案。
+
+## 具体修改
+
+1. 在 `# 规则约束` 的 `必须做（DO）` 部分新增高优先级条款：
+   - `matchScore` 是强制字段
+   - 每家候选都必须给
+   - 没有足够证据也要按评分指引给保守分
+   - 禁止因为不确定而省略
+
+2. 在 `# 输出约束` 的 Schema 前新增醒目的“字段完整性铁律”：
+   - 缺 `matchScore` 等于整个输出无效
+   - `matchScore` 必须为 0–100 整数 JSON number
+   - 不允许 `"matchScore": "88"`、`"matchScore": null`、漏写字段
+
+3. 在 `matchScore 评分指引` 下面增加“不确定时如何给分”：
+   - 硬条件 ok、软偏好不明确：60–74
+   - 硬条件 unknown：50–69
+   - blocking fail / 料理保真 fail：0–39
+   - 不允许因为无法精确评分而省略字段
+
+4. 在 Few-shots 前增加“最终自检清单”：
+   - picks 数量必须等于本批候选数
+   - 每条 pick 必须含 `placeId`、`verificationStatus`、`matchScore`、`hardFilterChecks`、`matchDetails`
+   - 每个 `matchScore` 必须是数字
+
+5. 保持之前“两段 prompt / Pass1 核验 + Pass2 文案”的结构不变，不改变下游 scoring、batch 并发、fallback、模型和业务逻辑。
+
+## 预期效果
+
+这会降低模型漏发 `matchScore` 的概率，并让模型在 prompt 层更重视字段完整性；但它不是绝对保证。如果修改后日志仍然出现漏字段，就说明仅靠 prompt 不够，下一步应再加宽松 schema、batch 超时，或换更稳定的模型。
