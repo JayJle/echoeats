@@ -97,9 +97,64 @@ function StepRequirements() {
         ];
 
   const currentIndex = currentStage ? stages.findIndex((s) => s.key === currentStage) : -1;
-  const progressValue = currentStage
-    ? Math.min(100, ((currentIndex + 0.5) / stages.length) * 100)
-    : 0;
+
+  // —— 各 stage 在总进度条上占用的 [起点, 终点] 百分比 ——
+  const STAGE_RANGES: Record<"deep" | "quick", Record<StageKey, [number, number]>> = {
+    deep: {
+      parse: [0, 8],
+      search: [8, 25],
+      reviews: [25, 80],
+      rank: [80, 100],
+    },
+    quick: {
+      parse: [0, 12],
+      search: [12, 55],
+      reviews: [12, 55], // quick 无 reviews，但避免 lookup 空
+      rank: [55, 100],
+    },
+  };
+
+  const setRangeForStage = (mode: "quick" | "deep", stage: StageKey) => {
+    const [lo, hi] = STAGE_RANGES[mode][stage];
+    currentRangeRef.current = [lo, hi];
+    targetProgressRef.current = Math.max(targetProgressRef.current, lo);
+    lastChunkAtRef.current = performance.now();
+  };
+
+  const startProgressLoop = () => {
+    if (rafProgressRef.current != null) return;
+    const tick = () => {
+      const now = performance.now();
+      const [lo, hi] = currentRangeRef.current;
+      // 兜底蠕动：>800ms 没新 chunk → 缓慢向 hi*0.9 处爬升
+      if (now - lastChunkAtRef.current > 800) {
+        const ceiling = lo + (hi - lo) * 0.9;
+        if (targetProgressRef.current < ceiling) {
+          targetProgressRef.current = Math.min(
+            ceiling,
+            targetProgressRef.current + 0.025,
+          );
+        }
+      }
+      setDisplayProgress((d) => {
+        const next = d + (targetProgressRef.current - d) * 0.08;
+        return Math.abs(next - targetProgressRef.current) < 0.05
+          ? targetProgressRef.current
+          : next;
+      });
+      rafProgressRef.current = requestAnimationFrame(tick);
+    };
+    rafProgressRef.current = requestAnimationFrame(tick);
+  };
+
+  const stopProgressLoop = () => {
+    if (rafProgressRef.current != null) {
+      cancelAnimationFrame(rafProgressRef.current);
+      rafProgressRef.current = null;
+    }
+  };
+
+  useEffect(() => () => stopProgressLoop(), []);
 
   const runSearch = async (text: string, mode: "quick" | "deep" = "deep") => {
     setError(null);
@@ -107,13 +162,25 @@ function StepRequirements() {
     setSearchMode(mode);
     setFreeText(text);
     setInferredCuisines(null);
+    setParsedPreview(null);
     runIdRef.current += 1;
     const myRunId = runIdRef.current;
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+
+    // 重置进度
+    targetProgressRef.current = 0;
+    setDisplayProgress(0);
+    reviewMaxRef.current = 0;
+    tabelogMaxRef.current = 0;
+    yelpMaxRef.current = 0;
+    lastChunkAtRef.current = performance.now();
+    startProgressLoop();
+
     try {
       setCurrentStage("parse");
+      setRangeForStage(mode, "parse");
       const parsed = await parseFn({
         data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
         signal: ac.signal,
@@ -121,12 +188,28 @@ function StepRequirements() {
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode, uiLanguage: lang };
       setParsed(parsedWithMode);
+      setParsedPreview(parsed);
       if (parsed.cuisinesInferred && parsed.cuisines.length > 0) {
         setInferredCuisines(parsed.cuisines);
       }
 
       setCurrentStage("search");
+      setRangeForStage(mode, "search");
       clearTimers();
+
+      const bumpTarget = (v: number) => {
+        targetProgressRef.current = Math.max(targetProgressRef.current, v);
+        lastChunkAtRef.current = performance.now();
+      };
+      const computeReviewsTarget = () => {
+        const [lo, hi] = STAGE_RANGES[mode].reviews;
+        const frac = Math.max(
+          reviewMaxRef.current,
+          tabelogMaxRef.current,
+          yelpMaxRef.current,
+        );
+        return lo + Math.min(1, frac) * (hi - lo);
+      };
 
       const iter = await searchFn({
         data: parsedWithMode,
@@ -137,22 +220,48 @@ function StepRequirements() {
         if (chunk.type === "stage") {
           if (chunk.stage === "places" || chunk.stage === "places-done") {
             setCurrentStage("search");
+            setRangeForStage(mode, "search");
           } else if (
             chunk.stage === "reviews" ||
             chunk.stage === "tabelog" ||
+            chunk.stage === "yelp" ||
             chunk.stage === "photos"
           ) {
             setCurrentStage("reviews");
+            setRangeForStage(mode, "reviews");
           } else if (chunk.stage === "rank" || chunk.stage === "rank-fallback") {
             setCurrentStage("rank");
+            setRangeForStage(mode, "rank");
           }
+        } else if (chunk.type === "review-progress") {
+          if (chunk.total > 0) reviewMaxRef.current = chunk.done / chunk.total;
+          bumpTarget(computeReviewsTarget());
+        } else if (chunk.type === "tabelog-progress") {
+          if (chunk.total > 0) tabelogMaxRef.current = chunk.done / chunk.total;
+          bumpTarget(computeReviewsTarget());
+        } else if (chunk.type === "yelp-progress") {
+          if (chunk.total > 0) yelpMaxRef.current = chunk.done / chunk.total;
+          bumpTarget(computeReviewsTarget());
+        } else if (chunk.type === "heartbeat") {
+          const [lo, hi] = currentRangeRef.current;
+          const ceiling = lo + (hi - lo) * 0.95;
+          targetProgressRef.current = Math.min(
+            ceiling,
+            targetProgressRef.current + 0.3,
+          );
+          lastChunkAtRef.current = performance.now();
         }
       });
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       clearTimers();
       setCurrentStage("rank");
+      setRangeForStage(mode, "rank");
+      targetProgressRef.current = 100;
       setResults(response);
-      navigate({ to: "/results" });
+      // 让进度条收尾动画再跳转
+      setTimeout(() => {
+        if (myRunId === runIdRef.current) navigate({ to: "/results" });
+      }, 220);
     } catch (err) {
       if (ac.signal.aborted || myRunId !== runIdRef.current) return;
       const msg = err instanceof Error ? err.message : t("err.fetchFailed");
@@ -161,8 +270,16 @@ function StepRequirements() {
       else setError(msg);
       clearTimers();
       setCurrentStage(null);
+      setParsedPreview(null);
+      stopProgressLoop();
     } finally {
       if (myRunId === runIdRef.current) setLoading(false);
+      if (myRunId === runIdRef.current) {
+        // 给收尾动画一点时间再停 loop
+        setTimeout(() => {
+          if (myRunId === runIdRef.current) stopProgressLoop();
+        }, 400);
+      }
     }
   };
 
@@ -170,11 +287,15 @@ function StepRequirements() {
     abortRef.current?.abort();
     runIdRef.current += 1;
     clearTimers();
+    stopProgressLoop();
     setLoading(false);
     setCurrentStage(null);
     setError(null);
     setInferredCuisines(null);
+    setParsedPreview(null);
   };
+
+
 
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
