@@ -1,121 +1,60 @@
-## 问题原因
+## 范围
 
-你说得对，现在没有真正实现你要的去重。
+只改 `src/routes/requirements.tsx`，不动后端、不动业务逻辑、不动结果页。
 
-当前逻辑的问题不是“某个关键词没写全”，而是架构问题：
+后端 places/rank 嵌在 `Promise.all` 里，要 emit 子进度必须改并发结构，风险高，按你"不能影响功能"的原则**不动**。reviews 阶段已经有真实 `review-progress / tabelog-progress / yelp-progress`，本身就是真进度，保留。
 
-1. 现在是让 AI 一次性把原文直接转成最终 `hard / soft / negative`。
-2. AI 很容易先看到前面的“环境稍微好一点”，先生成一条低权重偏好。
-3. 后面再看到“环境一定要好 / 最重要是环境一定要好”时，它没有重新回头合并并提升前面那条。
-4. 后端兜底又只是字符串归一 key，不能理解“环境稍微好一点”和“最重要的是环境一定要好”是同一个语义诉求。
-5. 所以结果里会同时出现低权重旧条目和高权重新条目，或者保留了低权重版本。
+## 改动
 
-结论：继续加关键词规则不对，必须改成“先整体抽取，再整体语义聚类合并”。
+### 1. 替换进度条动画核心
 
-## 修复方案
-
-只改 `src/lib/echo.functions.ts` 的解析流程。
-
-### 1. 不再直接一次性产出最终条件
-
-把 `parseRequirements` 改成两阶段：
+把指数缓动 + 静默蠕动 + heartbeat 跳跃这三个机制全部移除，换成**恒速 + 软上限 + 抖动**：
 
 ```text
-用户原文
-  → 第一阶段：抽取所有需求提及，不去重
-  → 第二阶段：按语义整体聚类，同一诉求合并
-  → 第三阶段：每个语义簇取最高权重/最高强度的表达
-  → 输出最终 hard / soft / negative / dishPreferences
+每帧：
+  dt = now - lastFrameAt
+  v_base = (hi - lo) / stageExpectedMs        # 走完当前阶段的速度
+  v = v_base * jitter                          # ±20% 抖动，每 ~500ms 换一次
+  ceiling = min(target, hi - 0.5)              # target 是软上限
+  if display < ceiling: display += v * dt
+  else:                  display += v * dt / 6 # 超过上限时减速 1/6 继续爬，永远不停
+  display = min(display, hi - 0.1)             # 不越界到下一阶段
 ```
 
-### 2. 第一阶段：完整抽取所有提及
+抖动：`factor = 1 + (Math.random() - 0.5) * 0.4`，每 500ms 重抽一次。让速度看起来不规律，但平均值还是按 expectedMs 走。
 
-让 AI 先抽取“所有出现过的需求提及”，包括重复的、前后强度不同的，都保留下来。
-
-例如你的输入中会先得到：
+### 2. 每个阶段配期望时长
 
 ```text
-环境稍微好一点
-环境好
-最重要的是环境一定要好
-菜品精致一点
-一定要菜品精致
-谷歌评分必须 4.0 以上
-最好 4.3 以上
+deep:  parse 4s, search 8s, reviews 30s, rank 8s
+quick: parse 4s, search 6s, reviews 6s,  rank 5s
 ```
 
-这一阶段禁止去重，目的就是避免“前面出现过，后面就忽略”。
+阶段切换时：`currentRangeRef = [lo, hi]`，`stageExpectedMs = 对应时长`，`target = max(target, lo)`（不瞬移 display，让它自然走过去）。
 
-### 3. 第二阶段：AI 按语义整体聚类，不按关键词
+### 3. 真实 chunk 只抬 target，不再直接动 display
 
-把第一阶段的所有提及交给 AI 做整体语义聚类：
+- `review-progress / tabelog-progress / yelp-progress` → 更新各自 max，重算 `target = lo + maxFrac*(hi-lo)`。**只动 target**，display 由动画循环匀速逼近。
+- `heartbeat` → 完全不再调整 target，仅作为存活信号（保留，因为后端用来防 edge gateway 切流，前端忽略即可）。
+- 取消之前的"800ms 静默 +0.025 蠕动"——由"超 ceiling 后 1/6 速继续爬"自然替代，不会再有"先停后跳"的节奏。
 
-```text
-语义簇 A：环境/氛围好
-- 环境稍微好一点，0.6
-- 环境好，0.6
-- 最重要的是环境一定要好，1.0
+### 4. 收尾
 
-语义簇 B：菜品精致
-- 菜品精致一点，0.6
-- 一定要菜品精致，0.9
-```
+收到最终 response 后：
 
-这里不写“环境、服务、最好、希望”这种关键词匹配表；让 AI 判断哪些表达是同一个诉求，哪些只是相关但不是同一个诉求。
+- `target = 100`，`stageExpectedMs = 600`，让 display 匀速走完最后一段。
+- 用 `requestAnimationFrame` 轮询 `display >= 99.5` 时再 `navigate`；兜底最长 800ms 后强制跳。
+- 不再用固定 220ms `setTimeout`，避免"还在爬就被打断"。
 
-### 4. 第三阶段：代码强制取最高权重
+### 5. 不变的地方
 
-语义簇确定后，代码做硬性规则，不再让 AI 自由发挥：
+- 解析逻辑、stream 协议、后端、结果页、取消/出错路径全部不动。
+- `parsedPreview` 展示逻辑不动。
+- `stopProgressLoop` 在 cancel/error/卸载时仍调用。
 
-- 每个语义簇只能输出一条。
-- 最终 `weight = 该簇所有 mention 的最高 weight`。
-- 最终 bucket 取最高权重那条所在的 bucket。
-- 最终 text 使用最高权重那条的原文证据。
-- 如果同一簇里有 `1.0`，不允许输出 `0.6` 版本。
+## 预期效果
 
-也就是说，AI 只负责“语义上是不是同一个诉求”；代码负责“必须取最高”。
-
-### 5. 移除当前误导性的字符串兜底去重
-
-现在的 `conditionKey(text)` 字符串去重只能作为非常弱的最后兜底，不能再承担主去重逻辑。
-
-我会把主逻辑改成：
-
-```text
-AI semantic clusters > code max-weight selection > minimal exact-string cleanup
-```
-
-不会靠手写关键词列表解决这个问题。
-
-### 6. 加入你这条原文作为回归检查样例
-
-用你这段 brunch 输入做自检，确保最终不会再出现截图里的错误：
-
-错误结果：
-
-```text
-hard: 最重要的是环境一定要好 · 1.0
-soft: 我们希望环境稍微好一点 · 0.6
-```
-
-修复后应为：
-
-```text
-hard: 最重要的是环境一定要好 → 环境/氛围佳 · 1.0
-```
-
-并且不会再保留低权重的“希望环境稍微好一点”。
-
-## 预期输出
-
-你的这段输入解析后应该接近：
-
-- hard：环境一定要好 · 1.0
-- hard：菜品一定要精致 · 0.9 或 1.0
-- hard：服务员态度一定要好 · 0.9
-- hard：Google 评分必须 4.0 以上 · 0.9
-- soft：Google 评分最好 4.3 以上 · 0.6
-- soft：周边安静社区 / 富人区 · 0.6
-- negative：不能低端 · 0.9
-- negative：不要过于奢华 · 0.9
-- dishPreferences：班尼迪克蛋、French toast
+- reviews 阶段：跟真实进度同步，速度由后端 done/total 控制。
+- parse / search / rank：按各自 expectedMs 匀速走，超过 ceiling 后变慢但不停，下一个事件到达时无缝接力，**不会出现"推一点 → 停 → 跳一段"的固定节奏**。
+- ±20% 速度抖动 + 阶段间速度天然不同，进一步打散视觉规律性。
+- 网络慢/快都不会跳到 100 后再倒退，也不会卡在某点不动。
