@@ -1310,6 +1310,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const reviewById = new Map<string, ReviewSummary>();
     const cuisineExpansions = new Map<string, CuisineExpansion>();
     const recallSourcesById = new Map<string, string[]>();
+    // Per-cuisine recall tags: cuisine -> placeId -> tag list. Used for cross-cuisine
+    // dedup (assign each place to the cuisine that recalled it via the most routes).
+    const recallSourcesByCuisine = new Map<string, Map<string, string[]>>();
     let placeResults: Array<{
       cuisine: string;
       places: PlaceCandidate[];
