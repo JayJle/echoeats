@@ -1,56 +1,53 @@
-# 省 token：pool 上限 30 + 砍掉 time/scene 两路
-
 ## 目标
-1. 在 AI-verify 之前给每个 cuisine 的 pool **加 30 家硬上限**，按预筛分数截断尾部
-2. 多路查询里**砍掉 time 路和 scene 路**，保留 primary / recommend / synonyms / dishes / budget
 
-## 改动 1：砍 time + scene 路（`src/lib/echo.functions.ts` ~1362-1386）
+同一家餐厅当前可能同时出现在多个品类候选池里（例如「拉面」「定食」「日本料理」都召回了同一家店），最终展示也重复。要在候选池构建阶段按 `placeId` 全局去重，每家店**只**留在最匹配的品类下。
 
-`buildSearchRoutes` 里删除两段：
-- scene 路：检测个室/约会/家庭等场景关键词生成的那一段
-- time 路：visitTime 边缘时段（深夜 / brunch）生成的那一段
+## 归属判定规则（"最适合的品类"）
 
-保留：primary、recommend、synonyms(×2)、dishes(每道菜 1 路)、budget(±1)。
-8 路上限改为 6（同步把 `routes.length >= 8` 改成 `>= 6`），quick 模式不动。
+仅用已有信号，不引入新的 LLM/API 调用：
 
-## 改动 2：pool 上限 30（`src/lib/echo.functions.ts`）
+1. **首要分数**：该品类的多路召回中，命中了多少条 route（recall route tags 数量）。命中路数多 = 更贴合该品类。
+2. **次要分数（同分时）**：该品类内按 `rating × log10(reviews+10)` 排序后的位次（位次越靠前越合适）。
+3. **再同分**：保留先出现的品类（`placeResults` 数组顺序，与用户的 cuisines 顺序一致）。
 
-在 places 阶段所有过滤完成、`pool=N` 那行日志打印之前（≈ line 2730 附近），加一段截断：
+## 改动点（src/lib/echo.functions.ts）
 
-```ts
-const POOL_CAP = 30;
-if (pool.length > POOL_CAP) {
-  // pool 已按预筛分排序；如果没排序就先按 rules-prefilter 分排
-  pool.sort((a, b) => (b.prefilterScore ?? 0) - (a.prefilterScore ?? 0));
-  const dropped = pool.length - POOL_CAP;
-  pool = pool.slice(0, POOL_CAP);
-  console.log(`[Echo/places] cuisine="${cuisine}" pool capped ${pool.length + dropped} → ${POOL_CAP} (dropped tail ${dropped})`);
-}
+全部集中在一处，不动 prompt / AI 流程 / Tabelog / Yelp / 多路召回结构。
+
+### 1) 让 recall route tags 可按 (cuisine, placeId) 查询
+
+当前 `recallSourcesById: Map<placeId, string[]>` 在多个 cuisine 之间是**会被覆盖**的（每个 cuisine 迭代里 `recallSourcesById.set(pid, ...)`），后处理的 cuisine 会盖掉前一个。新增一个并行 map：
+
+```text
+recallSourcesByCuisine: Map<cuisine, Map<placeId, string[]>>
 ```
 
-（实施时按代码里实际变量名/排序字段调整；如果当前没有现成 prefilterScore，就用 google rating × log(reviewCount) 之类的简单 proxy 排，或者直接按现有 sort 顺序的前 30 截。）
+在现有 `for (const [pid, tags] of recallSourcesMap)` 旁，额外把这份 map 存进 `recallSourcesByCuisine.set(cuisine, new Map(recallSourcesMap))`。`recallSourcesById` 保持原状以免影响下游用到它的地方。
+
+### 2) 在 `candidateGroups` 构建之前，做全局去重
+
+在 `placeResults` 过滤 / POOL_CAP 之前插入一步 dedupe：
+
+- 遍历 `placeResults`，对每个 `(cuisine, place)` 计算：
+  - `routeHits = recallSourcesByCuisine.get(cuisine)?.get(place.placeId)?.length ?? 0`
+  - `rank = ranked.indexOf(place)`（即在该品类按 rating×log(reviews) 排序后的位次）
+- 用一个 `Map<placeId, { cuisine, routeHits, rank }>` 选出每个 placeId 的最佳归属（routeHits desc → rank asc → cuisine 出现顺序）。
+- 重写 `placeResults`：每个 cuisine 的 places 过滤掉 "不是它"的 placeId。
+- 加日志：`[Echo/places] dedup: X duplicates removed across cuisines (kept best-fit)`，并在 debug 级别列出每个被搬走的店 `place="..." from="A" → kept-in="B" (hitsA=.. hitsB=..)`。
+
+### 3) POOL_CAP 之后保持原逻辑
+
+去重在 POOL_CAP **之前**，这样某品类被搬走一些店后，剩下的尾部仍有机会进入前 30，不会被错误截断。
 
 ## 不动的部分
-- 去重逻辑（按 placeId merge）
-- AI verify/score/copy 的 prompt、schema、batch 切分（BATCH_SIZE=12 保持）
-- 三方抓取（Tabelog/Yelp）、photos、纯 JS 打分
-- cuisine-expand
-- quick 模式
 
-## 预期效果（按上次 brunch 日志推算）
+- 8 路召回（primary / recommend / synonyms×2 / dishes / scene / time / budget）保持。
+- POOL_CAP = 30 保持。
+- AI verify / score / copy 三段 prompt、batch size、Tabelog/Yelp、photos、quick mode 全部不动。
+- `recallSourcesById` 保留，避免影响下游引用。
 
-| cuisine | 旧 pool | 新 pool | Pass1 batch 数 | token 节省 |
-|---|---|---|---|---|
-| 早餐店 | 33 | 30 | 3→3 | ~10% |
-| 法式西餐 | 16 | 16 | 2→2 | 0 |
-| 美式西餐 | 47 | 30 | 4→3 | ~36% |
+## 预期效果
 
-加上砍 2 路，Google Places API 调用减少 ~25%，pool 整体还会自然变小一点（重叠减少）。
-
-整体 LLM token 估计降 **20-35%**，召回质量损失主要在边缘场景（深夜/brunch/个室约会这种小众诉求），主流 cuisine 召回基本不变。
-
-## 验证
-跑一次有多 cuisine、有 visitTime（晚上）、有场景词（约会/家庭）的查询，对比日志：
-- `[Echo/places] cuisine=... pool capped X → 30` 出现
-- `[Echo/AI-rank] groups=N` 中 batch 总数下降
-- 餐厅最终结果质量主观对比（前 5 名是否还在）
+- 结果列表不再出现"同一家店在多个品类卡片里重复"。
+- Token：去重后进入 AI 的候选总数下降（重复店一律只算一次），对召回重复严重的搜索能再省一截。
+- 召回质量：每家店去到它"被该品类多条 route 都命中"的那一组，符合用户"放到最适合的品类里"的直觉。
