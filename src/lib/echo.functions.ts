@@ -112,15 +112,7 @@ const ParsedSchema = z.object({
 
 type WeightedCondition = z.infer<typeof WeightedConditionSchema>;
 
-function conditionKey(text: string): string {
-  const source = text.split(/\s*(?:→|->|=>)\s*/, 1)[0] || text;
-  return source
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[\s\p{P}\p{S}]+/gu, "");
-}
-
-// uniqueConditions 已被新的 dedupeParsedConditions 取代（按整体扁平化 + weight 最高保留）。
+// 旧的 conditionKey / uniqueConditions 已被 semanticClusterMerge（AI 语义聚类）取代。
 
 
 function uniqueStrings(items: string[]): string[] {
