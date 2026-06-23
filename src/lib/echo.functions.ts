@@ -2038,41 +2038,37 @@ ${JSON.stringify(group.candidates, null, 2)}
       console.log(`[Echo/AI-verify] batch=${tag} start`);
       echoLog.start("AI-verify", { cuisine: group.cuisine, candidates: group.candidates.length });
 
-      try {
-        const result = await generateText({
+      const RAW_JSON_SUFFIX = `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`;
+      const STRICT_JSON_SUFFIX = `\n\n上一次回复无法被解析为合法 JSON。请严格输出**纯 JSON**，首字符必须是 \`{\`，末字符必须是 \`}\`，中间不得有任何 markdown、注释或解释文字。`;
+
+      const runRaw = async (promptSuffix: string) => {
+        const fb = await generateText({
           model,
-          prompt,
-          maxOutputTokens: 6000,
-          output: Output.object({
-            schema: AiVerifyGroupSchema,
-            name: "echo_eats_verify",
-            description: `Verify candidates for cuisine "${group.cuisine}"`,
-          }),
+          prompt: prompt + promptSuffix,
+          maxOutputTokens: 10000,
         });
+        const finishReason = (fb as { finishReason?: string }).finishReason;
+        if (finishReason === "length" || finishReason === "max-tokens") {
+          throw new Error(`truncated (finishReason=${finishReason})`);
+        }
+        return AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+      };
+
+      try {
+        const parsed = await runRaw(RAW_JSON_SUFFIX);
         console.log(
-          `[Echo/AI-verify] batch=${tag} ok in ${Date.now() - startedAt}ms picks=${result.output.picks.length}`,
+          `[Echo/AI-verify] batch=${tag} ok in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
         );
-        return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(result.output.picks) };
+        return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
         console.warn(
-          `[Echo/AI-verify] batch=${tag} Output.object failed (${m1}), retrying raw…`,
+          `[Echo/AI-verify] batch=${tag} raw parse failed (${m1}), retrying once…`,
         );
         try {
-          const fb = await generateText({
-            model,
-            prompt:
-              prompt +
-              `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`,
-            maxOutputTokens: 10000,
-          });
-          const finishReason = (fb as { finishReason?: string }).finishReason;
-          if (finishReason === "length" || finishReason === "max-tokens") {
-            throw new Error(`truncated (finishReason=${finishReason})`);
-          }
-          const parsed = AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          const parsed = await runRaw(STRICT_JSON_SUFFIX);
           console.log(
-            `[Echo/AI-verify] batch=${tag} raw-fallback ok in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
+            `[Echo/AI-verify] batch=${tag} ok (retry) in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
           );
           return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
         } catch (e2) {
