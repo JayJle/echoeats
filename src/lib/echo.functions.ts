@@ -1340,7 +1340,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           // tag is stored on each candidate as recallSources for downstream scoring.
           const routes: { tag: string; query: string }[] = [];
           const pushRoute = (tag: string, query: string) => {
-            if (routes.length >= 8) return;
+            if (routes.length >= 6) return;
             if (routes.some((r) => r.query === query)) return;
             routes.push({ tag, query });
           };
@@ -1354,36 +1354,6 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             // dish routes (one per dish, capped by remaining slots)
             for (const dish of data.dishPreferences) {
               pushRoute(`dish:${dish}`, `${dish} ${data.city}`);
-            }
-
-            // scene route (detect scene keywords across hard/soft)
-            const allCondText = [...data.hardFilters, ...data.softPreferences]
-              .map((c) => c.text).join(" ");
-            const sceneMatches: Array<[RegExp, string, Record<string, string>]> = [
-              [/包间|个室|個室|private\s*room/i, "private-room", { ja: "個室", "zh-CN": "包间", "zh-TW": "包廂", en: "private room" }],
-              [/一个人|一人|独自|一人飯|solo|alone/i, "solo", { ja: "一人飯", "zh-CN": "一个人", "zh-TW": "一人", en: "solo dining" }],
-              [/约会|約會|date\s*night|romantic/i, "date", { ja: "デート", "zh-CN": "约会", "zh-TW": "約會", en: "date night" }],
-              [/家庭|带(?:小孩|宝宝|娃|孩子)|family|kid/i, "family", { ja: "ファミリー", "zh-CN": "家庭", "zh-TW": "家庭", en: "family friendly" }],
-              [/聚会|聚餐|group|party/i, "group", { ja: "宴会", "zh-CN": "聚会", "zh-TW": "聚會", en: "group dining" }],
-              [/安静|安靜|quiet/i, "quiet", { ja: "静かな", "zh-CN": "安静", "zh-TW": "安靜", en: "quiet" }],
-            ];
-            for (const [pattern, tagSuffix, words] of sceneMatches) {
-              if (pattern.test(allCondText)) {
-                const word = words[language] ?? words.en;
-                pushRoute(`scene:${tagSuffix}`, `${expansion.primary} ${data.city} ${word}`);
-              }
-            }
-
-            // time route (brunch / late-night) when visitTime hhmm is at edge hours
-            const hh = data.visitTime?.hhmm ? parseInt(data.visitTime.hhmm.split(":")[0], 10) : null;
-            if (hh != null) {
-              if (hh >= 22 || hh < 5) {
-                const word = language === "ja" ? "深夜営業" : language.startsWith("zh") ? "深夜营业" : "late night";
-                pushRoute("time:late-night", `${expansion.primary} ${data.city} ${word}`);
-              } else if (hh >= 10 && hh <= 11) {
-                const word = language === "ja" ? "ブランチ" : language.startsWith("zh") ? "早午餐" : "brunch";
-                pushRoute("time:brunch", `${expansion.primary} ${data.city} ${word}`);
-              }
             }
 
             // budget route (high / low) — detect from hard filters
@@ -1400,6 +1370,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
               pushRoute("budget:low", `${expansion.primary} ${data.city} ${word}`);
             }
           }
+
 
           const queries = data.mode === "quick"
             ? [{ tag: "primary", query: `${expansion.primary} ${data.city}` }]
@@ -1694,6 +1665,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
     // 全量候选按每批 8 家核验，避免固定前 25 截断，同时控制单次模型输入输出体积。
     const AI_BATCH_SIZE = 8;
+    // 每个 cuisine 进入 AI 阶段的硬上限，按 rating×log(reviews) 截断尾部，省 token。
+    const POOL_CAP = 30;
     const candidateGroups = placeResults
       .filter((r) => r.places.length)
       .map((r) => {
@@ -1702,9 +1675,16 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           const sb = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
           return sb - sa;
         });
+        let capped = ranked;
+        if (ranked.length > POOL_CAP) {
+          capped = ranked.slice(0, POOL_CAP);
+          console.log(
+            `[Echo/places] cuisine="${r.cuisine}" pool capped ${ranked.length} → ${POOL_CAP} (dropped tail ${ranked.length - POOL_CAP})`,
+          );
+        }
         return {
           cuisine: r.cuisine,
-          candidates: ranked.map((p) => {
+          candidates: capped.map((p) => {
             const review = reviewById.get(p.placeId) ?? null;
             const tabelog = tabelogById.get(p.placeId) ?? null;
             const yelp = yelpById.get(p.placeId) ?? null;
@@ -1749,6 +1729,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           }),
         };
       });
+
     const candidatesForPrompt = candidateGroups.flatMap((group) => {
       const batches: typeof candidateGroups = [];
       for (let i = 0; i < group.candidates.length; i += AI_BATCH_SIZE) {
