@@ -2544,10 +2544,20 @@ Schema：
       const urls = await Promise.all((place?.photoNames ?? []).slice(0, 6).map((name) => resolvePhotoUrl(name, 800)));
       restaurant.photoUrls = urls.filter((url): url is string => Boolean(url));
     })), "photos");
+    echoLog.ok("photos", Date.now() - _photosT0, {
+      restaurants: allRestaurants.length,
+      withPhotos: allRestaurants.filter((r) => r.photoUrls && r.photoUrls.length > 0).length,
+    });
 
     const missing = data.cuisines.filter((cuisine) =>
       !placeResults.some((group) => group.cuisine.toLowerCase() === cuisine.toLowerCase() && group.places.length),
     );
+    echoLog.ok("pipeline", Date.now() - _pipelineT0, {
+      groups: groups.length,
+      restaurants: groups.reduce((s, g) => s + g.restaurants.length, 0),
+      missing: missing.length,
+      warnings: warnings.length,
+    });
     yield {
       type: "result",
       payload: {
@@ -2561,6 +2571,7 @@ Schema：
     };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      echoLog.fail("pipeline", Date.now() - _pipelineT0, e, { atStage: _currentStage });
       console.error("[searchRestaurants] uncaught:", msg);
       yield {
         type: "result",
