@@ -1631,6 +1631,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             city: data.city,
             language,
             apiKey: aiKey,
+            styleExclude: data.cuisineStyleExclude,
           });
           cuisineExpansions.set(cuisine, expansion);
 
