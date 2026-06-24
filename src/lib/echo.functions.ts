@@ -159,6 +159,50 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
   };
 }
 
+// ---- 时间表达兜底辅助（visitTime sanitize 用） ----
+const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
+  { pattern: /afternoon\s+tea|下午茶/i, hhmm: "15:00" },
+  { pattern: /late[-\s]?night(?:\s+(?:meal|food|dining))?|夜宵|宵夜/i, hhmm: "22:00" },
+  { pattern: /brunch|早午餐/i, hhmm: "10:30" },
+  { pattern: /breakfast|早餐|早饭|早飯/i, hhmm: "08:30" },
+  { pattern: /lunch|午餐|午饭|午飯|中午饭|中午飯/i, hhmm: "12:30" },
+  { pattern: /dinner|supper|晚餐|晚饭|晚飯/i, hhmm: "19:00" },
+];
+
+function inferWeekdayFromText(text: string, today: number): number | null {
+  if (/后天/.test(text)) return (today + 2) % 7;
+  if (/明天|tomorrow/i.test(text)) return (today + 1) % 7;
+  if (/今天|今晚|today|tonight/i.test(text)) return today;
+  const weekdayPatterns: Array<[RegExp, number]> = [
+    [/(?:周|星期|礼拜)[日天]|sunday/i, 0],
+    [/(?:周|星期|礼拜)一|monday/i, 1],
+    [/(?:周|星期|礼拜)二|tuesday/i, 2],
+    [/(?:周|星期|礼拜)三|wednesday/i, 3],
+    [/(?:周|星期|礼拜)四|thursday/i, 4],
+    [/(?:周|星期|礼拜)五|friday/i, 5],
+    [/(?:周|星期|礼拜)六|saturday/i, 6],
+  ];
+  return weekdayPatterns.find(([pattern]) => pattern.test(text))?.[1] ?? null;
+}
+
+function inferMealPeriod(text: string): { evidence: string; hhmm: string } | null {
+  for (const { pattern, hhmm } of MEAL_PERIOD_ANCHORS) {
+    const match = text.match(pattern);
+    if (match?.[0]) return { evidence: match[0], hhmm };
+  }
+  return null;
+}
+
+function inferExplicitClock(text: string): string | null {
+  const clock24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (clock24) return `${clock24[1].padStart(2, "0")}:${clock24[2]}`;
+  const clock12 = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/i);
+  if (!clock12) return null;
+  const period = clock12[3].toLowerCase();
+  const hour = (Number(clock12[1]) % 12) + (period === "pm" ? 12 : 0);
+  return `${String(hour).padStart(2, "0")}:${clock12[2] ?? "00"}`;
+}
+
 // ============================================================
 // 三段式需求解析：Stage A 抽取 → Stage B 去重(带原文,AI选赢家) → Stage C 打分组装
 // ============================================================
