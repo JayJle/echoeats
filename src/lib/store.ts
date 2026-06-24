@@ -12,6 +12,7 @@ export type ParsedRequirements = {
   cuisines: string[];
   cuisinesInferred?: boolean;
   cuisineLevelConstraints?: WeightedCondition[];
+  cuisineStyleExclude?: string[];
   dateTime: string;
   hardFilters: WeightedCondition[];
   softPreferences: WeightedCondition[];
