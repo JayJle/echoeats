@@ -737,12 +737,12 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
       let parsed: z.infer<typeof ParsedSchema>;
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        parsed = sanitizeVisitTime(await enforceInferIfRequested(first));
+        parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(first)));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        parsed = sanitizeVisitTime(await enforceInferIfRequested(second));
+        parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(second)));
       }
       const beforeCluster = {
         hard: parsed.hardFilters.length,
