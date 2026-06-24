@@ -297,6 +297,10 @@ items:
       if (!snippet || !normalized) continue;
       items.push({ id: nextId++, snippet, normalized, kind });
     }
+    console.log(
+      `[Echo/extractRawItems] ok count=${items.length} items=` +
+        JSON.stringify(items.map((it) => ({ id: it.id, k: it.kind, s: it.snippet, n: it.normalized }))),
+    );
     return items;
   } catch (e) {
     console.warn(
