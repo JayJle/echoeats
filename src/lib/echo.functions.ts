@@ -308,20 +308,9 @@ items:
 }
 
 // ---- Stage B: 语义去重 + AI 选赢家（带原文上下文） ----
-// winnerId / ids 接受 number 或 string-number，避免模型偶发字符串导致 schema fail
-const NumLike = z.preprocess((v) => {
-  if (typeof v === "number") return v;
-  if (typeof v === "string" && /^\d+$/.test(v.trim())) return parseInt(v, 10);
-  return v;
-}, z.number().int().min(1));
-
-const ClusterSchema = z.object({
-  ids: z.array(NumLike).min(1),
-  winnerId: NumLike,
-  reason: z.string().max(80).optional().default(""),
-});
+// schema 极简：clusters 是 number[][]，每个簇内 AI 把 winner id 放在第一位
 const ClusterOutputSchema = z.object({
-  clusters: z.array(ClusterSchema).default([]),
+  clusters: z.array(z.array(z.number().int().min(1)).min(1)).default([]),
 });
 
 // 基于 normalized 的确定性合并：同 kind + 完全相同 normalized → 合并，保留最后一条为赢家
@@ -353,7 +342,6 @@ async function semanticDedupe(
 ): Promise<{ winners: ExtractedItem[]; mergedCount: number }> {
   if (items.length <= 1) return { winners: items, mergedCount: 0 };
   const t0 = Date.now();
-  const lang = data.uiLanguage === "en" ? "English" : "简体中文";
   const itemsBlock = items
     .map((it) => `${it.id}\t[${it.kind}]\t${it.snippet}\t→ ${it.normalized}`)
     .join("\n");
@@ -371,19 +359,14 @@ ${itemsBlock}
 # 严格规则
 1. 把表达**同一诉求**的 items 聚成一簇（同义、近义、强度不同的同向表达都算同一簇）。
 2. kind 不同（filter / dish / time）**不能**聚到一起。
-3. 同 kind 内若两条的 normalized 字段完全一致或几乎一致（如同为"环境好"/"菜品精致"/"不要低端餐厅"），**必须**合并到同一簇。
-4. **每个输入 id 必须且只能出现在一个 cluster 的 ids[] 中**——不能漏、不能重复、不能新增不存在的 id。
-5. 每簇必须给出 winnerId，且 winnerId 必须出现在该簇 ids[] 内。
-6. 选赢家综合判断：用户后说的通常代表最新意图；语义更强的优先；与整段诉求一致的优先。
-7. 语义方向**相反**才不合并：「要安静」vs「要热闹」不合并；「要好」vs「可以不好」不合并。**同方向不同强度必须合并**（"稍微好一点"+"一定要好" → 合并）。
-8. 没有同义条目的 item 独自成簇，ids=[id]、winnerId=id。
-9. reason 可写可不写，写就 ≤30 字，用 ${lang}。
+3. 同 kind 内若两条的 normalized 字段一致或几乎一致（如同为"环境好"/"菜品精致"/"不要低端餐厅"），**必须**合并到同一簇。
+4. **每个输入 id 必须且只能出现在一个 cluster 中**——不能漏、不能重复、不能新增不存在的 id。
+5. **每个簇内：把"最合适的 winner id"放在数组第一位**，其余 id 跟在后面（顺序随意）。winner 选择综合判断：用户后说的通常代表最新意图；语义更强的优先；与整段诉求一致的优先。
+6. 语义方向**相反**才不合并：「要安静」vs「要热闹」不合并；「要好」vs「可以不好」不合并。**同方向不同强度必须合并**（"稍微好一点"+"一定要好" → 合并）。
+7. 没有同义条目的 item 独自成簇 \`[id]\`。
 
-# 思考步骤
-1. 按 kind 分组。
-2. 每组内先按 normalized 是否相同合并（规则 3），再按语义同向合并（规则 1+7）。
-3. 每簇按规则 6 挑 winnerId。
-4. 自检：所有 id 是否被覆盖恰好一次。
+# 输出
+只输出 \`{"clusters": number[][]}\`。每个内层数组首位=winner id。
 
 # 示例
 items：
@@ -395,26 +378,23 @@ items：
   6 [filter] "这家餐厅不能低端" → 不要低端餐厅
   7 [filter] "餐厅不要太低端" → 不要低端餐厅
   8 [filter] "两个人" → 人数=2
-clusters：
-  {ids:[1,2,3], winnerId:3}
-  {ids:[4,5], winnerId:5}
-  {ids:[6,7], winnerId:7}
-  {ids:[8], winnerId:8}`;
+输出：
+  {"clusters":[[3,1,2],[5,4],[7,6],[8]]}`;
 
   const validIds = new Set(items.map((i) => i.id));
 
   const tryOnce = async (
     modelId: string,
-  ): Promise<z.infer<typeof ClusterOutputSchema>["clusters"] | null> => {
+  ): Promise<number[][] | null> => {
     try {
       const { output } = await generateText({
         model: gateway(modelId),
         prompt,
-        maxOutputTokens: 4000,
+        maxOutputTokens: 2000,
         output: Output.object({
           schema: ClusterOutputSchema,
           name: "semantic_clusters",
-          description: "Cluster items by semantic intent and pick winners",
+          description: "Group item ids that express the same requirement; first id of each group is the winner.",
         }),
       });
       return output?.clusters ?? [];
@@ -427,8 +407,9 @@ clusters：
     }
   };
 
-  let clusters = await tryOnce("google/gemini-3-flash-preview");
-  if (!clusters) clusters = await tryOnce("google/gemini-2.5-pro");
+  // 主模型 openai/gpt-5-mini（原生 structured output 稳），失败 retry openai/gpt-5-nano（更快）
+  let clusters = await tryOnce("openai/gpt-5-mini");
+  if (!clusters) clusters = await tryOnce("openai/gpt-5-nano");
 
   if (!clusters) {
     const fallback = deterministicMergeByNormalized(items);
@@ -444,12 +425,13 @@ clusters：
   const used = new Set<number>();
   const aiWinners: ExtractedItem[] = [];
   let mergedCount = 0;
-  for (const c of clusters) {
-    const ids = c.ids.filter((id) => validIds.has(id) && !used.has(id));
+  for (const cluster of clusters) {
+    const ids = cluster.filter((id) => validIds.has(id) && !used.has(id));
     if (!ids.length) continue;
     if (ids.length > 1) mergedCount += ids.length - 1;
     ids.forEach((id) => used.add(id));
-    const winnerId = ids.includes(c.winnerId) ? c.winnerId : ids[ids.length - 1];
+    // winner = 第一个 id（AI 排序）；若该 id 不在合法集合，退回到最后一个 id
+    const winnerId = ids[0];
     const winner = items.find((i) => i.id === winnerId);
     if (winner) aiWinners.push(winner);
   }
@@ -457,7 +439,7 @@ clusters：
     if (!used.has(it.id)) aiWinners.push(it);
   }
 
-  // 二道兜底：对 AI 结果再跑一遍确定性 normalized 合并
+  // 二道兜底：AI 结果再跑一遍确定性 normalized 合并
   const second = deterministicMergeByNormalized(aiWinners);
   const totalMerged = mergedCount + second.mergedCount;
   echoLog.ok("semanticDedupe", Date.now() - t0, {
@@ -469,6 +451,7 @@ clusters：
   });
   return { winners: second.winners, mergedCount: totalMerged };
 }
+
 
 // ---- Stage C: 打分 + 组装最终 ParsedSchema ----
 const LooseParsedSchema = z.object({
