@@ -101,6 +101,7 @@ const ParsedSchema = z.object({
   negativeFilters: z.array(WeightedConditionSchema).catch([]).default([]),
   dishPreferences: z.array(z.string()).catch([]).default([]),
   cuisineLevelConstraints: z.array(WeightedConditionSchema).catch([]).default([]),
+  cuisineStyleExclude: z.array(z.string()).catch([]).default([]),
   cuisinesInferred: z.boolean().catch(false).default(false),
   searchStrategy: z.array(z.string()).catch([]).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
@@ -159,171 +160,7 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
   };
 }
 
-// ---- 第二阶段：语义聚类去重（独立 AI 调用，不依赖关键词） ----
-// 把第一阶段抽出的所有 hard/soft/neg 条目（以及 dishPreferences）打平交给 AI，
-// 让 AI 给每条标"语义簇 id"。代码再按簇取 weight 最高那条作为最终保留，
-// bucket 也跟随最高 weight 那条所在的 bucket。
-const SemanticClusterOutput = z.object({
-  clusters: z
-    .array(
-      z.object({
-        ids: z.array(z.number().int().nonnegative()).min(1),
-      }),
-    )
-    .default([]),
-  dishClusters: z
-    .array(
-      z.object({
-        ids: z.array(z.number().int().nonnegative()).min(1),
-      }),
-    )
-    .default([]),
-});
-
-type FlatEntry = {
-  id: number;
-  bucket: "hard" | "soft" | "neg";
-  item: WeightedCondition;
-};
-
-async function semanticClusterMerge(
-  parsed: z.infer<typeof ParsedSchema>,
-  gateway: ReturnType<typeof createLovableAiGatewayProvider>,
-  uiLanguage: "zh" | "en",
-): Promise<z.infer<typeof ParsedSchema>> {
-  const flat: FlatEntry[] = [];
-  let nextId = 0;
-  for (const item of parsed.hardFilters) flat.push({ id: nextId++, bucket: "hard", item });
-  for (const item of parsed.softPreferences) flat.push({ id: nextId++, bucket: "soft", item });
-  for (const item of parsed.negativeFilters) flat.push({ id: nextId++, bucket: "neg", item });
-
-  const dishList = parsed.dishPreferences.map((text, id) => ({ id, text }));
-
-  // 没有任何条目就直接返回，避免无意义调用
-  if (flat.length <= 1 && dishList.length <= 1) return parsed;
-
-  const conditionLines = flat
-    .map((e) => `${e.id}\t[${e.bucket}\tw=${e.item.weight.toFixed(2)}]\t${e.item.text}`)
-    .join("\n");
-  const dishLines = dishList.map((d) => `${d.id}\t${d.text}`).join("\n");
-
-  const clusterPrompt = `你的任务是把下面这些餐厅需求条目按**整体语义**聚类。
-
-判定原则：
-- 同一个诉求的不同措辞、不同强度、肯定与否定的等价改写 → 同一簇。
-  例：「环境稍微好一点」「环境好」「最重要的是环境一定要好」 → 同一簇（都是"环境质量"诉求）。
-  例：「不要吵」「想要安静」 → 同一簇（都是"安静"诉求）。
-- 相反方向 → 不同簇。例：「要安静」 vs 「要热闹」 不可合并。
-- 不同维度 → 不同簇。例：「环境好」 vs 「服务好」 vs 「菜品精致」 → 三个不同簇。
-- 不要按关键词字面匹配；按整句语义判断。
-- 价位定位相关的条目要小心：「不能低端」和「不要太奢华」是**不同**诉求（一个排除低端，一个排除高端），不可合并。
-- Google 评分阈值同维度，但不同阈值（4.0 vs 4.3）也要放同一簇——后续会取更严格的。
-
-dishPreferences（菜品）聚类原则：同义词、别名、单复数、繁简、中英文对照算同一簇（如「拉面」 vs 「ラーメン」 vs 「ramen」）。
-
-输出 JSON：
-- clusters：条件条目的语义簇分组，每个簇是一组 id（来自下方条件列表的第一列数字）。每个 id 必须**恰好**出现在一个簇中。单独成簇也要返回 \`{"ids":[X]}\`。
-- dishClusters：菜品聚类，结构同上，id 来自下方菜品列表。
-
-条件列表（格式：id\\t[bucket\\tweight]\\t原文）：
-${conditionLines || "(空)"}
-
-菜品列表（格式：id\\t名称）：
-${dishLines || "(空)"}`;
-
-  let clustersOut: z.infer<typeof SemanticClusterOutput>;
-  try {
-    const { output } = await generateText({
-      model: gateway("google/gemini-2.5-flash"),
-      prompt: clusterPrompt,
-      maxOutputTokens: 2000,
-      output: Output.object({
-        schema: SemanticClusterOutput,
-        name: "semantic_clusters",
-        description: "Cluster restaurant requirement entries by semantic intent",
-      }),
-    });
-    clustersOut = SemanticClusterOutput.parse(output);
-  } catch (e) {
-    console.warn(
-      "[semanticClusterMerge] 聚类失败，退回精确字符串去重：",
-      e instanceof Error ? e.message : e,
-    );
-    return parsed;
-  }
-
-  // 校验 & 兜底：所有未出现在 clusters 里的 id 自动成单独簇
-  const STRENGTH: Record<"hard" | "soft" | "neg", number> = { hard: 3, neg: 2, soft: 1 };
-  const usedIds = new Set<number>();
-  const clusters: number[][] = [];
-  for (const c of clustersOut.clusters) {
-    const ids = c.ids.filter((id) => id >= 0 && id < flat.length && !usedIds.has(id));
-    if (!ids.length) continue;
-    ids.forEach((id) => usedIds.add(id));
-    clusters.push(ids);
-  }
-  for (const e of flat) {
-    if (!usedIds.has(e.id)) clusters.push([e.id]);
-  }
-
-  const hardFilters: WeightedCondition[] = [];
-  const softPreferences: WeightedCondition[] = [];
-  const negativeFilters: WeightedCondition[] = [];
-  let mergedCount = 0;
-
-  for (const ids of clusters) {
-    const entries = ids.map((id) => flat[id]);
-    if (entries.length > 1) mergedCount += entries.length - 1;
-    // 按 weight 取最高；并列时按 strength（hard > neg > soft）；再并列取较早出现的
-    let winner = entries[0];
-    for (const e of entries.slice(1)) {
-      if (
-        e.item.weight > winner.item.weight ||
-        (e.item.weight === winner.item.weight && STRENGTH[e.bucket] > STRENGTH[winner.bucket])
-      ) {
-        winner = e;
-      }
-    }
-    const maxWeight = entries.reduce((m, e) => Math.max(m, e.item.weight), 0);
-    const finalItem: WeightedCondition = { text: winner.item.text, weight: maxWeight };
-    // 一致性：weight >= 0.8 且赢家是 soft，提升到 hard（保留与下游 promotion 一致的行为）
-    let finalBucket = winner.bucket;
-    if (finalBucket === "soft" && maxWeight >= 0.8) finalBucket = "hard";
-    if (finalBucket === "hard") hardFilters.push(finalItem);
-    else if (finalBucket === "soft") softPreferences.push(finalItem);
-    else negativeFilters.push(finalItem);
-  }
-
-  // 菜品聚类
-  const usedDishIds = new Set<number>();
-  const dishClusters: number[][] = [];
-  for (const c of clustersOut.dishClusters) {
-    const ids = c.ids.filter((id) => id >= 0 && id < dishList.length && !usedDishIds.has(id));
-    if (!ids.length) continue;
-    ids.forEach((id) => usedDishIds.add(id));
-    dishClusters.push(ids);
-  }
-  for (const d of dishList) {
-    if (!usedDishIds.has(d.id)) dishClusters.push([d.id]);
-  }
-  const dishPreferences = dishClusters.map((ids) => dishList[ids[0]].text);
-
-  if (mergedCount > 0) {
-    console.log(
-      `[semanticClusterMerge] 合并了 ${mergedCount} 条重复诉求（${flat.length} → ${clusters.length}）`,
-    );
-  }
-  void uiLanguage;
-
-  return {
-    ...parsed,
-    hardFilters,
-    softPreferences,
-    negativeFilters,
-    dishPreferences,
-  };
-}
-
+// ---- 时间表达兜底辅助（visitTime sanitize 用） ----
 const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
   { pattern: /afternoon\s+tea|下午茶/i, hhmm: "15:00" },
   { pattern: /late[-\s]?night(?:\s+(?:meal|food|dining))?|夜宵|宵夜/i, hhmm: "22:00" },
@@ -337,7 +174,6 @@ function inferWeekdayFromText(text: string, today: number): number | null {
   if (/后天/.test(text)) return (today + 2) % 7;
   if (/明天|tomorrow/i.test(text)) return (today + 1) % 7;
   if (/今天|今晚|today|tonight/i.test(text)) return today;
-
   const weekdayPatterns: Array<[RegExp, number]> = [
     [/(?:周|星期|礼拜)[日天]|sunday/i, 0],
     [/(?:周|星期|礼拜)一|monday/i, 1],
@@ -358,234 +194,522 @@ function inferMealPeriod(text: string): { evidence: string; hhmm: string } | nul
   return null;
 }
 
+// PM/AM 上下文标记（中英）
+const PM_CONTEXT_RE =
+  /晚上|傍晚|今晚|夜里|夜晚|半夜|凌晨过后|晚饭|晚餐|夜宵|宵夜|下午|tonight|evening|night|pm|p\.m\.|dinner|supper/i;
+const AM_CONTEXT_RE =
+  /早上|上午|清晨|凌晨|早饭|早餐|早午餐|brunch|morning|am|a\.m\.|breakfast/i;
+const NOON_CONTEXT_RE = /中午|noon|midday/i;
+
 function inferExplicitClock(text: string): string | null {
+  // 先匹配带 am/pm 的 12 制（明确，优先）
+  const clock12Marked = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm|a\.m\.|p\.m\.)\b/i);
+  if (clock12Marked) {
+    const period = clock12Marked[3].toLowerCase().replace(/\./g, "");
+    const hour = (Number(clock12Marked[1]) % 12) + (period === "pm" ? 12 : 0);
+    return `${String(hour).padStart(2, "0")}:${clock12Marked[2] ?? "00"}`;
+  }
+  // 再匹配数字钟点：先按 24 制理解，但若 1<=h<=11 且上下文含 PM 标记，则 +12
+  const clock = text.match(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s*(?:点|时|:)?/);
+  // 上面正则太宽，回退到原 24 制匹配 + 12 制不带后缀匹配两套
   const clock24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
   if (clock24) {
-    return `${clock24[1].padStart(2, "0")}:${clock24[2]}`;
+    let h = Number(clock24[1]);
+    const m = clock24[2];
+    // 仅在 1<=h<=11 且上下文有 PM 标记、且无 AM 标记时转 24 制
+    if (h >= 1 && h <= 11 && PM_CONTEXT_RE.test(text) && !AM_CONTEXT_RE.test(text)) {
+      h += 12;
+    }
+    if (h === 12 && AM_CONTEXT_RE.test(text) && !NOON_CONTEXT_RE.test(text) && !PM_CONTEXT_RE.test(text)) {
+      h = 0;
+    }
+    return `${String(h).padStart(2, "0")}:${m}`;
   }
-  const clock12 = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/i);
-  if (!clock12) return null;
-  const period = clock12[3].toLowerCase();
-  const hour = (Number(clock12[1]) % 12) + (period === "pm" ? 12 : 0);
-  return `${String(hour).padStart(2, "0")}:${clock12[2] ?? "00"}`;
+  // 中文"X 点(半/Y 分)"匹配
+  const clockCn = text.match(/([01]?\d|2[0-3])\s*(?:点|時|时)(?:\s*([0-5]?\d)\s*分|\s*半)?/);
+  if (clockCn) {
+    let h = Number(clockCn[1]);
+    let m = "00";
+    if (clockCn[0].includes("半")) m = "30";
+    else if (clockCn[2]) m = clockCn[2].padStart(2, "0");
+    if (h >= 1 && h <= 11 && PM_CONTEXT_RE.test(text) && !AM_CONTEXT_RE.test(text)) {
+      h += 12;
+    }
+    if (h === 12 && AM_CONTEXT_RE.test(text) && !NOON_CONTEXT_RE.test(text)) h = 0;
+    return `${String(h).padStart(2, "0")}:${m}`;
+  }
+  void clock;
+  return null;
 }
 
+// ============================================================
+// 三段式需求解析：Stage A 抽取 → Stage B 去重(带原文,AI选赢家) → Stage C 打分组装
+// ============================================================
+
+// ---- Stage A: 原文抽取 schema & 函数 ----
+const ExtractedItemSchema = z.object({
+  id: z.number().int().min(1),
+  snippet: z.string().min(1),
+  normalized: z.string().min(1),
+  kind: z.enum(["filter", "dish", "time"]),
+});
+type ExtractedItem = z.infer<typeof ExtractedItemSchema>;
+
+const LooseExtractOutput = z.object({
+  items: z
+    .array(
+      z.object({
+        id: z.union([z.number(), z.string()]).optional(),
+        snippet: z.string().optional(),
+        normalized: z.string().optional(),
+        kind: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
+
+async function extractRawItems(
+  data: z.infer<typeof ParseInput>,
+  gateway: ReturnType<typeof createLovableAiGatewayProvider>,
+): Promise<ExtractedItem[]> {
+  const freeText = (data.freeText ?? "").trim();
+  if (!freeText) return [];
+  const lang = data.uiLanguage === "en" ? "English" : "简体中文";
+
+  const prompt = `# 角色
+你是需求抽取器。只做抽取，不判轻重、不去重、不归类。
+
+# 输入
+- 城市：${data.city}
+- 已选料理：${data.cuisines.length ? data.cuisines.join("、") : "（无）"}
+- 自由文本：${freeText}
+- 输出语言：${lang}
+
+# 严格规则（违反任一条即视为失败）
+1. 通读 freeText，把**每一处**含约束/偏好/避雷/菜品/时间意味的原话片段都摘出来。同一诉求出现多次也都摘，不做合并、不去重、不打分、不归桶。宁多勿少。
+2. snippet 必须是 freeText 的**连续子串原文**，逐字一致，不改写、不翻译、不加标点。
+3. normalized 必须是一句话标准化描述（≤30 字），用 ${lang} 撰写；非空字符串。
+4. kind **只能**是以下三个枚举值之一（出现其它值即非法）：
+   - "filter"：任何约束/偏好/避雷（人数、预算、氛围、可预约、不要 X 等）
+   - "dish"：具体菜品名（蟹刺身、和牛、拉面 等）
+   - "time"：用餐日期/时段/营业时间相关（"晚上 7 点"、"营业到 10 点"、"明天中午"）
+5. id 为正整数，从 1 开始，连续递增，全局唯一。
+6. freeText 无任何约束意味时，items 返回空数组。
+7. 只输出 JSON，不输出任何解释、不加 markdown 围栏。
+
+# 思考步骤（内部执行）
+1. 通读 freeText。
+2. 从前到后扫描，每碰到一个约束/菜品/时间表达就摘一条。
+3. 检查 snippet 是否原文子串、kind 是否合法枚举、id 是否递增。
+4. 输出 JSON。
+
+# 示例
+freeText："两个人务必必须 15000 日元以内，环境稍微好一点，最重要的是环境一定要好，不要游客店，最好有蟹刺身，明天晚上 7 点。"
+items:
+  {id:1, snippet:"两个人", normalized:"人数=2", kind:"filter"}
+  {id:2, snippet:"务必必须 15000 日元以内", normalized:"人均预算≤15000 JPY", kind:"filter"}
+  {id:3, snippet:"环境稍微好一点", normalized:"环境优质", kind:"filter"}
+  {id:4, snippet:"最重要的是环境一定要好", normalized:"环境优质", kind:"filter"}
+  {id:5, snippet:"不要游客店", normalized:"避免游客店", kind:"filter"}
+  {id:6, snippet:"最好有蟹刺身", normalized:"想吃蟹刺身", kind:"filter"}
+  {id:7, snippet:"蟹刺身", normalized:"蟹刺身", kind:"dish"}
+  {id:8, snippet:"明天晚上 7 点", normalized:"明天 19:00 用餐", kind:"time"}`;
+
+  try {
+    const { output } = await generateText({
+      model: gateway("google/gemini-2.5-flash"),
+      prompt,
+      maxOutputTokens: 3000,
+      output: Output.object({
+        schema: LooseExtractOutput,
+        name: "extracted_items",
+        description: "Raw extracted requirement snippets, no dedup",
+      }),
+    });
+    const items: ExtractedItem[] = [];
+    let nextId = 1;
+    for (const raw of output?.items ?? []) {
+      const snippet = (raw.snippet ?? "").trim();
+      const normalized = (raw.normalized ?? "").trim();
+      const kind: "filter" | "dish" | "time" =
+        raw.kind === "dish" || raw.kind === "time" ? raw.kind : "filter";
+      if (!snippet || !normalized) continue;
+      items.push({ id: nextId++, snippet, normalized, kind });
+    }
+    console.log(
+      `[Echo/extractRawItems] ok count=${items.length} items=` +
+        JSON.stringify(items.map((it) => ({ id: it.id, k: it.kind, s: it.snippet, n: it.normalized }))),
+    );
+    return items;
+  } catch (e) {
+    console.warn(
+      "[extractRawItems] 抽取失败，回退空列表（下游靠表单字段兜底）：",
+      e instanceof Error ? e.message : e,
+    );
+    return [];
+  }
+}
+
+// ---- Stage B: 语义去重 + AI 选赢家（带原文上下文） ----
+// schema 极简：clusters 是 number[][]，每个簇内 AI 把 winner id 放在第一位
+const ClusterOutputSchema = z.object({
+  clusters: z.array(z.array(z.number().int().min(1)).min(1)).default([]),
+});
+
+// 基于 normalized 的确定性合并：同 kind + 完全相同 normalized → 合并，保留最后一条为赢家
+function deterministicMergeByNormalized(items: ExtractedItem[]): {
+  winners: ExtractedItem[];
+  mergedCount: number;
+} {
+  const keyOf = (it: ExtractedItem) =>
+    `${it.kind}::${it.normalized.trim().toLowerCase().replace(/\s+/g, "")}`;
+  const map = new Map<string, ExtractedItem>();
+  let mergedCount = 0;
+  for (const it of items) {
+    const k = keyOf(it);
+    if (map.has(k)) {
+      mergedCount += 1;
+      map.set(k, it); // 后出现的覆盖（语序后置=最新意图）
+    } else {
+      map.set(k, it);
+    }
+  }
+  const winners = [...map.values()].sort((a, b) => a.id - b.id);
+  return { winners, mergedCount };
+}
+
+async function semanticDedupe(
+  items: ExtractedItem[],
+  data: z.infer<typeof ParseInput>,
+  gateway: ReturnType<typeof createLovableAiGatewayProvider>,
+): Promise<{ winners: ExtractedItem[]; mergedCount: number }> {
+  if (items.length <= 1) return { winners: items, mergedCount: 0 };
+  const t0 = Date.now();
+  const itemsBlock = items
+    .map((it) => `${it.id}\t[${it.kind}]\t${it.snippet}\t→ ${it.normalized}`)
+    .join("\n");
+
+  const prompt = `# 角色
+你是需求条目"按子维度 tag 聚簇 + 取舍"引擎。**全部 items 一锅煮，不分桶、不分正负。**
+
+# 输入
+- freeText（完整原文，供你看上下文）：
+${data.freeText ?? ""}
+
+- items 列表（顺序=原文出现顺序，格式：id\\t[kind]\\tsnippet\\t→ normalized）：
+${itemsBlock}
+
+# 子维度分类表（**核心**，必须先把每个 item 内心标一个 tag，再按 tag 聚簇）
+
+## A. 餐厅整体属性（kind=filter）
+- **A1 档次定位**：中高端 / 不低端 / 不豪华 / 不要 luxurious / 平价也行
+- **A2 价位预算**：人均≤300 / 1.5 万以内 / 不要太贵
+- **A3 环境氛围装修**（餐厅内部）：环境好 / 装修典雅 / 别太吵 / 安静（指店里）
+- **A4 服务态度**：服务员态度好 / 别冷脸
+- **A5 菜品出品质量**（餐厅级，**不是**具体菜名）：菜品精致 / 出品讲究 / 摆盘漂亮 / 食材新鲜
+- **A6 评分**（按阈值/角色再细分）：谷歌≥4.0 必须 / 谷歌≥4.3 加分
+- **A7 客群类型**：不要游客店 / 本地人多 / 不要网红
+- **A8 周边社区/地理**（餐厅外部）：安静社区 / 富人区 / 近地铁 / 商场内 / 步行可达
+- **A9 营业/可预约/排队/包间**：营业到 22:00 / 要能预约 / 不排队 / 有包间
+- **A10 人数/同行结构/场景**：两个人 / 带小孩 / 商务 / 约会 / 聚会
+
+## B. 具体菜品诉求（kind=dish 或 kind=filter 含菜名）
+- **B1 想吃 X**：班尼迪克蛋 / French toast / 蟹刺身 / 和牛
+- **B2 不吃 X / 忌口**：不吃辣 / 不吃猪 / 素食
+
+## C. 时间（kind=time）
+- **C1 日期/星期**：周六 / 明天 / 后天
+- **C2 时段/钟点/餐段**：中午 12:00 / 晚上 7 点 / brunch / 下午茶
+
+## D. 品类（cuisine）
+- **D1 菜系**：西餐 / 日料 / 川菜 / 早午餐
+
+# 严格规则
+1. **同 tag 才能合簇**，**跨 tag 严禁合并**。例如：
+   - A5（菜品精致度，对餐厅）**绝不**与 B1（想吃某道菜）合簇。
+   - A3（环境，店内）**绝不**与 A8（社区，店外）合簇。
+   - A1（档次）**绝不**与 A2（价位）合簇——可并存。
+2. **同一 tag 下方向相反也必须合簇**，由你取舍 winner：
+   - "必须中高端" + "不可低端" + "不要太高端" + "不要 luxurious" → A1 一簇。
+   - "环境一定要好" + "环境稍微好一点" + "环境好啊" → A3 一簇。
+   - "菜品一定要精致" + "菜品精致一点吧" → A5 一簇。
+3. **唯一允许同 tag 拆簇的理由 = 阈值或角色不同**：
+   - "评分≥4.0 必须"(A6) vs "评分≥4.3 加分"(A6) → 拆 2 簇（阈值+角色都不同）。
+   - "人均≤300 硬上限"(A2) vs "人均≤200 更好"(A2) → 拆 2 簇。
+4. **winner 选择（按优先级，从高到低）**：
+   - (a) **语气最强**：含"一定要 / 必须 / 最重要 / 务必 / 不可"的 > "稍微 / 最好 / 希望 / 可以"。
+   - (b) 语气并列时，用户**后说**的优先（最新意图）。
+   - (c) 与整段 freeText 主诉求一致的优先。
+   - 若簇里方向相反，winner 选 freeText 主导方向 + 语气最强那条。
+5. winner id 放数组第一位。每个输入 id 必须且只能出现在一个 cluster——不漏、不重复、不新增。
+6. 没有同 tag 伙伴的 item 独自成簇 \`[id]\`。
+
+# 反例（**严禁这样合**）
+- ❌ "菜品一定要精致"(A5) 与 "想吃班尼迪克蛋"(B1) 合簇。
+- ❌ "环境一定要好"(A3) 与 "安静社区"(A8) 合簇。
+- ❌ "中高端"(A1) 与 "1.5 万以内"(A2) 合簇。
+- ❌ "服务态度好"(A4) 与 "菜品精致"(A5) 合簇。
+
+# 自检（输出前必做）
+1. 对每个簇，确认簇内所有 item 是**同一 tag**（A1..A10 / B1 / B2 / C1 / C2 / D1）。
+2. 对每个簇，确认 winner 是**语气最强**那条；若不是，把它换到第一位。
+3. 同 tag 全文该汇成 1 簇的有没有漏：环境(A3)、档次(A1)、菜品精致(A5)、服务(A4)、客群(A7)、社区(A8)。
+
+# 输出
+只输出 \`{"clusters": number[][]}\`。每个内层数组首位 = winner id。
+
+# 示例
+items：
+  1 [filter] "环境稍微好一点" → 环境较好            (tag: A3)
+  2 [filter] "环境一定要好" → 环境优质              (tag: A3)
+  3 [filter] "安静的社区" → 周边社区安静            (tag: A8, **不是 A3**)
+  4 [filter] "定位必须中高端" → 中高端              (tag: A1)
+  5 [filter] "不可低端" → 不要低端                  (tag: A1)
+  6 [filter] "不要 luxurious" → 不要豪华            (tag: A1)
+  7 [filter] "菜品精致一点吧" → 菜品精致            (tag: A5)
+  8 [filter] "菜品一定要精致" → 菜品必须精致         (tag: A5)
+  9 [filter] "评分必须 4.0 以上" → 评分≥4.0 必须    (tag: A6)
+  10 [filter] "最好 4.3 以上" → 评分≥4.3 加分        (tag: A6, 阈值不同→拆)
+  11 [dish]   "班尼迪克蛋" → 班尼迪克蛋             (tag: B1)
+  12 [filter] "服务员态度一定要好" → 服务态度好      (tag: A4)
+输出：
+  {"clusters":[[2,1],[3],[4,5,6],[8,7],[9],[10],[11],[12]]}
+说明：
+- 1/2 都是 A3 环境 → 合 1 簇，winner=2（语气最强"一定要好"）。
+- 3 是 A8 社区，**不并入** A3 环境。
+- 4/5/6 都是 A1 档次定位（方向混合）→ 合 1 簇，winner=4。
+- 7/8 都是 A5 菜品出品质量 → 合 1 簇，winner=8（"一定要"语气最强）。**绝不**和 11(B1) 合并。
+- 9/10 都是 A6 评分，但阈值不同 → 拆 2 簇。
+- 11 是 B1 具体菜品，独立。
+- 12 是 A4 服务，独立。`;
+
+
+  const validIds = new Set(items.map((i) => i.id));
+
+  const tryOnce = async (
+    modelId: string,
+  ): Promise<number[][] | null> => {
+    try {
+      const { output } = await generateText({
+        model: gateway(modelId),
+        prompt,
+        maxOutputTokens: 2000,
+        output: Output.object({
+          schema: ClusterOutputSchema,
+          name: "semantic_clusters",
+          description: "Group item ids that express the same requirement; first id of each group is the winner.",
+        }),
+      });
+      return output?.clusters ?? [];
+    } catch (e) {
+      echoLog.fail("semanticDedupe", Date.now() - t0, e, {
+        modelId,
+        inputCount: items.length,
+      });
+      return null;
+    }
+  };
+
+  // 主模型 gemini-2.5-pro（聚簇 + winner 选择需要更稳的指令遵从），失败 fallback flash
+  let clusters = await tryOnce("google/gemini-2.5-pro");
+  if (!clusters) clusters = await tryOnce("google/gemini-2.5-flash");
+
+  if (!clusters) {
+    const fallback = deterministicMergeByNormalized(items);
+    echoLog.ok("semanticDedupe", Date.now() - t0, {
+      inputCount: items.length,
+      clusterCount: fallback.winners.length,
+      mergedCount: fallback.mergedCount,
+      mode: "deterministic-fallback",
+    });
+    return fallback;
+  }
+
+  const used = new Set<number>();
+  const aiWinners: ExtractedItem[] = [];
+  let mergedCount = 0;
+  const clusterTrace: Array<{ winner: string; merged: string[] }> = [];
+  for (const cluster of clusters) {
+    const ids = cluster.filter((id) => validIds.has(id) && !used.has(id));
+    if (!ids.length) continue;
+    if (ids.length > 1) mergedCount += ids.length - 1;
+    ids.forEach((id) => used.add(id));
+    // winner = 第一个 id（AI 排序）；若该 id 不在合法集合，退回到最后一个 id
+    const winnerId = ids[0];
+    const winner = items.find((i) => i.id === winnerId);
+    if (winner) {
+      aiWinners.push(winner);
+      clusterTrace.push({
+        winner: `${winner.id}:${winner.snippet}`,
+        merged: ids.slice(1).map((id) => {
+          const it = items.find((x) => x.id === id);
+          return it ? `${it.id}:${it.snippet}` : String(id);
+        }),
+      });
+    }
+  }
+  for (const it of items) {
+    if (!used.has(it.id)) aiWinners.push(it);
+  }
+  console.log(`[Echo/semanticDedupe] clusters=` + JSON.stringify(clusterTrace, null, 0));
+
+  // 二道兜底：AI 结果再跑一遍确定性 normalized 合并
+  const second = deterministicMergeByNormalized(aiWinners);
+  const totalMerged = mergedCount + second.mergedCount;
+  echoLog.ok("semanticDedupe", Date.now() - t0, {
+    inputCount: items.length,
+    aiClusterCount: clusters.length,
+    afterAi: aiWinners.length,
+    afterDeterministic: second.winners.length,
+    mergedCount: totalMerged,
+  });
+  return { winners: second.winners, mergedCount: totalMerged };
+}
+
+
+// ---- Stage C: 打分 + 组装最终 ParsedSchema ----
+const LooseParsedSchema = z.object({
+  city: z.string().optional(),
+  cuisines: z.array(z.string()).optional(),
+  dateTime: z.string().optional(),
+  hardFilters: z.array(z.unknown()).optional(),
+  softPreferences: z.array(z.unknown()).optional(),
+  negativeFilters: z.array(z.unknown()).optional(),
+  dishPreferences: z.array(z.string()).optional(),
+  cuisineLevelConstraints: z.array(z.unknown()).optional(),
+  cuisineStyleExclude: z.array(z.string()).optional(),
+  searchStrategy: z.array(z.string()).optional(),
+  country: z.string().optional(),
+  language: z.string().optional(),
+  mode: z.string().optional(),
+  visitTime: z.unknown().optional(),
+});
+
+async function scoreAndAssemble(
+  winners: ExtractedItem[],
+  data: z.infer<typeof ParseInput>,
+  gateway: ReturnType<typeof createLovableAiGatewayProvider>,
+  modelId: string,
+  opts?: { forceInfer?: boolean },
+): Promise<z.infer<typeof ParsedSchema>> {
+  const lang = data.uiLanguage === "en" ? "English（英文）" : "简体中文";
+  const today = new Date();
+  const todayWeekday = today.getDay();
+  const todayIso = today.toISOString().slice(0, 10);
+  const tomorrow = (todayWeekday + 1) % 7;
+  const dayAfter = (todayWeekday + 2) % 7;
+  const fallbackCuisine = data.uiLanguage === "en" ? "Restaurants" : "餐厅";
+
+  const winnersBlock = winners.length
+    ? winners.map((w) => `[${w.kind}] "${w.snippet}" → ${w.normalized}`).join("\n")
+    : "（无）";
+
+  const cuisinesHint = data.cuisines.length
+    ? `已选：${data.cuisines.join("、")}（必须原样回传，顺序不变、不增删）`
+    : data.autoInferCuisines
+      ? `（用户跳过选择并要求 AI 推断；基于 freeText + 品类级约束推 1-2 个最匹配品类；推不出来填 ["${fallbackCuisine}"]）`
+      : `（用户跳过选择并要求按所有品类搜索；cuisines 字段直接填 ["${fallbackCuisine}"]）`;
+
+  const dateHint = data.date || (data.uiLanguage === "en" ? "Unspecified" : "未指定");
+
+  const prompt = `# 角色
+你是需求打分与组装引擎。判断一律基于语义，下面 weight 锚点仅作参照，不要字面匹配。
+
+# 输入
+- freeText（完整原文）：${data.freeText || "（无）"}
+- 表单：city="${data.city}"，date="${dateHint}"，uiLanguage=${data.uiLanguage}，autoInferCuisines=${data.autoInferCuisines}
+- cuisines 状态：${cuisinesHint}
+- 服务端今天 weekday=${todayWeekday}（0=周日..6=周六），日期 ${todayIso}
+- winners（已去重的赢家条目，按 kind 分类处理）：
+${winnersBlock}
+
+# 严格规则（违反任一条即视为失败）
+1. 自由文本字段一律用 ${lang}；\`language\` 字段按城市本地语言填合法 BCP47（JP→ja，KR→ko，CN→zh-CN，HK/MO→zh-HK，TW→zh-TW，TH→th，FR→fr，IT→it，DE→de，ES→es，US/UK/AU/CA/SG→en）；\`visitTime.evidence\` 保留 freeText 原文片段不翻译。
+2. winners 里 kind="dish" 的条目 → 放入 dishPreferences（字符串数组，菜名用 ${lang}）；**不要**进 hard/soft/neg。
+3. winners 里 kind="time" 的条目 → 用于生成 visitTime；**不要**进 hard/soft/neg。
+4. winners 里 kind="filter" 的条目按语义判桶位。**每条 winner 只能产出 1 条最终条件**（要么 hard、要么 soft、要么 neg、要么 cuisineLevel，互斥），**严禁**把一条 winner 拆成多条（例如把"中高端但不豪华"拆成 hard"必须中高端"+ neg"不要豪华"+ neg"不要低端"，这是上游已经合并掉的，下游不准再拆回去）：
+   - hardFilters：语义上"必须满足"的可验证条件。例：必须 15000 日元以内 / 人数两个 / 要能预约 / 营业到 10 点。
+   - softPreferences：偏好或模糊形容词，希望满足但非死线。例：氛围最好好一点 / 地道一些。
+   - negativeFilters：纯否定/避雷诉求（winner 主导方向就是"不要 X"）。例：不要游客店 / 别太吵。
+   - cuisineLevelConstraints：**品类级**特征（不是单家餐厅可查属性，而是整品类特征）：用餐时长 / 同行人结构（带小孩/聚会人数）/ 食量/口味强度 / 氛围基调 / 用餐场景（夜宵/快速解决）。
+   - 若 winner 同时含正反边界（如"中高端但不豪华"），整条进一个最贴切桶位（这里进 hard，text 写"中高端但不豪华"），不要镜像出 neg 条目。
+5. **桶位互斥与镜像约束**（违反一定坏掉下游）：
+   - 纯否定 winner **只**进 negativeFilters，**严禁**同时进 hardFilters。
+   - cuisineLevelConstraints 的每一条**必须**同时镜像一条到 softPreferences（text 和 weight 完全一致），**严禁**进 hardFilters。
+   - 同一条 winner 不能同时出现在 hardFilters 和 softPreferences（镜像规则除外）。
+   - **同一话题维度**（如档次/环境/服务）在最终输出里最多 1 条；多出的就是把 winner 拆碎了，必须合回去。
+6. 每条 hard/soft/neg/cuisineLevelConstraints 形如 \`{"text": "<原话片段> → <标准化条件>", "weight": <number>}\`：
+   - text 非空，必须含 " → " 分隔符
+   - weight 为 [0.1, 1.0] 区间、保留 1 位小数的 number
+7. weight 锚点（按语气强度的语义判断，不要字面匹配）：
+   - 1.0：不可妥协 + 叠加强调（如"绝对绝对不行"/"最最重要的是"/"无论如何都得"）
+   - 0.9：语义强硬不可让步（如"必须"/"一定要"/"只接受"/"不能"）
+   - 0.8：明确要求但语气平稳；或可验证硬属性（预算上限/人数/可预约/营业时间）即使语气随意也按 0.8
+   - 0.6：明显偏好但可让步（如"最好"/"希望"/"优先"）
+   - 0.4：弱倾向（如"如果可以"/"有的话更好"/"尽量"）
+   - 0.3：顺口一提
+   类别先验：主观偏好（氛围/装修/服务）基线 ≤ 0.7；避雷类基线 0.7，强烈避雷上到 1.0。
+8. cuisines：见上面"cuisines 状态"；用户已填则**原样回传**（顺序不变、不增删）；为空且要求 AI 推断时基于 freeText + 品类级约束推 1-2 个最匹配品类。cuisines 必须是非空字符串数组。
+   - **风格 + 餐段/通用品类必须合并为一条**：当 freeText 同时含"风格词"（西式/Western、日式/Japanese、韩式/Korean、港式、台式、中式/Chinese、东南亚、法式、意式…）与"餐段/通用品类词"（brunch/早午餐、咖啡、甜品、烧烤、火锅、面…）时，**禁止**拆成两条，**必须**合并为一条带风格的 cuisine。
+     - ✅ ["Western brunch"] / ["西式早午餐"]（不是 ["Western","Brunch"]，否则 Brunch 单走会召回中式茶餐厅、港式早茶）。
+     - ✅ ["日式拉面"]（不是 ["Japanese","Ramen"]）。
+     - ✅ ["韩式烤肉"]（不是 ["Korean","BBQ"]）。
+8b. cuisineStyleExclude：字符串数组，用于召回阶段排除明显不属于目标风格的店。
+   - 用户**显式说**"不要 X 风格/X 菜"（如"不要中式"/"不要日式"）→ 把该风格的中英常见名都列入：例 ["Chinese","中式","中餐","中華"] 或 ["Japanese","日式","日料"]。同时该原话仍按规则 4 进 negativeFilters（人类可读）。
+   - 用户**显式点名一种风格**（如"要西式"）且未说"也接受其他风格"→ 隐式补常见竞争风格："要西式"→ ["Chinese","Japanese","Korean","Thai","Vietnamese","Indian","中式","日式","韩式"]；"要日式"→ ["Chinese","Korean","Western","中式","韩式","西式"]；以此类推。**只**在风格唯一明确时补；用户给了两种或更多风格、或没明确风格时一律留空 []。
+   - 隐式补的不要重复进 negativeFilters。
+9. country：必须是合法 ISO 3166-1 alpha-2（两个大写字母）或空字符串 ""；**不要**填三位码、不要小写。示例：东京/大阪/京都/函馆→JP，香港→HK，澳门→MO，台北/高雄→TW，首尔/釜山→KR，曼谷/清迈→TH，新加坡→SG，上海/北京/成都→CN，巴黎/里昂→FR，米兰/罗马→IT，纽约/旧金山/St. Louis/芝加哥→US。判不出留 ""。
+10. dateTime：始终为字符串，从不为 null；表单 date 非空时填该日期字符串，否则 zh 写 "未指定"、en 写 "Unspecified"。
+11. visitTime：基于 winners 里 kind="time" 的条目和 freeText 综合判断。
+    - 没有任何时间表达 → null。
+    - 有时间表达时填 \`{mentioned:true, evidence:<freeText 原文片段，逐字>, weekday:0-6 或 null, hhmm:"HH:MM" 或 null, raw:<原话>}\`。
+    - 日期映射："今天/今晚/today/tonight"→${todayWeekday}；"明天/tomorrow"→${tomorrow}；"后天"→${dayAfter}；"周一..周日" / "Monday..Sunday" 直接对应（0=日,6=六）。
+    - 有具体钟点但无星期 → weekday=${todayWeekday}（今天）。
+    - 餐段锚点 hhmm：早餐/breakfast→"08:30"，brunch→"10:30"，午餐/lunch→"12:30"，下午茶/afternoon tea→"15:00"，晚餐/dinner→"19:00"，夜宵/late-night→"22:00"。
+    - 模糊时段 hhmm：早上→"08:30"，中午→"12:30"，下午→"14:30"，傍晚→"18:30"，晚上→"19:00"，深夜→"22:00"。
+    - 同时出现餐段和具体钟点时，钟点优先。
+    - **PM 钟点强制转 24 制**：当 freeText 中钟点形如 1:00–11:59 且**未**带 am/pm 标记，但上下文含"晚上/傍晚/今晚/夜里/晚饭/晚餐/夜宵/下午/tonight/evening/night/dinner"等晚间词，**必须**给钟点 +12 后填入 hhmm（例："晚上6:30"→"18:30"，"下午 3 点"→"15:00"，"今晚 7 点"→"19:00"）。漏转会被判错。
+12. searchStrategy：3-5 条简短搜索策略说明，用 ${lang}。
+13. mode：默认 "deep"；用户明显表达"快速/快一点"才填 "quick"。
+14. 只输出 JSON，不输出任何解释、不加 markdown 围栏。${opts?.forceInfer ? "\n15. **强制识别品类**：用户已明确要求自动识别 cuisines，**禁止**返回 [\"餐厅\"]/[\"Restaurants\"]/[\"レストラン\"] 等兜底词，必须基于 freeText 推出 1-2 个具体品类。" : ""}
+
+# 输出 schema
+严格遵循 parsed_restaurant_requirements（字段名零改动）。
+
+# 思考步骤
+1. 按 kind 把 winners 分流到 dish / time / filter。
+2. filter 类逐条判桶位 + 按规则 7 的语气强度打 weight。
+3. 处理品类级镜像约束（cuisineLevelConstraints ↔ softPreferences）。
+4. 组装 cuisines / country / language / dateTime / visitTime / searchStrategy / mode。
+5. 自检：否定句没串到 hard、品类级没串到 hard、cuisines 非空、country 两位大写或空串、weight 一位小数、text 含 " → "。
+6. 输出 JSON。`;
+
+  const { output } = await generateText({
+    model: gateway(modelId),
+    prompt,
+    maxOutputTokens: 6000,
+    output: Output.object({
+      schema: LooseParsedSchema,
+      name: "parsed_restaurant_requirements",
+      description: "Echo Eats structured restaurant search requirements",
+    }),
+  });
+  const parsed = ParsedSchema.parse(output);
+  parsed.uiLanguage = data.uiLanguage;
+  parsed.city = data.city;
+  if (!parsed.dateTime) {
+    parsed.dateTime = data.date || (data.uiLanguage === "en" ? "Unspecified" : "未指定");
+  }
+  return parsed;
+}
+
+// ---- 主入口：parseRequirements ----
 export const parseRequirements = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParseInput.parse(input))
   .handler(async ({ data }) => {
     const key = process.env.LOVABLE_API_KEY;
     if (!key) throw new Error("Missing LOVABLE_API_KEY");
     const gateway = createLovableAiGatewayProvider(key);
-
-    // 松散 schema：让 AI SDK 转出的 JSON Schema 极宽松，避免模型偶尔返回
-    // weight:"0.8" / hhmm:"7:00" 之类被 SDK 内部 zod 直接判失败。
-    // 拿到松散对象后再用严格 ParsedSchema（含 WeightCoerced / HhmmCoerced /
-    // .catch）把脏数据救回来。
-    const LooseParsedSchema = z.object({
-      city: z.string().optional(),
-      cuisines: z.array(z.string()).optional(),
-      dateTime: z.string().optional(),
-      hardFilters: z.array(z.unknown()).optional(),
-      softPreferences: z.array(z.unknown()).optional(),
-      negativeFilters: z.array(z.unknown()).optional(),
-      dishPreferences: z.array(z.string()).optional(),
-      cuisineLevelConstraints: z.array(z.unknown()).optional(),
-      searchStrategy: z.array(z.string()).optional(),
-      country: z.string().optional(),
-      language: z.string().optional(),
-      mode: z.string().optional(),
-      visitTime: z.unknown().optional(),
-    });
-
-    const prompt = `你是 Echo Eats 的需求结构化引擎。用户填写了餐厅搜索表单：
-
-- 城市：${data.city}
-- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : data.autoInferCuisines ? "（用户跳过了料理选择并要求 AI 自动识别，请从「其它需求」推断 1-2 个料理候选；推断不出来再填 [\"餐厅\"]）" : "（用户跳过了料理选择并要求按所有品类搜索，cuisines 字段直接填 [\"餐厅\"]）"}
-- 日期：${data.date || (data.uiLanguage === "en" ? "（用户未指定，dateTime 字段必须填英文字符串 \"Unspecified\"，不要填中文，也不要把日期/营业时间当 hardFilter）" : "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）")}
-- 其它需求（自然语言）：${data.freeText || "（无）"}
-
-请把需求结构化为 JSON。**所有自由文本字段（hardFilters/softPreferences/negativeFilters/dishPreferences/cuisineLevelConstraints/searchStrategy/cuisines/dateTime/visitTime.raw/visitTime.evidence 中所有人类可读内容）必须用 ${data.uiLanguage === "en" ? "English（英文）" : "简体中文"} 撰写**。注意：\`language\` 字段（BCP47 搜索目标语言，用于 Google Maps）按城市本地语言填写，不受此影响；\`visitTime.evidence\` 必须是用户原文片段，保持原文不翻译。如果用户没提到某类，返回空数组。
-
-## 字段说明
-
-- city：原样回传。cuisines：若用户已选则原样回传；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-2 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
-- dateTime：直接用日期字符串，如 "2026/05/20"。
-- hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
-- dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight）。
-- searchStrategy：3-5 条搜索策略说明。
-- cuisineLevelConstraints：**品类级约束**（对象数组，形如 \`{"text":"原话 → 翻译","weight":0.1-1.0}\`），见下节。
-
-## 品类级 vs 餐厅级约束（最高优先级，先判这一条）
-
-有一类条件**本质上不是单家餐厅的可查属性，而是「整个品类」的特征**。这类条件直接当 hardFilter 塞给地图文本搜索会查不到（候选变空），必须用「先推品类、再搜索」的方式处理。
-
-**品类级约束识别清单**（凡涉及以下语义之一，即视为品类级，按需自行扩展）：
-
-- 用餐时长 / 总耗时：「1 小时内吃完」、「快一点」、「想慢慢吃」、「2 小时左右」
-- 同行人结构：「带 3 岁小孩」、「带宝宝」、「家庭聚餐」、「一个人吃」、「10 人聚会」
-- 食量/口味强度：「想轻一点」、「不想太饱」、「吃饱一点」、「想吃辣」、「想清淡」
-- 氛围属性：「想热闹」、「想安静」、「适合约会」、「适合谈事」
-- 用餐场景：「快速解决一顿」、「顺路解决」、「慢慢喝一杯」、「夜宵」
-
-**处理规则（务必按顺序执行）**：
-
-1. 这类条件**必须**进 \`cuisineLevelConstraints\`（带 weight，规则同下文权重表）。
-2. **同时**把同一条复制进 \`softPreferences\`（保留排序信号，weight 相同）。
-3. **绝对不要**进 \`hardFilters\`（会让 Google Maps 文本搜索查不到候选）。
-4. 当**用户输入的 cuisines 为空时**，模型必须根据这些约束在 \`cuisines\` 字段里**主动产出 1–2 个匹配品类**，替代之前那种 \`["餐厅"]\` 的兜底。例：
-   - 「东京、用餐 1 小时内、想轻一点」→ cuisines: ["拉面","定食"]
-   - 「大阪、带 3 岁小孩、想吃饱」→ cuisines: ["家庭餐厅","回转寿司"]
-   - 「京都、想慢慢吃、安静」→ cuisines: ["怀石","会席料理"]
-5. 当用户**已显式提供 cuisines** 时，**不要覆盖** cuisines；在 \`searchStrategy\` 里说明会按这些品类级约束做排序倾斜即可。
-
-## hardFilters 判定规则（关键，务必严格执行）
-
-只要用户原话出现以下任一信号，必须归入 hardFilters：
-
-1. **强制词**：必须 / 一定 / 务必 / 只 / 仅 / 不能 / 不要 / 禁止 / 拒绝 / 不接受 / 得 / 需要
-2. **数值上下限**："X 以内"、"不超过 X"、"至多 X"、"至少 X"、"X 以上"、"≤ / ≥ / < / >"。
-3. **明确可验证属性**：可预约 / 接受信用卡 / 有包间 / 有吧台 / 无烟 / 营业到 X 点 / 步行 X 分钟内 等。
-4. 用户用陈述句给出的具体可核实条件，例如"两个人"→ 人数=2。
-
-## softPreferences 判定规则
-
-仅当满足以下之一才归 soft，否则倾向 hard：
-
-- 模糊形容词："氛围好"、"舒服"、"地道"、"环境不错"
-- 弱化词："最好"、"希望"、"偏好"、"优先"、"如果可以"、"尽量"
-
-## 权重判定（每条 hard / soft / neg 都必须打 weight，0.1-1.0，保留 1 位小数）
-
-按用户原话语气强度打分：
-- **1.0**：务必 / 绝对 / 一定 + 强调副词（"务必必须"、"绝对不要"、"一定要"）
-- **0.9**：必须 / 一定 / 不能 / 不要 / 只 / 仅 / 拒绝 / 禁止
-- **0.8**：要 / 需要 / 得 / 明确数值上下限（如"15000 以内"哪怕没强制词，也算 0.8，可验证硬约束）
-- **0.6**：最好 / 希望 / 偏好 / 优先
-- **0.4**：如果可以 / 尽量 / 有的话更好
-- **0.3**：随便提一句、轻描淡写
-
-类别先验（与语气取较高值）：
-- **预算上限 / 人数 / 可预约 / 营业时间** 这类「可验证硬属性」基线 ≥ 0.8（即使语气随意也保持 0.8）。
-- **氛围 / 装修 / 服务态度** 这类主观偏好基线 ≤ 0.7。
-- 避雷条目：「不要 X」=0.7，「绝对不要 X」=1.0。
-
-## 边界
-
-- 否定句一律进 negativeFilters，不要再复制到 hardFilters。
-- 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
-
-## 完整抽取规则（关键，务必严格执行）
-
-**本步禁止做任何语义去重或合并。** 用户对同一个诉求的多次表达（强度不同、措辞不同、前后矛盾、肯定否定改写），必须**每一次都单独输出一条**，不要因为前面已经出现过类似表达就忽略后面的。后续有专门的聚类步骤会把同一诉求合并并取最高权重；如果你在这一步把后面更强的那次表达漏掉，最终结果就会错。
-
-举例：用户原文出现"环境稍微好一点"、"环境好"、"最重要的是环境一定要好"三次——你**必须**输出三条独立条目（分别带各自原话和各自 weight），**不要**自行合并成一条，**不要**只保留第一次出现的。把"必须/一定/最重要"这类强度信号原原本本反映在对应那条的 weight 上（这里"最重要的是环境一定要好"必须给 1.0）。
-
-dishPreferences 同理：把用户提到的所有菜品都列出来，不在这一步做同义词合并。
-
-## 示例
-
-输入："两个人务必必须 15000 日元以内，不要游客店，适合聊天，最好有蟹刺身，可以预约。"
-- hardFilters: [
-    {"text":"两个人 → 人数 = 2","weight":0.9},
-    {"text":"务必必须 15000 日元以内 → 人均预算 ≤ 15000 JPY","weight":1.0},
-    {"text":"可以预约 → 支持预约","weight":0.8}
-  ]
-- softPreferences: [
-    {"text":"适合聊天（安静、便于交谈）","weight":0.7},
-    {"text":"最好有蟹刺身","weight":0.6}
-  ]
-- negativeFilters: [{"text":"不要游客店","weight":0.7}]
-- dishPreferences: ["蟹刺身"]
-
-## 国家/语言识别（重要）
-
-- **country**：根据 city 推断 ISO 3166-1 alpha-2 国家码（两个大写字母）。覆盖所有城市，不只是大城市：
-  - 函馆/小樽/旭川/轻井泽/由布院/别府/熊本/鹿儿岛/长崎/姬路/和歌山/石垣岛/那霸 → "JP"
-  - 上海/北京/成都/苏州/杭州/重庆/西安/广州/深圳等大陆城市 → "CN"
-  - 香港 → "HK"，澳门 → "MO"，台北/高雄/台中 → "TW"
-  - 首尔/釜山/济州 → "KR"
-  - 清迈/曼谷/普吉 → "TH"
-  - 新加坡 → "SG"
-  - 巴黎/里昂 → "FR"，米兰/罗马/佛罗伦萨 → "IT"，纽约/旧金山 → "US"
-  - 实在判断不出来留 ""。
-- **language**：该城市本地主要书面语言的 BCP 47 代码：
-  - JP → "ja"，KR → "ko"
-  - CN → "zh-CN"，HK → "zh-HK"，TW → "zh-TW"，MO → "zh-HK"
-  - TH → "th"，FR → "fr"，IT → "it"，DE → "de"，ES → "es"
-  - US/UK/AU/CA/SG → "en"
-  - 其它按国家主语言映射，判断不出留 ""。
-
-## visitTime（就餐日期/时间，严格抽取，禁止脑补）
-
-服务端今天的本地 weekday 是 **${new Date().getDay()}**（0=周日..6=周六），今天日期 ${new Date().toISOString().slice(0, 10)}。
-
-**只有当用户原文「其它需求」里明确提到了具体的星期/日期/时段/钟点，才填 visitTime。模糊词如「随便」「找一家」「想去吃饭」一律视为未提到。**
-
-字段规则：
-- \`mentioned\`：用户是否真的提到了。没提到 → false，且其它字段全部填 null / 空串。
-- \`evidence\`：必须是原文「其它需求」里**逐字出现**的连续片段（不得改写、不得翻译、不得拼接）。后端会做子串校验，对不上就整条作废。
-- \`weekday\`：0=周日, 1=周一, ..., 6=周六。
-  - "今天/today/今晚/tonight" → ${new Date().getDay()}
-  - "明天/tomorrow/明晚" → ${(new Date().getDay() + 1) % 7}
-  - "后天" → ${(new Date().getDay() + 2) % 7}
-  - "周六/周日/周一" / "Saturday/Sunday/Monday..." → 直接对应
-  - **有具体钟点（原文出现明确的钟表数字，如 "12:00"、"7 点"、"7pm"、"14:30"）但没有任何星期/日期词 → 默认填今天的 weekday = ${new Date().getDay()}**
-  - 只有模糊时段词（"晚上"/"中午"/"tonight"/"evening" 等，没有具体钟点）且没有日期词 → null
-- \`hhmm\`：24 小时制 "HH:MM"。用户提到餐段就是明确的时间信号，必须推断对应锚点，不得因为没有钟表数字而遗漏。
-  - 具体钟点："7 点"→"19:00"（晚上语境）/"07:00"（早上语境）；"7pm"→"19:00"；"12:30"→"12:30"；"下午 2 点半"→"14:30"
-  - 餐段锚点：早餐/breakfast→"08:30"，早午餐/brunch→"10:30"，午餐/午饭/lunch→"12:30"，下午茶/afternoon tea→"15:00"，晚餐/晚饭/dinner/supper→"19:00"，夜宵/宵夜/late-night meal→"22:00"
-  - 其它模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
-  - 同时出现餐段和具体钟点时，始终以用户的具体钟点为准，例如 "brunch at 11:30"→"11:30"
-  - 没有时间信号 → null
-- \`raw\`：原话直接抄过来，用于 UI 展示，例如 "周六晚上 7 点"。
-
-### 示例
-- 输入「两个人预算 15000，不要游客店」→ \`{"mentioned":false,"evidence":"","weekday":null,"hhmm":null,"raw":""}\`
-- 输入「find a good ramen place」→ \`{"mentioned":false,...}\`
-- 输入「周六晚上 7 点去」→ \`{"mentioned":true,"evidence":"周六晚上 7 点","weekday":6,"hhmm":"19:00","raw":"周六晚上 7 点"}\`
-- 输入「this Saturday 7pm」→ \`{"mentioned":true,"evidence":"this Saturday 7pm","weekday":6,"hhmm":"19:00","raw":"this Saturday 7pm"}\`
-- 输入「晚上去」→ \`{"mentioned":true,"evidence":"晚上","weekday":null,"hhmm":"19:00","raw":"晚上"}\`（只有模糊时段，不过滤）
-- 输入「12:00 去吃」→ \`{"mentioned":true,"evidence":"12:00","weekday":${new Date().getDay()},"hhmm":"12:00","raw":"12:00"}\`（具体钟点无日期 → 默认今天）
-- 输入「7pm sushi」→ \`{"mentioned":true,"evidence":"7pm","weekday":${new Date().getDay()},"hhmm":"19:00","raw":"7pm"}\`
-- 输入「明天 12:30」→ \`{"mentioned":true,"evidence":"明天 12:30","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"12:30","raw":"明天 12:30"}\`
-- 输入「Saturday brunch」→ \`{"mentioned":true,"evidence":"Saturday brunch","weekday":6,"hhmm":"10:30","raw":"Saturday brunch"}\`
-- 输入「dinner tomorrow」→ \`{"mentioned":true,"evidence":"dinner tomorrow","weekday":${(new Date().getDay() + 1) % 7},"hhmm":"19:00","raw":"dinner tomorrow"}\`
-- 输入「周日早午餐」→ \`{"mentioned":true,"evidence":"周日早午餐","weekday":0,"hhmm":"10:30","raw":"周日早午餐"}\`
-- 输入「brunch place」→ \`{"mentioned":true,"evidence":"brunch","weekday":null,"hhmm":"10:30","raw":"brunch"}\`（保留餐段意图，但不虚构日期、不做指定星期硬过滤）`;
-
-    const runOnce = async (modelId: string, opts?: { forceInfer?: boolean }) => {
-      const model = gateway(modelId);
-      const effectivePrompt = opts?.forceInfer
-        ? prompt +
-          `\n\n## 强制识别品类（重试指令）\n用户已**明确要求**自动识别料理品类。即使「其它需求」线索很弱，也必须从菜品、口味、人群、场景、时段、价位中任选维度，给出 1-2 个最相关的**具体**料理品类。**禁止**返回 ["餐厅"] / ["restaurants"] / ["レストラン"] / ["음식점"] 等通用兜底词。`
-        : prompt;
-      const { output } = await generateText({
-        model,
-        prompt: effectivePrompt,
-        maxOutputTokens: 8000,
-        output: Output.object({
-          schema: LooseParsedSchema,
-          name: "parsed_restaurant_requirements",
-          description: "Echo Eats structured restaurant search requirements",
-        }),
-      });
-      const parsed = ParsedSchema.parse(output);
-      parsed.uiLanguage = data.uiLanguage;
-      // 一致性兜底：weight >= 0.8 的 soft 一律提升为 hard
-      const promoted = parsed.softPreferences.filter((s) => s.weight >= 0.8);
-      if (promoted.length) {
-        parsed.hardFilters = [...parsed.hardFilters, ...promoted];
-        parsed.softPreferences = parsed.softPreferences.filter((s) => s.weight < 0.8);
-      }
-      // 用户未选 cuisines 且 AI 推断出了非兜底品类 → 标注为 AI 识别
-      const userProvidedCuisines = data.cuisines.length > 0;
-      const fallbackWord = data.uiLanguage === "en" ? "Restaurants" : "餐厅";
-      parsed.cuisinesInferred =
-        !userProvidedCuisines &&
-        parsed.cuisines.length > 0 &&
-        !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
-      return dedupeParsedConditions(parsed);
-    };
 
     const FALLBACK_CUISINE_WORDS = new Set([
       "餐厅",
@@ -599,35 +723,16 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
       arr.length > 0 &&
       arr.every((c) => FALLBACK_CUISINE_WORDS.has(c.trim().toLowerCase()));
 
-    const enforceInferIfRequested = async (
-      parsed: z.infer<typeof ParsedSchema>,
-    ): Promise<z.infer<typeof ParsedSchema>> => {
-      const userProvidedCuisines = data.cuisines.length > 0;
-      const wantsInfer = !userProvidedCuisines && data.autoInferCuisines !== false;
-      if (!wantsInfer || !isAllFallback(parsed.cuisines)) return parsed;
-      console.warn(
-        "[parseRequirements] 用户要求 AI 识别但首轮返回兜底词，跨模型重试 forceInfer",
-      );
-      try {
-        const retry = await runOnce("openai/gpt-5-mini", { forceInfer: true });
-        if (!isAllFallback(retry.cuisines)) return retry;
-        console.warn("[parseRequirements] forceInfer 重试仍为兜底，沿用首轮结果");
-      } catch (e) {
-        console.warn(
-          "[parseRequirements] forceInfer 重试失败：",
-          e instanceof Error ? e.message : e,
-        );
-      }
-      return parsed;
-    };
-
     const sanitizeVisitTime = (
       parsed: z.infer<typeof ParsedSchema>,
     ): z.infer<typeof ParsedSchema> => {
       const vt = parsed.visitTime;
       const mealPeriod = inferMealPeriod(data.freeText ?? "");
       const explicitClock = inferExplicitClock(data.freeText ?? "");
-      const inferredWeekday = inferWeekdayFromText(data.freeText ?? "", new Date().getDay());
+      const inferredWeekday = inferWeekdayFromText(
+        data.freeText ?? "",
+        new Date().getDay(),
+      );
       if ((!vt || !vt.mentioned) && mealPeriod) {
         return {
           ...parsed,
@@ -641,7 +746,6 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         };
       }
       if (!vt || !vt.mentioned) return { ...parsed, visitTime: null };
-      // evidence 必须真实出现在原文里（大小写/空格归一化），防 AI 幻觉
       const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
       const ev = norm(vt.evidence ?? "");
       const src = norm(data.freeText ?? "");
@@ -670,11 +774,47 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
           },
         };
       }
-      // 非餐段时间仍要求 weekday + hhmm 都齐才用于过滤
       if (vt.weekday == null || !vt.hhmm) {
         return { ...parsed, visitTime: null };
       }
       return parsed;
+    };
+
+    const finalize = (parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> => {
+      // 一致性兜底：weight >= 0.8 的 soft 一律提升为 hard（保持下游已有行为）
+      const promoted = parsed.softPreferences.filter((s) => s.weight >= 0.8);
+      if (promoted.length) {
+        parsed.hardFilters = [...parsed.hardFilters, ...promoted];
+        parsed.softPreferences = parsed.softPreferences.filter((s) => s.weight < 0.8);
+      }
+      // 用户未选 cuisines 且 AI 推断出了非兜底品类 → 标注为 AI 识别
+      const userProvidedCuisines = data.cuisines.length > 0;
+      const fallbackWord = data.uiLanguage === "en" ? "Restaurants" : "餐厅";
+      parsed.cuisinesInferred =
+        !userProvidedCuisines &&
+        parsed.cuisines.length > 0 &&
+        !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
+      return dedupeParsedConditions(parsed);
+    };
+
+    const runPipeline = async (
+      modelId: string,
+      cachedWinners?: ExtractedItem[],
+      opts?: { forceInfer?: boolean },
+    ): Promise<{ parsed: z.infer<typeof ParsedSchema>; winners: ExtractedItem[]; mergedCount: number; extractedCount: number }> => {
+      let winners = cachedWinners;
+      let mergedCount = 0;
+      let extractedCount = cachedWinners?.length ?? 0;
+      if (!winners) {
+        const extracted = await extractRawItems(data, gateway);
+        extractedCount = extracted.length;
+        const dedup = await semanticDedupe(extracted, data, gateway);
+        winners = dedup.winners;
+        mergedCount = dedup.mergedCount;
+      }
+      const raw = await scoreAndAssemble(winners, data, gateway, modelId, opts);
+      const sanitized = sanitizeVisitTime(raw);
+      return { parsed: finalize(sanitized), winners, mergedCount, extractedCount };
     };
 
     const _parseT0 = Date.now();
@@ -685,25 +825,44 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
       freeTextLen: (data.freeText ?? "").length,
       uiLang: data.uiLanguage,
     });
+
     try {
-      let parsed: z.infer<typeof ParsedSchema>;
+      let result;
       try {
-        const first = await runOnce("google/gemini-2.5-flash");
-        parsed = sanitizeVisitTime(await enforceInferIfRequested(first));
+        result = await runPipeline("google/gemini-2.5-flash");
       } catch (e1) {
-        console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
-        // 跨供应商重试，避免同模型以同样方式再次失败
-        const second = await runOnce("openai/gpt-5-mini");
-        parsed = sanitizeVisitTime(await enforceInferIfRequested(second));
+        console.warn(
+          "[parseRequirements] 首轮失败，跨模型重试：",
+          e1 instanceof Error ? e1.message : e1,
+        );
+        result = await runPipeline("openai/gpt-5-mini");
       }
-      const beforeCluster = {
-        hard: parsed.hardFilters.length,
-        soft: parsed.softPreferences.length,
-        neg: parsed.negativeFilters.length,
-        dishes: parsed.dishPreferences.length,
-      };
-      // 第二阶段：独立 AI 调用做语义聚类去重；失败时退回原结果
-      parsed = await semanticClusterMerge(parsed, gateway, data.uiLanguage);
+
+      // 强制识别品类：用户要求 AI 推断但首轮返回兜底词 → 用 winners 缓存重跑 Stage C
+      const userProvidedCuisines = data.cuisines.length > 0;
+      const wantsInfer = !userProvidedCuisines && data.autoInferCuisines !== false;
+      if (wantsInfer && isAllFallback(result.parsed.cuisines)) {
+        console.warn(
+          "[parseRequirements] 用户要求 AI 识别但返回兜底词，跨模型重试 forceInfer",
+        );
+        try {
+          const retry = await runPipeline("openai/gpt-5-mini", result.winners, {
+            forceInfer: true,
+          });
+          if (!isAllFallback(retry.parsed.cuisines)) {
+            result = retry;
+          } else {
+            console.warn("[parseRequirements] forceInfer 重试仍为兜底，沿用首轮结果");
+          }
+        } catch (e) {
+          console.warn(
+            "[parseRequirements] forceInfer 重试失败：",
+            e instanceof Error ? e.message : e,
+          );
+        }
+      }
+
+      const { parsed, mergedCount, extractedCount } = result;
       echoLog.ok("parseRequirements", Date.now() - _parseT0, {
         cuisines: parsed.cuisines.length,
         hard: parsed.hardFilters.length,
@@ -712,12 +871,12 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         dishes: parsed.dishPreferences.length,
         visitTime: parsed.visitTime ? "yes" : "no",
         mode: parsed.mode,
-        beforeCluster: `${beforeCluster.hard}/${beforeCluster.soft}/${beforeCluster.neg}/${beforeCluster.dishes}`,
+        extracted: extractedCount,
+        merged: mergedCount,
       });
       return parsed;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // 兜底：返回最小可用结构，避免整页崩溃
       echoLog.fail("parseRequirements", Date.now() - _parseT0, e, { fallback: "yes" });
       console.warn("[parseRequirements] AI 解析失败，使用兜底结构：", msg);
       return ParsedSchema.parse({
@@ -1045,36 +1204,40 @@ function verifyGoogleRatingFilter(
   }
   const thresholdMatch = text.match(/([1-5](?:\.\d+)?)\s*(?:分|星|\/\s*5)?/);
   if (!thresholdMatch) return null;
-  const threshold = Number(thresholdMatch[1]);
+  const thresholdStr = thresholdMatch[1];
+  const threshold = Number(thresholdStr);
   if (!Number.isFinite(threshold) || threshold < 1 || threshold > 5) return null;
   if (rating == null) {
     return { status: "unknown", note: isEn ? "Google Maps rating is unavailable" : "Google Maps 评分数据缺失" };
   }
 
-  let passes: boolean;
-  if (/(?:不超过|至多|最高|以下|不高于|at most|no more than|up to|<=|≤)/i.test(text)) {
-    passes = rating <= threshold;
-  } else if (/(?:低于|少于|小于|below|under|less than|<)/i.test(text)) {
-    passes = rating < threshold;
-  } else if (/(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i.test(text)) {
-    passes = rating > threshold;
-  } else {
-    passes = rating >= threshold;
-  }
-  const comparator = /(?:不超过|至多|最高|以下|不高于|at most|no more than|up to|<=|≤)/i.test(text)
-    ? "≤"
-    : /(?:低于|少于|小于|below|under|less than|<)/i.test(text)
-      ? "<"
-      : /(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i.test(text)
-        ? ">"
-        : "≥";
+  // 比较符判定：先匹配带"不"前缀/双字符运算符，避免 "不低于" 被误判为 "低于"
+  const reAtMost = /(?:不超过|不高于|不大于|至多|最高|以下|at most|no more than|up to|<=|≤)/i;
+  const reAtLeast = /(?:不低于|不少于|不小于|至少|起步|起|>=|≥|=>|at least|no less than)/i;
+  const reLess = /(?:低于|少于|小于|below|under|less than|<)/i;
+  const reGreater = /(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i;
+
+  let comparator: "≤" | "<" | ">" | "≥";
+  if (reAtMost.test(text)) comparator = "≤";
+  else if (reAtLeast.test(text)) comparator = "≥";
+  else if (reLess.test(text)) comparator = "<";
+  else if (reGreater.test(text)) comparator = ">";
+  else comparator = "≥";
+
+  const passes =
+    comparator === "≤" ? rating <= threshold :
+    comparator === "<" ? rating < threshold :
+    comparator === ">" ? rating > threshold :
+    rating >= threshold;
+
   return {
     status: passes ? "ok" : "fail",
     note: isEn
-      ? `Google Maps rating is ${rating.toFixed(1)} / 5; requirement: ${comparator} ${threshold}`
-      : `Google Maps 实际评分 ${rating.toFixed(1)} / 5；要求 ${comparator} ${threshold} 分`,
+      ? `Google Maps rating is ${rating.toFixed(1)} / 5; requirement: ${comparator} ${thresholdStr}`
+      : `Google Maps 实际评分 ${rating.toFixed(1)} / 5；要求 ${comparator} ${thresholdStr} 分`,
   };
 }
+
 
 function cleanMatchLabel(text: string): string {
   return text
@@ -1507,6 +1670,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             city: data.city,
             language,
             apiKey: aiKey,
+            styleExclude: data.cuisineStyleExclude,
           });
           cuisineExpansions.set(cuisine, expansion);
 
