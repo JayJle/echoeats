@@ -471,9 +471,9 @@ items：
     }
   };
 
-  // 主模型 gemini-2.5-flash（Stage B 必须能跑通；gpt-5-* 不接受 max_tokens 参数会全 fallback）
-  let clusters = await tryOnce("google/gemini-2.5-flash");
-  if (!clusters) clusters = await tryOnce("google/gemini-2.5-pro");
+  // 主模型 gemini-2.5-pro（聚簇 + winner 选择需要更稳的指令遵从），失败 fallback flash
+  let clusters = await tryOnce("google/gemini-2.5-pro");
+  if (!clusters) clusters = await tryOnce("google/gemini-2.5-flash");
 
   if (!clusters) {
     const fallback = deterministicMergeByNormalized(items);
