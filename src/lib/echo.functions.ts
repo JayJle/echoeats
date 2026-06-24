@@ -1155,36 +1155,40 @@ function verifyGoogleRatingFilter(
   }
   const thresholdMatch = text.match(/([1-5](?:\.\d+)?)\s*(?:分|星|\/\s*5)?/);
   if (!thresholdMatch) return null;
-  const threshold = Number(thresholdMatch[1]);
+  const thresholdStr = thresholdMatch[1];
+  const threshold = Number(thresholdStr);
   if (!Number.isFinite(threshold) || threshold < 1 || threshold > 5) return null;
   if (rating == null) {
     return { status: "unknown", note: isEn ? "Google Maps rating is unavailable" : "Google Maps 评分数据缺失" };
   }
 
-  let passes: boolean;
-  if (/(?:不超过|至多|最高|以下|不高于|at most|no more than|up to|<=|≤)/i.test(text)) {
-    passes = rating <= threshold;
-  } else if (/(?:低于|少于|小于|below|under|less than|<)/i.test(text)) {
-    passes = rating < threshold;
-  } else if (/(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i.test(text)) {
-    passes = rating > threshold;
-  } else {
-    passes = rating >= threshold;
-  }
-  const comparator = /(?:不超过|至多|最高|以下|不高于|at most|no more than|up to|<=|≤)/i.test(text)
-    ? "≤"
-    : /(?:低于|少于|小于|below|under|less than|<)/i.test(text)
-      ? "<"
-      : /(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i.test(text)
-        ? ">"
-        : "≥";
+  // 比较符判定：先匹配带"不"前缀/双字符运算符，避免 "不低于" 被误判为 "低于"
+  const reAtMost = /(?:不超过|不高于|不大于|至多|最高|以下|at most|no more than|up to|<=|≤)/i;
+  const reAtLeast = /(?:不低于|不少于|不小于|至少|起步|起|>=|≥|=>|at least|no less than)/i;
+  const reLess = /(?:低于|少于|小于|below|under|less than|<)/i;
+  const reGreater = /(?:超过|高于|大于|above|over|greater than|more than|>|》|〉)/i;
+
+  let comparator: "≤" | "<" | ">" | "≥";
+  if (reAtMost.test(text)) comparator = "≤";
+  else if (reAtLeast.test(text)) comparator = "≥";
+  else if (reLess.test(text)) comparator = "<";
+  else if (reGreater.test(text)) comparator = ">";
+  else comparator = "≥";
+
+  const passes =
+    comparator === "≤" ? rating <= threshold :
+    comparator === "<" ? rating < threshold :
+    comparator === ">" ? rating > threshold :
+    rating >= threshold;
+
   return {
     status: passes ? "ok" : "fail",
     note: isEn
-      ? `Google Maps rating is ${rating.toFixed(1)} / 5; requirement: ${comparator} ${threshold}`
-      : `Google Maps 实际评分 ${rating.toFixed(1)} / 5；要求 ${comparator} ${threshold} 分`,
+      ? `Google Maps rating is ${rating.toFixed(1)} / 5; requirement: ${comparator} ${thresholdStr}`
+      : `Google Maps 实际评分 ${rating.toFixed(1)} / 5；要求 ${comparator} ${thresholdStr} 分`,
   };
 }
+
 
 function cleanMatchLabel(text: string): string {
   return text
