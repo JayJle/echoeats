@@ -347,7 +347,7 @@ async function semanticDedupe(
     .join("\n");
 
   const prompt = `# 角色
-你是需求条目"按话题聚簇 + 取舍"引擎。判断一律基于语义，不做字面匹配。
+你是需求条目"全局按话题聚簇 + 取舍"引擎。**全部 items 一锅煮，不分桶、不分正负。**
 
 # 输入
 - freeText（完整原文，供你看上下文）：
@@ -356,28 +356,38 @@ ${data.freeText ?? ""}
 - items 列表（顺序=原文出现顺序，格式：id\\t[kind]\\tsnippet\\t→ normalized）：
 ${itemsBlock}
 
-# 核心思想
-**按"话题/维度"聚簇，而不是按"语义是否同向"聚簇。**
-同一话题下的所有表达都进同一簇——不管方向相同（同义/强弱不同）还是方向相反（矛盾）。
-方向相反 = 矛盾 = **需要取舍**，由你挑 winner，而不是拆成两簇。
+# 核心思想（务必牢记）
+此刻**还没有 hard / soft / negative 之分**——分桶在下游做。
+你的唯一任务：把所有谈论**同一话题/同一属性维度**的 item 合到同一簇里，由你挑 winner。
+判断维度时**完全无视方向**（正/反/强/弱/必须/最好/不要/可以）——只看"在讨论同一件事吗"。
+
+# 维度举例（同维度=同簇）
+- 话题"环境/氛围"：环境好、环境不好、环境稍微好一点、环境一定要好、氛围典雅、别太吵 → **1 簇**
+- 话题"档次定位"：要中高端、不可低端、不要太低端、别太高端、不要 luxurious、档次高一点、平价也行 → **1 簇**
+- 话题"客群类型"：不要游客店、本地人多、不要网红店 → **1 簇**
+- 话题"服务态度"：服务好、服务员态度要好、别冷脸 → **1 簇**
+- 话题"菜品精致度"：菜品精致、不要粗糙、出品讲究 → **1 簇**
+- 话题"预算上限"：预算 1 万以内 / 1.5 万也行 / 不要太贵 → **1 簇**
+- 话题"周边社区"：安静社区、富人区也行、不要闹市 → **1 簇**
 
 # 严格规则
-1. **同一话题/同一属性维度 → 必须合并到同一簇**。例如：
-   - "环境好" / "环境不好" / "环境稍微好一点" / "环境一定要好" / "环境不要太差" → 全部进"环境"簇。
-   - "定位必须中高端" / "不可低端" / "档次低一点也行" → 全部进"档次定位"簇（方向相反也合并取舍）。
-   - "不要游客店" / "本地人多" → 全部进"客群类型"簇。
-   - "预算 1 万以内" / "1.5 万也行" → 同为"预算上限"维度，合并取舍。
+1. **同一话题/属性维度 → 必须合并到同一簇**，不管是正向、反向、强弱、必须/最好/不要。方向相反不是拆簇理由，而是"由你 winner 取舍"的理由。
 2. kind 不同（filter / dish / time）**绝不**跨簇。
-3. **唯一不合并的理由 = 子维度/阈值不同**（不是方向不同）。例如：
-   - "评分≥4.0 必须" vs "评分≥4.3 加分" → **拆成 2 簇**（阈值不同 + 角色不同）。
-   - "人均≤300 硬上限" vs "人均≤200 更好" → 拆成 2 簇。
-   - 但 "评分必须 4.0 以上" vs "评分最好 4.0 以上" → 同阈值，**合并取舍**。
-4. **每个簇内：把 winner id 放数组第一位**。winner 选择：
-   - 用户后说的通常代表最新意图，优先；
-   - 语气更强、更明确的优先；
-   - 与整段 freeText 主诉求一致的优先。
+3. **唯一允许拆簇的理由 = 子维度或阈值不同**，且不是方向不同。例如：
+   - "评分≥4.0 必须" vs "评分≥4.3 加分" → **拆 2 簇**（阈值不同 + 角色不同）。
+   - "人均≤300 硬上限" vs "人均≤200 更好" → 拆 2 簇。
+   - 但 "评分必须 4.0" vs "评分最好 4.0" → 阈值相同，合并取舍。
+4. **每个簇内：winner id 放数组第一位**。winner 选择：
+   - 用户后说的代表最新意图，优先；
+   - 语气更强、更具体的优先；
+   - 与整段 freeText 主诉求一致的优先；
+   - 若簇里有方向相反的条目，winner 选 freeText 主导方向的那条，下游再去取舍语气。
 5. **每个输入 id 必须且只能出现在一个 cluster 中**——不漏、不重复、不新增。
 6. 没有同话题伙伴的 item 独自成簇 \`[id]\`。
+
+# 自检（输出前必做）
+- 扫一遍输出，问自己："任意两个簇之间，是否在谈同一个话题？" 若是，**必须**合并。
+- 特别检查：环境、档次、服务、菜品、客群、预算、评分、社区——这些维度全文出现的所有 item 都该汇到对应那 1 个簇里。
 
 # 输出
 只输出 \`{"clusters": number[][]}\`。每个内层数组首位 = winner id。
@@ -389,16 +399,19 @@ items：
   3 [filter] "环境不要太差" → 环境不差
   4 [filter] "定位必须中高端" → 中高端
   5 [filter] "不可低端" → 不要低端
-  6 [filter] "评分必须 4.0 以上" → 评分≥4.0 必须
-  7 [filter] "评分最好 4.3 以上" → 评分≥4.3 加分
-  8 [filter] "两个人" → 人数=2
+  6 [filter] "不要太高端" → 别太高端
+  7 [filter] "不要 luxurious" → 不要豪华
+  8 [filter] "评分必须 4.0 以上" → 评分≥4.0 必须
+  9 [filter] "评分最好 4.3 以上" → 评分≥4.3 加分
+  10 [filter] "两个人" → 人数=2
 输出：
-  {"clusters":[[2,1,3],[4,5],[6],[7],[8]]}
+  {"clusters":[[2,1,3],[4,5,6,7],[8],[9],[10]]}
 说明：
-- 1/2/3 同为"环境"话题（含强弱不同/方向相反）→ 合并，winner=2（语气最强）。
-- 4/5 同为"档次定位"话题（方向相反但同维度）→ 合并取舍，winner=4。
-- 6 与 7 **阈值不同**(4.0 vs 4.3)且角色不同（必须 vs 加分）→ 拆开。
-- 8 独立维度，单成簇。`;
+- 1/2/3 同为"环境"话题（强弱/方向不同）→ 合 1 簇，winner=2。
+- 4/5/6/7 同为"档次定位"话题（中高端 vs 不低端 vs 别太高端 vs 不豪华，方向全混）→ **合 1 簇**，winner=4（最能代表"中高端但不豪华"主诉求）。
+- 8 与 9 阈值不同（4.0 vs 4.3）且角色不同（必须 vs 加分）→ 拆开。
+- 10 独立维度，单成簇。`;
+
 
   const validIds = new Set(items.map((i) => i.id));
 
@@ -426,9 +439,9 @@ items：
     }
   };
 
-  // 主模型 openai/gpt-5-mini（原生 structured output 稳），失败 retry openai/gpt-5-nano（更快）
-  let clusters = await tryOnce("openai/gpt-5-mini");
-  if (!clusters) clusters = await tryOnce("openai/gpt-5-nano");
+  // 主模型 gemini-2.5-flash（Stage B 必须能跑通；gpt-5-* 不接受 max_tokens 参数会全 fallback）
+  let clusters = await tryOnce("google/gemini-2.5-flash");
+  if (!clusters) clusters = await tryOnce("google/gemini-2.5-pro");
 
   if (!clusters) {
     const fallback = deterministicMergeByNormalized(items);
@@ -531,15 +544,17 @@ ${winnersBlock}
 1. 自由文本字段一律用 ${lang}；\`language\` 字段按城市本地语言填合法 BCP47（JP→ja，KR→ko，CN→zh-CN，HK/MO→zh-HK，TW→zh-TW，TH→th，FR→fr，IT→it，DE→de，ES→es，US/UK/AU/CA/SG→en）；\`visitTime.evidence\` 保留 freeText 原文片段不翻译。
 2. winners 里 kind="dish" 的条目 → 放入 dishPreferences（字符串数组，菜名用 ${lang}）；**不要**进 hard/soft/neg。
 3. winners 里 kind="time" 的条目 → 用于生成 visitTime；**不要**进 hard/soft/neg。
-4. winners 里 kind="filter" 的条目按语义判桶位：
+4. winners 里 kind="filter" 的条目按语义判桶位。**每条 winner 只能产出 1 条最终条件**（要么 hard、要么 soft、要么 neg、要么 cuisineLevel，互斥），**严禁**把一条 winner 拆成多条（例如把"中高端但不豪华"拆成 hard"必须中高端"+ neg"不要豪华"+ neg"不要低端"，这是上游已经合并掉的，下游不准再拆回去）：
    - hardFilters：语义上"必须满足"的可验证条件。例：必须 15000 日元以内 / 人数两个 / 要能预约 / 营业到 10 点。
    - softPreferences：偏好或模糊形容词，希望满足但非死线。例：氛围最好好一点 / 地道一些。
-   - negativeFilters：否定/避雷诉求。例：不要游客店 / 别太吵。
+   - negativeFilters：纯否定/避雷诉求（winner 主导方向就是"不要 X"）。例：不要游客店 / 别太吵。
    - cuisineLevelConstraints：**品类级**特征（不是单家餐厅可查属性，而是整品类特征）：用餐时长 / 同行人结构（带小孩/聚会人数）/ 食量/口味强度 / 氛围基调 / 用餐场景（夜宵/快速解决）。
+   - 若 winner 同时含正反边界（如"中高端但不豪华"），整条进一个最贴切桶位（这里进 hard，text 写"中高端但不豪华"），不要镜像出 neg 条目。
 5. **桶位互斥与镜像约束**（违反一定坏掉下游）：
-   - 否定句**只**进 negativeFilters，**严禁**同时进 hardFilters。
+   - 纯否定 winner **只**进 negativeFilters，**严禁**同时进 hardFilters。
    - cuisineLevelConstraints 的每一条**必须**同时镜像一条到 softPreferences（text 和 weight 完全一致），**严禁**进 hardFilters。
-   - 同一条目不能同时出现在 hardFilters 和 softPreferences（镜像规则除外）。
+   - 同一条 winner 不能同时出现在 hardFilters 和 softPreferences（镜像规则除外）。
+   - **同一话题维度**（如档次/环境/服务）在最终输出里最多 1 条；多出的就是把 winner 拆碎了，必须合回去。
 6. 每条 hard/soft/neg/cuisineLevelConstraints 形如 \`{"text": "<原话片段> → <标准化条件>", "weight": <number>}\`：
    - text 非空，必须含 " → " 分隔符
    - weight 为 [0.1, 1.0] 区间、保留 1 位小数的 number
