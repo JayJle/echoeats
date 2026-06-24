@@ -297,6 +297,10 @@ items:
       if (!snippet || !normalized) continue;
       items.push({ id: nextId++, snippet, normalized, kind });
     }
+    console.log(
+      `[Echo/extractRawItems] ok count=${items.length} items=` +
+        JSON.stringify(items.map((it) => ({ id: it.id, k: it.kind, s: it.snippet, n: it.normalized }))),
+    );
     return items;
   } catch (e) {
     console.warn(
@@ -347,7 +351,7 @@ async function semanticDedupe(
     .join("\n");
 
   const prompt = `# 角色
-你是需求条目"全局按话题聚簇 + 取舍"引擎。**全部 items 一锅煮，不分桶、不分正负。**
+你是需求条目"按子维度 tag 聚簇 + 取舍"引擎。**全部 items 一锅煮，不分桶、不分正负。**
 
 # 输入
 - freeText（完整原文，供你看上下文）：
@@ -356,61 +360,89 @@ ${data.freeText ?? ""}
 - items 列表（顺序=原文出现顺序，格式：id\\t[kind]\\tsnippet\\t→ normalized）：
 ${itemsBlock}
 
-# 核心思想（务必牢记）
-此刻**还没有 hard / soft / negative 之分**——分桶在下游做。
-你的唯一任务：把所有谈论**同一话题/同一属性维度**的 item 合到同一簇里，由你挑 winner。
-判断维度时**完全无视方向**（正/反/强/弱/必须/最好/不要/可以）——只看"在讨论同一件事吗"。
+# 子维度分类表（**核心**，必须先把每个 item 内心标一个 tag，再按 tag 聚簇）
 
-# 维度举例（同维度=同簇）
-- 话题"环境/氛围"：环境好、环境不好、环境稍微好一点、环境一定要好、氛围典雅、别太吵 → **1 簇**
-- 话题"档次定位"：要中高端、不可低端、不要太低端、别太高端、不要 luxurious、档次高一点、平价也行 → **1 簇**
-- 话题"客群类型"：不要游客店、本地人多、不要网红店 → **1 簇**
-- 话题"服务态度"：服务好、服务员态度要好、别冷脸 → **1 簇**
-- 话题"菜品精致度"：菜品精致、不要粗糙、出品讲究 → **1 簇**
-- 话题"预算上限"：预算 1 万以内 / 1.5 万也行 / 不要太贵 → **1 簇**
-- 话题"周边社区"：安静社区、富人区也行、不要闹市 → **1 簇**
+## A. 餐厅整体属性（kind=filter）
+- **A1 档次定位**：中高端 / 不低端 / 不豪华 / 不要 luxurious / 平价也行
+- **A2 价位预算**：人均≤300 / 1.5 万以内 / 不要太贵
+- **A3 环境氛围装修**（餐厅内部）：环境好 / 装修典雅 / 别太吵 / 安静（指店里）
+- **A4 服务态度**：服务员态度好 / 别冷脸
+- **A5 菜品出品质量**（餐厅级，**不是**具体菜名）：菜品精致 / 出品讲究 / 摆盘漂亮 / 食材新鲜
+- **A6 评分**（按阈值/角色再细分）：谷歌≥4.0 必须 / 谷歌≥4.3 加分
+- **A7 客群类型**：不要游客店 / 本地人多 / 不要网红
+- **A8 周边社区/地理**（餐厅外部）：安静社区 / 富人区 / 近地铁 / 商场内 / 步行可达
+- **A9 营业/可预约/排队/包间**：营业到 22:00 / 要能预约 / 不排队 / 有包间
+- **A10 人数/同行结构/场景**：两个人 / 带小孩 / 商务 / 约会 / 聚会
+
+## B. 具体菜品诉求（kind=dish 或 kind=filter 含菜名）
+- **B1 想吃 X**：班尼迪克蛋 / French toast / 蟹刺身 / 和牛
+- **B2 不吃 X / 忌口**：不吃辣 / 不吃猪 / 素食
+
+## C. 时间（kind=time）
+- **C1 日期/星期**：周六 / 明天 / 后天
+- **C2 时段/钟点/餐段**：中午 12:00 / 晚上 7 点 / brunch / 下午茶
+
+## D. 品类（cuisine）
+- **D1 菜系**：西餐 / 日料 / 川菜 / 早午餐
 
 # 严格规则
-1. **同一话题/属性维度 → 必须合并到同一簇**，不管是正向、反向、强弱、必须/最好/不要。方向相反不是拆簇理由，而是"由你 winner 取舍"的理由。
-2. kind 不同（filter / dish / time）**绝不**跨簇。
-3. **唯一允许拆簇的理由 = 子维度或阈值不同**，且不是方向不同。例如：
-   - "评分≥4.0 必须" vs "评分≥4.3 加分" → **拆 2 簇**（阈值不同 + 角色不同）。
-   - "人均≤300 硬上限" vs "人均≤200 更好" → 拆 2 簇。
-   - 但 "评分必须 4.0" vs "评分最好 4.0" → 阈值相同，合并取舍。
-4. **每个簇内：winner id 放数组第一位**。winner 选择：
-   - 用户后说的代表最新意图，优先；
-   - 语气更强、更具体的优先；
-   - 与整段 freeText 主诉求一致的优先；
-   - 若簇里有方向相反的条目，winner 选 freeText 主导方向的那条，下游再去取舍语气。
-5. **每个输入 id 必须且只能出现在一个 cluster 中**——不漏、不重复、不新增。
-6. 没有同话题伙伴的 item 独自成簇 \`[id]\`。
+1. **同 tag 才能合簇**，**跨 tag 严禁合并**。例如：
+   - A5（菜品精致度，对餐厅）**绝不**与 B1（想吃某道菜）合簇。
+   - A3（环境，店内）**绝不**与 A8（社区，店外）合簇。
+   - A1（档次）**绝不**与 A2（价位）合簇——可并存。
+2. **同一 tag 下方向相反也必须合簇**，由你取舍 winner：
+   - "必须中高端" + "不可低端" + "不要太高端" + "不要 luxurious" → A1 一簇。
+   - "环境一定要好" + "环境稍微好一点" + "环境好啊" → A3 一簇。
+   - "菜品一定要精致" + "菜品精致一点吧" → A5 一簇。
+3. **唯一允许同 tag 拆簇的理由 = 阈值或角色不同**：
+   - "评分≥4.0 必须"(A6) vs "评分≥4.3 加分"(A6) → 拆 2 簇（阈值+角色都不同）。
+   - "人均≤300 硬上限"(A2) vs "人均≤200 更好"(A2) → 拆 2 簇。
+4. **winner 选择（按优先级，从高到低）**：
+   - (a) **语气最强**：含"一定要 / 必须 / 最重要 / 务必 / 不可"的 > "稍微 / 最好 / 希望 / 可以"。
+   - (b) 语气并列时，用户**后说**的优先（最新意图）。
+   - (c) 与整段 freeText 主诉求一致的优先。
+   - 若簇里方向相反，winner 选 freeText 主导方向 + 语气最强那条。
+5. winner id 放数组第一位。每个输入 id 必须且只能出现在一个 cluster——不漏、不重复、不新增。
+6. 没有同 tag 伙伴的 item 独自成簇 \`[id]\`。
+
+# 反例（**严禁这样合**）
+- ❌ "菜品一定要精致"(A5) 与 "想吃班尼迪克蛋"(B1) 合簇。
+- ❌ "环境一定要好"(A3) 与 "安静社区"(A8) 合簇。
+- ❌ "中高端"(A1) 与 "1.5 万以内"(A2) 合簇。
+- ❌ "服务态度好"(A4) 与 "菜品精致"(A5) 合簇。
 
 # 自检（输出前必做）
-- 扫一遍输出，问自己："任意两个簇之间，是否在谈同一个话题？" 若是，**必须**合并。
-- 特别检查：环境、档次、服务、菜品、客群、预算、评分、社区——这些维度全文出现的所有 item 都该汇到对应那 1 个簇里。
+1. 对每个簇，确认簇内所有 item 是**同一 tag**（A1..A10 / B1 / B2 / C1 / C2 / D1）。
+2. 对每个簇，确认 winner 是**语气最强**那条；若不是，把它换到第一位。
+3. 同 tag 全文该汇成 1 簇的有没有漏：环境(A3)、档次(A1)、菜品精致(A5)、服务(A4)、客群(A7)、社区(A8)。
 
 # 输出
 只输出 \`{"clusters": number[][]}\`。每个内层数组首位 = winner id。
 
 # 示例
 items：
-  1 [filter] "环境稍微好一点" → 环境好
-  2 [filter] "环境一定要好" → 环境好
-  3 [filter] "环境不要太差" → 环境不差
-  4 [filter] "定位必须中高端" → 中高端
-  5 [filter] "不可低端" → 不要低端
-  6 [filter] "不要太高端" → 别太高端
-  7 [filter] "不要 luxurious" → 不要豪华
-  8 [filter] "评分必须 4.0 以上" → 评分≥4.0 必须
-  9 [filter] "评分最好 4.3 以上" → 评分≥4.3 加分
-  10 [filter] "两个人" → 人数=2
+  1 [filter] "环境稍微好一点" → 环境较好            (tag: A3)
+  2 [filter] "环境一定要好" → 环境优质              (tag: A3)
+  3 [filter] "安静的社区" → 周边社区安静            (tag: A8, **不是 A3**)
+  4 [filter] "定位必须中高端" → 中高端              (tag: A1)
+  5 [filter] "不可低端" → 不要低端                  (tag: A1)
+  6 [filter] "不要 luxurious" → 不要豪华            (tag: A1)
+  7 [filter] "菜品精致一点吧" → 菜品精致            (tag: A5)
+  8 [filter] "菜品一定要精致" → 菜品必须精致         (tag: A5)
+  9 [filter] "评分必须 4.0 以上" → 评分≥4.0 必须    (tag: A6)
+  10 [filter] "最好 4.3 以上" → 评分≥4.3 加分        (tag: A6, 阈值不同→拆)
+  11 [dish]   "班尼迪克蛋" → 班尼迪克蛋             (tag: B1)
+  12 [filter] "服务员态度一定要好" → 服务态度好      (tag: A4)
 输出：
-  {"clusters":[[2,1,3],[4,5,6,7],[8],[9],[10]]}
+  {"clusters":[[2,1],[3],[4,5,6],[8,7],[9],[10],[11],[12]]}
 说明：
-- 1/2/3 同为"环境"话题（强弱/方向不同）→ 合 1 簇，winner=2。
-- 4/5/6/7 同为"档次定位"话题（中高端 vs 不低端 vs 别太高端 vs 不豪华，方向全混）→ **合 1 簇**，winner=4（最能代表"中高端但不豪华"主诉求）。
-- 8 与 9 阈值不同（4.0 vs 4.3）且角色不同（必须 vs 加分）→ 拆开。
-- 10 独立维度，单成簇。`;
+- 1/2 都是 A3 环境 → 合 1 簇，winner=2（语气最强"一定要好"）。
+- 3 是 A8 社区，**不并入** A3 环境。
+- 4/5/6 都是 A1 档次定位（方向混合）→ 合 1 簇，winner=4。
+- 7/8 都是 A5 菜品出品质量 → 合 1 簇，winner=8（"一定要"语气最强）。**绝不**和 11(B1) 合并。
+- 9/10 都是 A6 评分，但阈值不同 → 拆 2 簇。
+- 11 是 B1 具体菜品，独立。
+- 12 是 A4 服务，独立。`;
 
 
   const validIds = new Set(items.map((i) => i.id));
@@ -439,9 +471,9 @@ items：
     }
   };
 
-  // 主模型 gemini-2.5-flash（Stage B 必须能跑通；gpt-5-* 不接受 max_tokens 参数会全 fallback）
-  let clusters = await tryOnce("google/gemini-2.5-flash");
-  if (!clusters) clusters = await tryOnce("google/gemini-2.5-pro");
+  // 主模型 gemini-2.5-pro（聚簇 + winner 选择需要更稳的指令遵从），失败 fallback flash
+  let clusters = await tryOnce("google/gemini-2.5-pro");
+  if (!clusters) clusters = await tryOnce("google/gemini-2.5-flash");
 
   if (!clusters) {
     const fallback = deterministicMergeByNormalized(items);
@@ -457,6 +489,7 @@ items：
   const used = new Set<number>();
   const aiWinners: ExtractedItem[] = [];
   let mergedCount = 0;
+  const clusterTrace: Array<{ winner: string; merged: string[] }> = [];
   for (const cluster of clusters) {
     const ids = cluster.filter((id) => validIds.has(id) && !used.has(id));
     if (!ids.length) continue;
@@ -465,11 +498,21 @@ items：
     // winner = 第一个 id（AI 排序）；若该 id 不在合法集合，退回到最后一个 id
     const winnerId = ids[0];
     const winner = items.find((i) => i.id === winnerId);
-    if (winner) aiWinners.push(winner);
+    if (winner) {
+      aiWinners.push(winner);
+      clusterTrace.push({
+        winner: `${winner.id}:${winner.snippet}`,
+        merged: ids.slice(1).map((id) => {
+          const it = items.find((x) => x.id === id);
+          return it ? `${it.id}:${it.snippet}` : String(id);
+        }),
+      });
+    }
   }
   for (const it of items) {
     if (!used.has(it.id)) aiWinners.push(it);
   }
+  console.log(`[Echo/semanticDedupe] clusters=` + JSON.stringify(clusterTrace, null, 0));
 
   // 二道兜底：AI 结果再跑一遍确定性 normalized 合并
   const second = deterministicMergeByNormalized(aiWinners);
