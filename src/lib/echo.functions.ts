@@ -533,9 +533,15 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
   - 只有模糊时段词（"晚上"/"中午"/"tonight"/"evening" 等，没有具体钟点）且没有日期词 → null
 - \`hhmm\`：24 小时制 "HH:MM"。用户提到餐段就是明确的时间信号，必须推断对应锚点，不得因为没有钟表数字而遗漏。
   - 具体钟点："7 点"→"19:00"（晚上语境）/"07:00"（早上语境）；"7pm"→"19:00"；"12:30"→"12:30"；"下午 2 点半"→"14:30"
+  - **时段 + 钟点组合（强制半区规则）**：当原文同时出现时段词（早上/上午/morning、中午/noon、下午/afternoon、傍晚/evening、晚上/夜里/今晚/tonight/night、深夜/凌晨/late night/midnight）和具体钟点（H、H 点、H:MM、H 点半 等任意形式）时，钟点必须落到该时段对应的 12 小时半区，**禁止**只看裸数字：
+    - 早上/上午/morning + 1~11 → AM（保持原值，如「早上 7:30」→"07:30"）
+    - 中午/noon + 12 → "12:00"
+    - 下午/afternoon/傍晚/evening/晚上/夜里/tonight/night + 1~11 → PM（加 12，如「晚上 6:30」→"18:30"、「晚上六点半」→"18:30"、「tonight at 6」→"18:00"）
+    - 深夜/凌晨/late night/midnight + 1~5 → 保持原值（如「凌晨 2 点」→"02:00"）
+    - 原文已含 am/pm 后缀的，按字面，不再额外加减（如「evening 7pm」→"19:00"）
   - 餐段锚点：早餐/breakfast→"08:30"，早午餐/brunch→"10:30"，午餐/午饭/lunch→"12:30"，下午茶/afternoon tea→"15:00"，晚餐/晚饭/dinner/supper→"19:00"，夜宵/宵夜/late-night meal→"22:00"
   - 其它模糊时段锚点：早上/morning→"08:30"，中午/noon→"12:30"，下午/afternoon→"14:30"，傍晚/evening→"18:30"，晚上/night→"19:00"，深夜/late night→"22:00"
-  - 同时出现餐段和具体钟点时，始终以用户的具体钟点为准，例如 "brunch at 11:30"→"11:30"
+  - 同时出现餐段和具体钟点时，始终以用户的具体钟点为准（再按上面半区规则校正），例如 "brunch at 11:30"→"11:30"
   - 没有时间信号 → null
 - \`raw\`：原话直接抄过来，用于 UI 展示，例如 "周六晚上 7 点"。
 
@@ -677,6 +683,48 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
       return parsed;
     };
 
+    // 半区兜底：即便 prompt 教过，LLM 偶尔仍把「晚上 6:30」当成 06:30。
+    // 原文里出现明确时段词 + hhmm 落在错误半区 → 强制翻转。确定性逻辑，不会误伤已带 am/pm 的。
+    const applyHalfPeriodFix = (
+      parsed: z.infer<typeof ParsedSchema>,
+    ): z.infer<typeof ParsedSchema> => {
+      const vt = parsed.visitTime;
+      if (!vt || !vt.hhmm || !/^\d{2}:\d{2}$/.test(vt.hhmm)) return parsed;
+      const src = data.freeText ?? "";
+      const ev = vt.evidence ?? "";
+      const ctx = ev.length >= 4 ? ev : src;
+      // 原文已带 am/pm 字面后缀 → 信任模型，不动
+      if (/\b(a\.?m\.?|p\.?m\.?)\b/i.test(ctx)) return parsed;
+      const PM = /(晚上|夜里|今晚|傍晚|下午|tonight|evening|afternoon)/i;
+      const AM = /(早上|上午|清晨|morning)/i;
+      const NOON = /(中午|noon)/i;
+      const LATE = /(深夜|凌晨|late\s*night|midnight)/i;
+      const hasPm = PM.test(ctx);
+      const hasAm = AM.test(ctx);
+      const hasNoon = NOON.test(ctx);
+      const hasLate = LATE.test(ctx);
+      const [hhStr, mmStr] = vt.hhmm.split(":");
+      const hh = Number(hhStr);
+      const mm = Number(mmStr);
+      let fixed = vt.hhmm;
+      if (hasPm && !hasAm && !hasLate && hh >= 1 && hh <= 11) {
+        fixed = `${String(hh + 12).padStart(2, "0")}:${mmStr}`;
+      } else if (hasAm && !hasPm && hh >= 13 && hh <= 23) {
+        fixed = `${String(hh - 12).padStart(2, "0")}:${mmStr}`;
+      } else if (hasNoon && hh === 0) {
+        fixed = `12:${mmStr}`;
+      }
+      if (fixed !== vt.hhmm) {
+        console.warn(
+          `[sanitizeVisitTime] half-period fix: ${vt.hhmm} → ${fixed} (ctx="${ctx}")`,
+        );
+        return { ...parsed, visitTime: { ...vt, hhmm: fixed } };
+      }
+      void mm;
+      return parsed;
+    };
+
+
     const _parseT0 = Date.now();
     echoLog.start("parseRequirements", {
       city: data.city,
@@ -689,12 +737,12 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
       let parsed: z.infer<typeof ParsedSchema>;
       try {
         const first = await runOnce("google/gemini-2.5-flash");
-        parsed = sanitizeVisitTime(await enforceInferIfRequested(first));
+        parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(first)));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨供应商重试，避免同模型以同样方式再次失败
         const second = await runOnce("openai/gpt-5-mini");
-        parsed = sanitizeVisitTime(await enforceInferIfRequested(second));
+        parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(second)));
       }
       const beforeCluster = {
         hard: parsed.hardFilters.length,
