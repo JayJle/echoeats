@@ -314,7 +314,7 @@ function ResultsPage() {
                   </span>
                 ))}
               </h1>
-              <p className="mt-1 text-sm text-muted-foreground">{parsed.dateTime}</p>
+              
             </div>
           </div>
           {parsed.visitTime?.weekday != null && parsed.visitTime?.hhmm && (
