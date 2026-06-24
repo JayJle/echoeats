@@ -26,11 +26,8 @@ export async function expandCuisineQueries(opts: {
   city: string;
   language: string; // ja / zh-CN / ko / en …
   apiKey: string;
-  styleExclude?: string[];
 }): Promise<CuisineExpansion> {
-  const styleExclude = (opts.styleExclude ?? []).map((s) => s.trim()).filter(Boolean);
-  const styleKey = [...styleExclude].sort().join(",");
-  const key = `${opts.cuisine.trim()}|${opts.language}|${styleKey}`;
+  const key = `${opts.cuisine.trim()}|${opts.language}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
@@ -39,10 +36,6 @@ export async function expandCuisineQueries(opts: {
     synonyms: [],
     negativeKeywords: [],
   };
-
-  const styleExcludeBlock = styleExclude.length
-    ? `\n额外硬约束：用户**明确不要**这些风格的餐厅：${styleExclude.join("、")}。请把这些风格在 ${opts.language} 与中/英常见称呼（含别称、典型菜名、典型店类型）尽量列入 negativeKeywords。例如要排除"Chinese/中式"，应加入 ["中式","中餐","中華","茶餐厅","茶餐廳","早茶","点心","dim sum","cantonese","chinese","川菜","粤菜","湘菜"] 之类的关键词（限 8 条内，挑最容易在 Google Maps 搜索结果里混淆的）。\n`
-    : "";
 
   try {
     const gateway = createLovableAiGatewayProvider(opts.apiKey);
@@ -57,7 +50,7 @@ export async function expandCuisineQueries(opts: {
       }),
       prompt: `用户在「${opts.city}」搜索一个中文料理类型：「${opts.cuisine}」。
 目标搜索语言代码是 "${opts.language}"。
-${styleExcludeBlock}
+
 请把这个料理类型本地化，输出 3 个字段：
 
 1. primary：在 ${opts.language} 语言/当地最常见、最准确的写法（用于 Google Maps 搜索）。
@@ -73,7 +66,6 @@ ${styleExcludeBlock}
    - 例：「猪肉饭」+ en → ["eel","beef bowl","chicken rice"]
    - 例：「寿司」+ ja → []（通用大类不需要反例，宁可放空）
    - **绝对不要**列出本身就是该料理一种的词。宁缺毋滥。
-   - 如果上面给出了"额外硬约束"中的排除风格，**必须**把这些风格的常见关键词合入本字段（与混淆词合并，最多 8 条）。
 
 只输出 JSON。primary 不能为空字符串。`,
     });
