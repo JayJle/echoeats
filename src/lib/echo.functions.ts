@@ -194,14 +194,52 @@ function inferMealPeriod(text: string): { evidence: string; hhmm: string } | nul
   return null;
 }
 
+// PM/AM 上下文标记（中英）
+const PM_CONTEXT_RE =
+  /晚上|傍晚|今晚|夜里|夜晚|半夜|凌晨过后|晚饭|晚餐|夜宵|宵夜|下午|tonight|evening|night|pm|p\.m\.|dinner|supper/i;
+const AM_CONTEXT_RE =
+  /早上|上午|清晨|凌晨|早饭|早餐|早午餐|brunch|morning|am|a\.m\.|breakfast/i;
+const NOON_CONTEXT_RE = /中午|noon|midday/i;
+
 function inferExplicitClock(text: string): string | null {
+  // 先匹配带 am/pm 的 12 制（明确，优先）
+  const clock12Marked = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm|a\.m\.|p\.m\.)\b/i);
+  if (clock12Marked) {
+    const period = clock12Marked[3].toLowerCase().replace(/\./g, "");
+    const hour = (Number(clock12Marked[1]) % 12) + (period === "pm" ? 12 : 0);
+    return `${String(hour).padStart(2, "0")}:${clock12Marked[2] ?? "00"}`;
+  }
+  // 再匹配数字钟点：先按 24 制理解，但若 1<=h<=11 且上下文含 PM 标记，则 +12
+  const clock = text.match(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s*(?:点|时|:)?/);
+  // 上面正则太宽，回退到原 24 制匹配 + 12 制不带后缀匹配两套
   const clock24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
-  if (clock24) return `${clock24[1].padStart(2, "0")}:${clock24[2]}`;
-  const clock12 = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/i);
-  if (!clock12) return null;
-  const period = clock12[3].toLowerCase();
-  const hour = (Number(clock12[1]) % 12) + (period === "pm" ? 12 : 0);
-  return `${String(hour).padStart(2, "0")}:${clock12[2] ?? "00"}`;
+  if (clock24) {
+    let h = Number(clock24[1]);
+    const m = clock24[2];
+    // 仅在 1<=h<=11 且上下文有 PM 标记、且无 AM 标记时转 24 制
+    if (h >= 1 && h <= 11 && PM_CONTEXT_RE.test(text) && !AM_CONTEXT_RE.test(text)) {
+      h += 12;
+    }
+    if (h === 12 && AM_CONTEXT_RE.test(text) && !NOON_CONTEXT_RE.test(text) && !PM_CONTEXT_RE.test(text)) {
+      h = 0;
+    }
+    return `${String(h).padStart(2, "0")}:${m}`;
+  }
+  // 中文"X 点(半/Y 分)"匹配
+  const clockCn = text.match(/([01]?\d|2[0-3])\s*(?:点|時|时)(?:\s*([0-5]?\d)\s*分|\s*半)?/);
+  if (clockCn) {
+    let h = Number(clockCn[1]);
+    let m = "00";
+    if (clockCn[0].includes("半")) m = "30";
+    else if (clockCn[2]) m = clockCn[2].padStart(2, "0");
+    if (h >= 1 && h <= 11 && PM_CONTEXT_RE.test(text) && !AM_CONTEXT_RE.test(text)) {
+      h += 12;
+    }
+    if (h === 12 && AM_CONTEXT_RE.test(text) && !NOON_CONTEXT_RE.test(text)) h = 0;
+    return `${String(h).padStart(2, "0")}:${m}`;
+  }
+  void clock;
+  return null;
 }
 
 // ============================================================
