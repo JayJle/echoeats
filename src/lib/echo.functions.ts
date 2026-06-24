@@ -489,6 +489,7 @@ items：
   const used = new Set<number>();
   const aiWinners: ExtractedItem[] = [];
   let mergedCount = 0;
+  const clusterTrace: Array<{ winner: string; merged: string[] }> = [];
   for (const cluster of clusters) {
     const ids = cluster.filter((id) => validIds.has(id) && !used.has(id));
     if (!ids.length) continue;
@@ -497,11 +498,21 @@ items：
     // winner = 第一个 id（AI 排序）；若该 id 不在合法集合，退回到最后一个 id
     const winnerId = ids[0];
     const winner = items.find((i) => i.id === winnerId);
-    if (winner) aiWinners.push(winner);
+    if (winner) {
+      aiWinners.push(winner);
+      clusterTrace.push({
+        winner: `${winner.id}:${winner.snippet}`,
+        merged: ids.slice(1).map((id) => {
+          const it = items.find((x) => x.id === id);
+          return it ? `${it.id}:${it.snippet}` : String(id);
+        }),
+      });
+    }
   }
   for (const it of items) {
     if (!used.has(it.id)) aiWinners.push(it);
   }
+  console.log(`[Echo/semanticDedupe] clusters=` + JSON.stringify(clusterTrace, null, 0));
 
   // 二道兜底：AI 结果再跑一遍确定性 normalized 合并
   const second = deterministicMergeByNormalized(aiWinners);
