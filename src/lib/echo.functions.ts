@@ -683,6 +683,48 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
       return parsed;
     };
 
+    // 半区兜底：即便 prompt 教过，LLM 偶尔仍把「晚上 6:30」当成 06:30。
+    // 原文里出现明确时段词 + hhmm 落在错误半区 → 强制翻转。确定性逻辑，不会误伤已带 am/pm 的。
+    const applyHalfPeriodFix = (
+      parsed: z.infer<typeof ParsedSchema>,
+    ): z.infer<typeof ParsedSchema> => {
+      const vt = parsed.visitTime;
+      if (!vt || !vt.hhmm || !/^\d{2}:\d{2}$/.test(vt.hhmm)) return parsed;
+      const src = data.freeText ?? "";
+      const ev = vt.evidence ?? "";
+      const ctx = ev.length >= 4 ? ev : src;
+      // 原文已带 am/pm 字面后缀 → 信任模型，不动
+      if (/\b(a\.?m\.?|p\.?m\.?)\b/i.test(ctx)) return parsed;
+      const PM = /(晚上|夜里|今晚|傍晚|下午|tonight|evening|afternoon)/i;
+      const AM = /(早上|上午|清晨|morning)/i;
+      const NOON = /(中午|noon)/i;
+      const LATE = /(深夜|凌晨|late\s*night|midnight)/i;
+      const hasPm = PM.test(ctx);
+      const hasAm = AM.test(ctx);
+      const hasNoon = NOON.test(ctx);
+      const hasLate = LATE.test(ctx);
+      const [hhStr, mmStr] = vt.hhmm.split(":");
+      const hh = Number(hhStr);
+      const mm = Number(mmStr);
+      let fixed = vt.hhmm;
+      if (hasPm && !hasAm && !hasLate && hh >= 1 && hh <= 11) {
+        fixed = `${String(hh + 12).padStart(2, "0")}:${mmStr}`;
+      } else if (hasAm && !hasPm && hh >= 13 && hh <= 23) {
+        fixed = `${String(hh - 12).padStart(2, "0")}:${mmStr}`;
+      } else if (hasNoon && hh === 0) {
+        fixed = `12:${mmStr}`;
+      }
+      if (fixed !== vt.hhmm) {
+        console.warn(
+          `[sanitizeVisitTime] half-period fix: ${vt.hhmm} → ${fixed} (ctx="${ctx}")`,
+        );
+        return { ...parsed, visitTime: { ...vt, hhmm: fixed } };
+      }
+      void mm;
+      return parsed;
+    };
+
+
     const _parseT0 = Date.now();
     echoLog.start("parseRequirements", {
       city: data.city,
