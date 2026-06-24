@@ -101,6 +101,7 @@ const ParsedSchema = z.object({
   negativeFilters: z.array(WeightedConditionSchema).catch([]).default([]),
   dishPreferences: z.array(z.string()).catch([]).default([]),
   cuisineLevelConstraints: z.array(WeightedConditionSchema).catch([]).default([]),
+  cuisineStyleExclude: z.array(z.string()).catch([]).default([]),
   cuisinesInferred: z.boolean().catch(false).default(false),
   searchStrategy: z.array(z.string()).catch([]).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
