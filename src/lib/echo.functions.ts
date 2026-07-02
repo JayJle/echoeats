@@ -2137,13 +2137,17 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const negJson = JSON.stringify(
       data.negativeFilters.map((n) => ({ text: n.text, weight: n.weight })),
     );
+    const KIND_TAG_ZH: Record<string, string> = { preference: "【偏好】", avoidance: "【避雷】", dish: "【菜品】" };
+    const KIND_TAG_EN: Record<string, string> = { preference: "[PREFER]", avoidance: "[AVOID]", dish: "[DISH]" };
+    const tagFor = (kind: string) => (isEn ? KIND_TAG_EN[kind] : KIND_TAG_ZH[kind]) ?? "";
     const nonHardFilters = [
-      ...data.softPreferences.map((item) => ({ kind: "preference", text: item.text })),
-      ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: item.text })),
+      ...data.softPreferences.map((item) => ({ kind: "preference", text: `${tagFor("preference")} ${item.text}`.trim() })),
+      ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: `${tagFor("avoidance")} ${item.text}`.trim() })),
       ...data.dishPreferences
         .filter((dish) => !data.hardFilters.some((filter) => filter.text.includes(dish)))
-        .map((text) => ({ kind: "dish", text })),
+        .map((text) => ({ kind: "dish", text: `${tagFor("dish")} ${text}`.trim() })),
     ];
+
 
     const langDirective = isEn
       ? `\n## OUTPUT LANGUAGE (MANDATORY, ZERO TOLERANCE)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English only**. **No CJK characters are allowed in any of those fields**, not even as quoted source snippets. If the source review is in Chinese, paraphrase it into concise English and DROP the original Chinese — do NOT include the Chinese phrase in quotes followed by a translation.\n\nBad (forbidden):\n  - "Reviews mention '氛围复古有特色' (retro and unique atmosphere)"\n  - "高峰期可能要等位 (may have to wait during peak hours)"\nGood:\n  - "Diners praise the retro, characterful atmosphere"\n  - "May involve a wait during peak hours"\n\nRule of thumb: if any character matches /[\\u4e00-\\u9fff]/ in those fields, the output is invalid — rewrite it in pure English. Keep \`placeId\` and any enum/status values exactly as specified.\n`
