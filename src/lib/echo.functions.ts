@@ -2,40 +2,28 @@ import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
+import { echoLog } from "./echo-observability.server";
+import {
+  AiPickSchema,
+  AiPickGroupSchema,
+  AiRankingSchema,
+  AiVerifyPickSchema,
+  AiVerifyGroupSchema,
+  AiScorePickSchema,
+  AiScoreGroupSchema,
+  AiCopyPickSchema,
+  AiCopyGroupSchema,
+  MatchDetailSchema,
+  HardFilterCheckSchema,
+  SemanticClusterOutputSchema,
+  VERIFY_JSON_MODE,
+  SCORE_JSON_MODE,
+  COPY_JSON_MODE,
+  CLUSTER_JSON_MODE,
+  SCORE_FALLBACK,
+} from "./echo-contracts";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
-
-// ---- 节点级日志小工具：统一 [Echo/<stage>] start / ok / fail 前缀 ----
-function _echoFmt(extra?: Record<string, unknown>): string {
-  if (!extra) return "";
-  return Object.entries(extra)
-    .map(([k, v]) => {
-      if (v === null || v === undefined) return `${k}=null`;
-      if (typeof v === "string") return `${k}="${v}"`;
-      if (typeof v === "number" || typeof v === "boolean") return `${k}=${v}`;
-      return `${k}=${JSON.stringify(v)}`;
-    })
-    .join(" ");
-}
-const echoLog = {
-  start: (stage: string, extra?: Record<string, unknown>) => {
-    console.log(`[Echo/${stage}] start ${_echoFmt(extra)}`.trim());
-  },
-  ok: (stage: string, ms: number, extra?: Record<string, unknown>) => {
-    console.log(`[Echo/${stage}] ok in ${ms}ms ${_echoFmt(extra)}`.trim());
-  },
-  fail: (
-    stage: string,
-    ms: number,
-    err: unknown,
-    extra?: Record<string, unknown>,
-  ) => {
-    const m = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[Echo/${stage}] failed in ${ms}ms reason="${m}" ${_echoFmt(extra)}`.trim(),
-    );
-  },
-};
 
 const ParseInput = z.object({
   city: z.string().min(1),
@@ -160,25 +148,8 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
 }
 
 // ---- 第二阶段：语义聚类去重（独立 AI 调用，不依赖关键词） ----
-// 把第一阶段抽出的所有 hard/soft/neg 条目（以及 dishPreferences）打平交给 AI，
-// 让 AI 给每条标"语义簇 id"。代码再按簇取 weight 最高那条作为最终保留，
-// bucket 也跟随最高 weight 那条所在的 bucket。
-const SemanticClusterOutput = z.object({
-  clusters: z
-    .array(
-      z.object({
-        ids: z.array(z.number().int().nonnegative()).min(1),
-      }),
-    )
-    .default([]),
-  dishClusters: z
-    .array(
-      z.object({
-        ids: z.array(z.number().int().nonnegative()).min(1),
-      }),
-    )
-    .default([]),
-});
+// Schema/JSON-mode 由 echo-contracts.ts 集中定义（SemanticClusterOutputSchema + CLUSTER_JSON_MODE）。
+const SemanticClusterOutput = SemanticClusterOutputSchema;
 
 type FlatEntry = {
   id: number;
@@ -239,8 +210,8 @@ ${dishLines || "(空)"}`;
       maxOutputTokens: 2000,
       output: Output.object({
         schema: SemanticClusterOutput,
-        name: "semantic_clusters",
-        description: "Cluster restaurant requirement entries by semantic intent",
+        name: CLUSTER_JSON_MODE.name,
+        description: CLUSTER_JSON_MODE.description,
       }),
     });
     clustersOut = SemanticClusterOutput.parse(output);
@@ -941,137 +912,7 @@ const ResultsSchema = z.object({
   ),
 });
 
-// AI 排序输出：每组 picks 用 placeId 引用真实候选
-const readableStringFrom = (value: unknown, fallback = "") => {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return fallback;
-};
-
-const MatchDetailSchema = z.preprocess(
-  (v) => {
-    if (typeof v === "string") return { label: v, status: "unknown", confidence: 50 };
-    if (v && typeof v === "object") {
-      const obj = v as Record<string, unknown>;
-      const label =
-        readableStringFrom(obj.label) ||
-        readableStringFrom(obj.text) ||
-        readableStringFrom(obj.filter) ||
-        readableStringFrom(obj.condition) ||
-        readableStringFrom(obj.requirement) ||
-        readableStringFrom(obj.note) ||
-        readableStringFrom(obj.reason) ||
-        readableStringFrom(obj.evidence) ||
-        readableStringFrom(obj.summary) ||
-        "Verification detail";
-      return { ...obj, label, status: obj.status ?? "unknown", confidence: obj.confidence ?? 50 };
-    }
-    return { label: "", status: "unknown", confidence: 50 };
-  },
-  z.object({
-    label: z.string().catch(""),
-    status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
-    confidence: z.coerce.number().min(0).max(100).catch(50).default(50),
-  }),
-);
-
-const HardFilterCheckSchema = z.preprocess(
-  (v) => {
-    if (typeof v === "string") return { filter: v, status: "unknown", note: v, confidence: 50 };
-    if (v && typeof v === "object") {
-      const obj = v as Record<string, unknown>;
-      const filter =
-        readableStringFrom(obj.filter) ||
-        readableStringFrom(obj.condition) ||
-        readableStringFrom(obj.requirement) ||
-        readableStringFrom(obj.text) ||
-        "";
-      const note =
-        readableStringFrom(obj.note) ||
-        readableStringFrom(obj.reason) ||
-        readableStringFrom(obj.evidence) ||
-        readableStringFrom(obj.summary) ||
-        undefined;
-      return { ...obj, filter, note, status: obj.status ?? "unknown", confidence: obj.confidence ?? 50 };
-    }
-    return { filter: "", status: "unknown", confidence: 50 };
-  },
-  z.object({
-    filter: z.string().catch("").default(""),
-    status: z.enum(["ok", "unknown", "fail"]).catch("unknown"),
-    note: z.string().optional(),
-    confidence: z.coerce.number().min(0).max(100).catch(50).default(50),
-  }),
-);
-
-
-const AiPickSchema = z.object({
-  placeId: z.string(),
-  matchScore: z.number().min(0).max(100),
-  matchTier: z.enum(["perfect", "high", "partial"]).catch("partial"),
-  aiSummary: z.string(),
-  pros: z.array(z.preprocess(
-    (v) => (typeof v === "string" ? { text: v, source: null } : v),
-    z.object({ text: z.string(), source: z.string().nullable().optional() }),
-  )).default([]),
-  cons: z.array(z.preprocess(
-    (v) => (typeof v === "string" ? { text: v, source: null } : v),
-    z.object({ text: z.string(), source: z.string().nullable().optional() }),
-  )).default([]),
-  matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
-  hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
-});
-
-const AiRankingSchema = z.object({
-  groups: z.array(
-    z.object({
-      cuisine: z.string(),
-      picks: z.array(AiPickSchema),
-    }),
-  ),
-});
-
-// 单 cuisine 分组的 AI 输出 schema：用于按 cuisine 分批并行调用，避免一次性输出过长触发截断。
-const AiPickGroupSchema = z.object({
-  picks: z.array(AiPickSchema),
-});
-
-// Pass 1 (核验) 输出 schema：只产 verificationStatus + hardFilterChecks + matchDetails；不含 matchScore，也不含文案
-const AiVerifyPickSchema = z.object({
-  placeId: z.string(),
-  verificationStatus: z.enum(["ok", "unknown", "fail"]).optional(),
-  hardFilterChecks: z.array(HardFilterCheckSchema).catch([]).default([]),
-  matchDetails: z.array(MatchDetailSchema).catch([]).default([]),
-});
-const AiVerifyGroupSchema = z.object({
-  picks: z.array(AiVerifyPickSchema),
-});
-
-// Pass 2 (仅打分) 输出 schema：极简两字段，最大化模型遵循率
-const AiScorePickSchema = z.object({
-  placeId: z.string(),
-  matchScore: z.coerce.number().min(0).max(100),
-});
-const AiScoreGroupSchema = z.object({
-  scores: z.array(AiScorePickSchema),
-});
-
-// Pass 3 (文案) 输出 schema：只产 aiSummary + pros + cons
-const AiCopyPickSchema = z.object({
-  placeId: z.string(),
-  aiSummary: z.string().default(""),
-  pros: z.array(z.preprocess(
-    (v) => (typeof v === "string" ? { text: v, source: null } : v),
-    z.object({ text: z.string(), source: z.string().nullable().optional() }),
-  )).default([]),
-  cons: z.array(z.preprocess(
-    (v) => (typeof v === "string" ? { text: v, source: null } : v),
-    z.object({ text: z.string(), source: z.string().nullable().optional() }),
-  )).default([]),
-});
-const AiCopyGroupSchema = z.object({
-  picks: z.array(AiCopyPickSchema),
-});
+// AI 输入/输出 Schema 已迁移至 src/lib/echo-contracts.ts（唯一事实源）。
 
 function tierFromScore(score: number): "perfect" | "high" | "partial" {
   if (score >= 92) return "perfect";
@@ -2336,51 +2177,71 @@ ${JSON.stringify(group.candidates, null, 2)}
       const prompt = buildVerifyPromptForGroup(group);
       const startedAt = Date.now();
       const tag = `${group.cuisine}#n=${group.candidates.length}`;
-      console.log(`[Echo/AI-verify] batch=${tag} start`);
-      echoLog.start("AI-verify", { cuisine: group.cuisine, candidates: group.candidates.length });
+      echoLog.start("AI-verify", {
+        cuisine: group.cuisine,
+        candidates: group.candidates.length,
+        mode: "Output.object",
+      });
 
-      const RAW_JSON_SUFFIX = `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`;
-      const STRICT_JSON_SUFFIX = `\n\n上一次回复无法被解析为合法 JSON。请严格输出**纯 JSON**，首字符必须是 \`{\`，末字符必须是 \`}\`，中间不得有任何 markdown、注释或解释文字。`;
-
-      const runRaw = async (promptSuffix: string) => {
-        const fb = await generateText({
-          model,
-          prompt: prompt + promptSuffix,
-          maxOutputTokens: 10000,
-        });
-        const finishReason = (fb as { finishReason?: string }).finishReason;
-        if (finishReason === "length" || finishReason === "max-tokens") {
-          throw new Error(`truncated (finishReason=${finishReason})`);
-        }
-        return AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
-      };
-
+      // ---- 首选：JSON 模式（Output.object + 合同 schema） ----
       try {
-        const parsed = await runRaw(RAW_JSON_SUFFIX);
-        console.log(
-          `[Echo/AI-verify] batch=${tag} ok in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
-        );
+        const result = await generateText({
+          model,
+          prompt,
+          maxOutputTokens: 6000,
+          output: Output.object({
+            schema: AiVerifyGroupSchema,
+            name: VERIFY_JSON_MODE.name,
+            description: VERIFY_JSON_MODE.description,
+          }),
+        });
+        const parsed = AiVerifyGroupSchema.parse(result.output);
+        echoLog.ok("AI-verify", Date.now() - startedAt, {
+          batch: tag,
+          picks: parsed.picks.length,
+          mode: "Output.object",
+        });
         return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
-        console.warn(
-          `[Echo/AI-verify] batch=${tag} raw parse failed (${m1}), retrying once…`,
-        );
+        echoLog.fallback("AI-verify", {
+          batch: tag,
+          from: "Output.object",
+          to: "raw-json",
+          reason: m1,
+        });
+
+        // ---- 兜底：raw JSON（同 schema 校验，避免 Gemini structured-output 偶发空响应拖垮流程）----
+        const RAW_JSON_SUFFIX = `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`;
         try {
-          const parsed = await runRaw(STRICT_JSON_SUFFIX);
-          console.log(
-            `[Echo/AI-verify] batch=${tag} ok (retry) in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
-          );
+          const fb = await generateText({
+            model,
+            prompt: prompt + RAW_JSON_SUFFIX,
+            maxOutputTokens: 10000,
+          });
+          const finishReason = (fb as { finishReason?: string }).finishReason;
+          if (finishReason === "length" || finishReason === "max-tokens") {
+            throw new Error(`truncated (finishReason=${finishReason})`);
+          }
+          const parsed = AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          echoLog.ok("AI-verify", Date.now() - startedAt, {
+            batch: tag,
+            picks: parsed.picks.length,
+            mode: "raw-fallback",
+          });
           return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
         } catch (e2) {
-          const m2 = e2 instanceof Error ? e2.message : String(e2);
-          console.error(
-            `[Echo/AI-verify] batch=${tag} FAILED in ${Date.now() - startedAt}ms reason=${m2}`,
-          );
-          return { ok: false, cuisine: group.cuisine, reason: m2 };
+          echoLog.fail("AI-verify", Date.now() - startedAt, e2, { batch: tag });
+          return {
+            ok: false,
+            cuisine: group.cuisine,
+            reason: e2 instanceof Error ? e2.message : String(e2),
+          };
         }
       }
     };
+
+
 
     // ===== Pass 2：仅打分。失败 / partial 兜底为 60 =====
     type ScoreOutcome = {
