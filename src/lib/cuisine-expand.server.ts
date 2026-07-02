@@ -4,20 +4,17 @@
 // 结果按 (cuisine, lang) 缓存在内存里（per-Worker 实例）。
 
 import { generateText, Output } from "ai";
-import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
+import {
+  CuisineExpansionSchema as Schema,
+  CUISINE_EXPANSION_JSON_MODE,
+} from "./echo-contracts";
 
 export type CuisineExpansion = {
   primary: string;
   synonyms: string[];
   negativeKeywords: string[];
 };
-
-const Schema = z.object({
-  primary: z.string(),
-  synonyms: z.array(z.string()).default([]),
-  negativeKeywords: z.array(z.string()).default([]),
-});
 
 const cache = new Map<string, CuisineExpansion>();
 
