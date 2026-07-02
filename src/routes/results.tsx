@@ -366,7 +366,7 @@ function ResultsPage() {
               <div className="flex flex-wrap gap-1.5">
                 {displayedNegativeFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
-                    {f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
+                    <span aria-hidden className="mr-1">✕</span>{renderNegText(f.text)} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
                   </span>
                 ))}
               </div>
