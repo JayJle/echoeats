@@ -125,6 +125,31 @@ function uniqueStrings(items: string[]): string[] {
   return [...unique.values()];
 }
 
+// ---- 否定语气保留工具 ----
+// negativeFilters[].text 必须以否定前缀开头，否则下游 conciseCondition / AI 核验
+// 会把语义反转（"不要路边摊" → 变成 "很路边摊"）。
+const NEG_PREFIX_ZH = /^(不要|不想|不喜欢|不接受|不能|别|勿|避免|排除|拒绝|讨厌|去掉|去除|杜绝|远离|禁止)/;
+const NEG_PREFIX_EN = /^(avoid|no\s|not\s|non-|without|exclude|dislike|don'?t|hate|never|skip)/i;
+export function hasNegationPrefix(text: string): boolean {
+  const t = text.trim();
+  return NEG_PREFIX_ZH.test(t) || NEG_PREFIX_EN.test(t);
+}
+export function ensureNegationPrefix(text: string, isEn: boolean): string {
+  const parts = text.split(/\s*(?:→|->|=>)\s*/);
+  const fix = (s: string): string => {
+    const trimmed = s.trim();
+    if (!trimmed) return trimmed;
+    if (hasNegationPrefix(trimmed)) return trimmed;
+    return isEn ? `Avoid ${trimmed}` : `不要${trimmed}`;
+  };
+  if (parts.length >= 2) {
+    const left = fix(parts[0]);
+    const right = fix(parts.slice(1).join(" → "));
+    return `${left} → ${right}`;
+  }
+  return fix(text);
+}
+
 function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
   // 兜底：仅做最严格的"完全相同字符串"去重，不再做关键词归一聚类
   // （真正的语义聚类去重在 semanticClusterMerge 里由 AI 完成）。
@@ -149,15 +174,24 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
     }
     return out;
   };
+  const isEn = parsed.uiLanguage === "en";
+  const negFixed = exactDedupe(parsed.negativeFilters).map((n) => {
+    const fixed = ensureNegationPrefix(n.text, isEn);
+    if (fixed !== n.text) {
+      console.log(`[neg-prefix] auto-prepended: "${n.text}" → "${fixed}"`);
+    }
+    return fixed === n.text ? n : { ...n, text: fixed };
+  });
   return {
     ...parsed,
     cuisines: uniqueStrings(parsed.cuisines),
     hardFilters: exactDedupe(parsed.hardFilters),
     softPreferences: exactDedupe(parsed.softPreferences),
-    negativeFilters: exactDedupe(parsed.negativeFilters),
+    negativeFilters: negFixed,
     dishPreferences: dishDedupe(parsed.dishPreferences),
   };
 }
+
 
 // ---- 第二阶段：语义聚类去重（独立 AI 调用，不依赖关键词） ----
 // 把第一阶段抽出的所有 hard/soft/neg 条目（以及 dishPreferences）打平交给 AI，
@@ -271,6 +305,7 @@ ${dishLines || "(空)"}`;
   const negativeFilters: WeightedCondition[] = [];
   let mergedCount = 0;
 
+  const isEnLang = uiLanguage === "en";
   for (const ids of clusters) {
     const entries = ids.map((id) => flat[id]);
     if (entries.length > 1) mergedCount += entries.length - 1;
@@ -285,14 +320,26 @@ ${dishLines || "(空)"}`;
       }
     }
     const maxWeight = entries.reduce((m, e) => Math.max(m, e.item.weight), 0);
-    const finalItem: WeightedCondition = { text: winner.item.text, weight: maxWeight };
     // 一致性：weight >= 0.8 且赢家是 soft，提升到 hard（保留与下游 promotion 一致的行为）
-    let finalBucket = winner.bucket;
+    let finalBucket: "hard" | "soft" | "neg" = winner.bucket;
     if (finalBucket === "soft" && maxWeight >= 0.8) finalBucket = "hard";
+    // 否定语气保留：当最终归到 neg 时，优先用带否定前缀的 neg 条目作为文案来源，
+    // 避免拿正向表述当负向标签导致语义反转。
+    let textSource = winner.item.text;
+    if (finalBucket === "neg") {
+      const negWithPrefix = entries.find(
+        (e) => e.bucket === "neg" && hasNegationPrefix(e.item.text),
+      );
+      const anyNeg = negWithPrefix ?? entries.find((e) => e.bucket === "neg");
+      if (anyNeg) textSource = anyNeg.item.text;
+      textSource = ensureNegationPrefix(textSource, isEnLang);
+    }
+    const finalItem: WeightedCondition = { text: textSource, weight: maxWeight };
     if (finalBucket === "hard") hardFilters.push(finalItem);
     else if (finalBucket === "soft") softPreferences.push(finalItem);
     else negativeFilters.push(finalItem);
   }
+
 
   // 菜品聚类
   const usedDishIds = new Set<number>();
@@ -313,7 +360,7 @@ ${dishLines || "(空)"}`;
       `[semanticClusterMerge] 合并了 ${mergedCount} 条重复诉求（${flat.length} → ${clusters.length}）`,
     );
   }
-  void uiLanguage;
+  void isEnLang;
 
   return {
     ...parsed,
@@ -472,6 +519,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 ## 边界
 
 - 否定句一律进 negativeFilters，不要再复制到 hardFilters。
+- **negativeFilters[].text 必须保留否定语气**：中文以 \`不要/不想/不喜欢/不接受/不能/避免/排除/拒绝/别/勿\` 之一开头；英文以 \`Avoid/No/Not/Without/Exclude/Don't/Dislike\` 之一开头。若用户原话隐含否定（"想找不那么吵的"），也要写成"不要吵闹 → ..."。**\`→\` 右半边的标准化条件同样必须保留否定语气**（例：正确 \`"不要路边摊感 → 排除街边摊、大排档风格"\`；禁止 \`"路边摊感 → 路边摊风格"\`）。丢掉否定词会导致下游把避雷当偏好，语义完全反转。
 - 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
 
 ## 完整抽取规则（关键，务必严格执行）
@@ -494,7 +542,15 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
     {"text":"适合聊天（安静、便于交谈）","weight":0.7},
     {"text":"最好有蟹刺身","weight":0.6}
   ]
-- negativeFilters: [{"text":"不要游客店","weight":0.7}]
+- negativeFilters: [{"text":"不要游客店 → 排除游客扎堆的店","weight":0.7}]
+
+补充示例（避雷类必须保留否定语气）：
+- 用户："不要装修得像路边摊"
+  - negativeFilters: [{"text":"不要装修像路边摊 → 排除路边摊 / 大排档 / 街边摊风格","weight":0.7}]
+- 用户："不喜欢连锁店"
+  - negativeFilters: [{"text":"不喜欢连锁店 → 排除连锁品牌","weight":0.8}]
+- 用户："别太吵"
+  - negativeFilters: [{"text":"别太吵 → 避免嘈杂环境","weight":0.7}]
 - dishPreferences: ["蟹刺身"]
 
 ## 国家/语言识别（重要）
@@ -1124,13 +1180,18 @@ function verifyGoogleRatingFilter(
   };
 }
 
+const KIND_TAG_RE = /^\s*(?:【(?:偏好|避雷|菜品)】|\[(?:PREFER|AVOID|DISH)\])\s*/i;
+function stripKindTag(text: string): string {
+  return text.replace(KIND_TAG_RE, "");
+}
 function cleanMatchLabel(text: string): string {
-  return text
+  return stripKindTag(text)
     .trim()
     .replace(/^[✓✔✗✘?？⚠!！]+\s*/g, "")
     .replace(/^(?:constraint(?: not met| to verify)?|硬条件(?:未满足|待核实)?)\s*[:：-]?\s*/i, "")
     .trim();
 }
+
 
 function conciseCondition(text: string): string {
   const cleaned = cleanMatchLabel(text);
@@ -2081,13 +2142,17 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const negJson = JSON.stringify(
       data.negativeFilters.map((n) => ({ text: n.text, weight: n.weight })),
     );
+    const KIND_TAG_ZH: Record<string, string> = { preference: "【偏好】", avoidance: "【避雷】", dish: "【菜品】" };
+    const KIND_TAG_EN: Record<string, string> = { preference: "[PREFER]", avoidance: "[AVOID]", dish: "[DISH]" };
+    const tagFor = (kind: string) => (isEn ? KIND_TAG_EN[kind] : KIND_TAG_ZH[kind]) ?? "";
     const nonHardFilters = [
-      ...data.softPreferences.map((item) => ({ kind: "preference", text: item.text })),
-      ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: item.text })),
+      ...data.softPreferences.map((item) => ({ kind: "preference", text: `${tagFor("preference")} ${item.text}`.trim() })),
+      ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: `${tagFor("avoidance")} ${item.text}`.trim() })),
       ...data.dishPreferences
         .filter((dish) => !data.hardFilters.some((filter) => filter.text.includes(dish)))
-        .map((text) => ({ kind: "dish", text })),
+        .map((text) => ({ kind: "dish", text: `${tagFor("dish")} ${text}`.trim() })),
     ];
+
 
     const langDirective = isEn
       ? `\n## OUTPUT LANGUAGE (MANDATORY, ZERO TOLERANCE)\nALL human-readable string fields you produce — aiSummary, pros, cons, matchDetails[].label, hardFilterChecks[].note — MUST be written in **English only**. **No CJK characters are allowed in any of those fields**, not even as quoted source snippets. If the source review is in Chinese, paraphrase it into concise English and DROP the original Chinese — do NOT include the Chinese phrase in quotes followed by a translation.\n\nBad (forbidden):\n  - "Reviews mention '氛围复古有特色' (retro and unique atmosphere)"\n  - "高峰期可能要等位 (may have to wait during peak hours)"\nGood:\n  - "Diners praise the retro, characterful atmosphere"\n  - "May involve a wait during peak hours"\n\nRule of thumb: if any character matches /[\\u4e00-\\u9fff]/ in those fields, the output is invalid — rewrite it in pure English. Keep \`placeId\` and any enum/status values exactly as specified.\n`
@@ -2144,6 +2209,11 @@ ${JSON.stringify(group.candidates, null, 2)}
    - 0–39：基本是猜测或资料严重不足
 6. **Google 评分是确定性事实**：遇到 Google 评分阈值条件，直接拿候选的 rating/googleRating 做数值比较；有数值时不允许 unknown，也不要用评论文本推断评分。
 7. **料理保真**：检查 name / primaryType / editorialSummary / realWorldReviews。命中反例关键词且未命中主词/同义词 → 该硬条件判 fail。
+8. **避雷条目（\`matchDetails\` 中 kind="avoidance" / 文本以【避雷】或 [AVOID] 开头的）语义方向**：
+   - \`status="ok"\` 表示**餐厅不具备**该负面特征（成功避雷，是好事）；
+   - \`status="fail"\` 表示**餐厅命中**了该负面特征（踩雷，是坏事）；
+   - \`label\` 必须**保留否定语气**，句式如"避免路边摊：装修精致，未见街摊风格"、"未命中吵闹：多条评论提到环境安静"。
+   - **严禁**写成"很路边摊""符合路边摊""具备该特征"这种去掉否定词、听起来像正向匹配的表述——那样会让读者反向理解。
 
 ## 禁止做（DON'T）
 1. **禁止横向比较**：任何字段里都不允许出现"相比之下""比同批其他店""在本批中""更胜一筹"等措辞。

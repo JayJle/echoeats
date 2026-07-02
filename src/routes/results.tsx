@@ -147,6 +147,12 @@ function ResultsPage() {
   const weekdayShort = t("results.weekday.short").split(",");
   const displayedHardFilters = parsed.hardFilters;
   const displayedSoftPreferences = parsed.softPreferences;
+  const NEG_PREFIX_ANY = /^(不要|不想|不喜欢|不接受|不能|别|勿|避免|排除|拒绝|讨厌|去掉|去除|杜绝|远离|禁止|avoid|no\s|not\s|non-|without|exclude|dislike|don'?t|hate|never|skip)/i;
+  const renderNegText = (text: string): string => {
+    const t = text.trim();
+    if (NEG_PREFIX_ANY.test(t)) return t;
+    return lang === "en" ? `Avoid ${t}` : `不要${t}`;
+  };
   const displayedNegativeFilters = parsed.negativeFilters;
   const displayedDishPreferences = parsed.dishPreferences;
 
@@ -360,7 +366,7 @@ function ResultsPage() {
               <div className="flex flex-wrap gap-1.5">
                 {displayedNegativeFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
-                    {f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
+                    <span aria-hidden className="mr-1">✕</span>{renderNegText(f.text)} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
                   </span>
                 ))}
               </div>
