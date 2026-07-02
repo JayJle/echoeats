@@ -830,11 +830,16 @@ function StepRequirements() {
                 )}
                 {parsedPreview.negativeFilters.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
-                    {parsedPreview.negativeFilters.map((f, i) => (
-                      <span key={`n-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
-                        {f.text}
-                      </span>
-                    ))}
+                    {parsedPreview.negativeFilters.map((f, i) => {
+                      const t = f.text.trim();
+                      const hasNeg = /^(不要|不想|不喜欢|不接受|不能|别|勿|避免|排除|拒绝|讨厌|去掉|去除|杜绝|远离|禁止|avoid|no\s|not\s|non-|without|exclude|dislike|don'?t|hate|never|skip)/i.test(t);
+                      const display = hasNeg ? t : (lang === "en" ? `Avoid ${t}` : `不要${t}`);
+                      return (
+                        <span key={`n-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
+                          <span aria-hidden className="mr-1">✕</span>{display}
+                        </span>
+                      );
+                    })}
                   </div>
                 )}
                 {parsedPreview.dishPreferences.length > 0 && (
