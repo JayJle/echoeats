@@ -2177,51 +2177,71 @@ ${JSON.stringify(group.candidates, null, 2)}
       const prompt = buildVerifyPromptForGroup(group);
       const startedAt = Date.now();
       const tag = `${group.cuisine}#n=${group.candidates.length}`;
-      console.log(`[Echo/AI-verify] batch=${tag} start`);
-      echoLog.start("AI-verify", { cuisine: group.cuisine, candidates: group.candidates.length });
+      echoLog.start("AI-verify", {
+        cuisine: group.cuisine,
+        candidates: group.candidates.length,
+        mode: "Output.object",
+      });
 
-      const RAW_JSON_SUFFIX = `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`;
-      const STRICT_JSON_SUFFIX = `\n\n上一次回复无法被解析为合法 JSON。请严格输出**纯 JSON**，首字符必须是 \`{\`，末字符必须是 \`}\`，中间不得有任何 markdown、注释或解释文字。`;
-
-      const runRaw = async (promptSuffix: string) => {
-        const fb = await generateText({
-          model,
-          prompt: prompt + promptSuffix,
-          maxOutputTokens: 10000,
-        });
-        const finishReason = (fb as { finishReason?: string }).finishReason;
-        if (finishReason === "length" || finishReason === "max-tokens") {
-          throw new Error(`truncated (finishReason=${finishReason})`);
-        }
-        return AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
-      };
-
+      // ---- 首选：JSON 模式（Output.object + 合同 schema） ----
       try {
-        const parsed = await runRaw(RAW_JSON_SUFFIX);
-        console.log(
-          `[Echo/AI-verify] batch=${tag} ok in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
-        );
+        const result = await generateText({
+          model,
+          prompt,
+          maxOutputTokens: 6000,
+          output: Output.object({
+            schema: AiVerifyGroupSchema,
+            name: VERIFY_JSON_MODE.name,
+            description: VERIFY_JSON_MODE.description,
+          }),
+        });
+        const parsed = AiVerifyGroupSchema.parse(result.output);
+        echoLog.ok("AI-verify", Date.now() - startedAt, {
+          batch: tag,
+          picks: parsed.picks.length,
+          mode: "Output.object",
+        });
         return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
       } catch (e1) {
         const m1 = e1 instanceof Error ? e1.message : String(e1);
-        console.warn(
-          `[Echo/AI-verify] batch=${tag} raw parse failed (${m1}), retrying once…`,
-        );
+        echoLog.fallback("AI-verify", {
+          batch: tag,
+          from: "Output.object",
+          to: "raw-json",
+          reason: m1,
+        });
+
+        // ---- 兜底：raw JSON（同 schema 校验，避免 Gemini structured-output 偶发空响应拖垮流程）----
+        const RAW_JSON_SUFFIX = `\n\n再次强调：你的回复必须是**纯 JSON**，不要 markdown 代码块、不要前后说明文字、不要 \`\`\`json 包裹。直接以 { 开头、以 } 结尾。`;
         try {
-          const parsed = await runRaw(STRICT_JSON_SUFFIX);
-          console.log(
-            `[Echo/AI-verify] batch=${tag} ok (retry) in ${Date.now() - startedAt}ms picks=${parsed.picks.length}`,
-          );
+          const fb = await generateText({
+            model,
+            prompt: prompt + RAW_JSON_SUFFIX,
+            maxOutputTokens: 10000,
+          });
+          const finishReason = (fb as { finishReason?: string }).finishReason;
+          if (finishReason === "length" || finishReason === "max-tokens") {
+            throw new Error(`truncated (finishReason=${finishReason})`);
+          }
+          const parsed = AiVerifyGroupSchema.parse(JSON.parse(extractJson(fb.text || "")));
+          echoLog.ok("AI-verify", Date.now() - startedAt, {
+            batch: tag,
+            picks: parsed.picks.length,
+            mode: "raw-fallback",
+          });
           return { ok: true, cuisine: group.cuisine, picks: expandToFullPick(parsed.picks) };
         } catch (e2) {
-          const m2 = e2 instanceof Error ? e2.message : String(e2);
-          console.error(
-            `[Echo/AI-verify] batch=${tag} FAILED in ${Date.now() - startedAt}ms reason=${m2}`,
-          );
-          return { ok: false, cuisine: group.cuisine, reason: m2 };
+          echoLog.fail("AI-verify", Date.now() - startedAt, e2, { batch: tag });
+          return {
+            ok: false,
+            cuisine: group.cuisine,
+            reason: e2 instanceof Error ? e2.message : String(e2),
+          };
         }
       }
     };
+
+
 
     // ===== Pass 2：仅打分。失败 / partial 兜底为 60 =====
     type ScoreOutcome = {
