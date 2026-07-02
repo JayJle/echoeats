@@ -1180,13 +1180,18 @@ function verifyGoogleRatingFilter(
   };
 }
 
+const KIND_TAG_RE = /^\s*(?:【(?:偏好|避雷|菜品)】|\[(?:PREFER|AVOID|DISH)\])\s*/i;
+function stripKindTag(text: string): string {
+  return text.replace(KIND_TAG_RE, "");
+}
 function cleanMatchLabel(text: string): string {
-  return text
+  return stripKindTag(text)
     .trim()
     .replace(/^[✓✔✗✘?？⚠!！]+\s*/g, "")
     .replace(/^(?:constraint(?: not met| to verify)?|硬条件(?:未满足|待核实)?)\s*[:：-]?\s*/i, "")
     .trim();
 }
+
 
 function conciseCondition(text: string): string {
   const cleaned = cleanMatchLabel(text);
