@@ -2,40 +2,28 @@ import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
+import { echoLog } from "./echo-observability.server";
+import {
+  AiPickSchema,
+  AiPickGroupSchema,
+  AiRankingSchema,
+  AiVerifyPickSchema,
+  AiVerifyGroupSchema,
+  AiScorePickSchema,
+  AiScoreGroupSchema,
+  AiCopyPickSchema,
+  AiCopyGroupSchema,
+  MatchDetailSchema,
+  HardFilterCheckSchema,
+  SemanticClusterOutputSchema,
+  VERIFY_JSON_MODE,
+  SCORE_JSON_MODE,
+  COPY_JSON_MODE,
+  CLUSTER_JSON_MODE,
+  SCORE_FALLBACK,
+} from "./echo-contracts";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
-
-// ---- 节点级日志小工具：统一 [Echo/<stage>] start / ok / fail 前缀 ----
-function _echoFmt(extra?: Record<string, unknown>): string {
-  if (!extra) return "";
-  return Object.entries(extra)
-    .map(([k, v]) => {
-      if (v === null || v === undefined) return `${k}=null`;
-      if (typeof v === "string") return `${k}="${v}"`;
-      if (typeof v === "number" || typeof v === "boolean") return `${k}=${v}`;
-      return `${k}=${JSON.stringify(v)}`;
-    })
-    .join(" ");
-}
-const echoLog = {
-  start: (stage: string, extra?: Record<string, unknown>) => {
-    console.log(`[Echo/${stage}] start ${_echoFmt(extra)}`.trim());
-  },
-  ok: (stage: string, ms: number, extra?: Record<string, unknown>) => {
-    console.log(`[Echo/${stage}] ok in ${ms}ms ${_echoFmt(extra)}`.trim());
-  },
-  fail: (
-    stage: string,
-    ms: number,
-    err: unknown,
-    extra?: Record<string, unknown>,
-  ) => {
-    const m = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[Echo/${stage}] failed in ${ms}ms reason="${m}" ${_echoFmt(extra)}`.trim(),
-    );
-  },
-};
 
 const ParseInput = z.object({
   city: z.string().min(1),
