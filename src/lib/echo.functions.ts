@@ -360,7 +360,7 @@ ${dishLines || "(空)"}`;
       `[semanticClusterMerge] 合并了 ${mergedCount} 条重复诉求（${flat.length} → ${clusters.length}）`,
     );
   }
-  void uiLanguage;
+  void isEnLang;
 
   return {
     ...parsed,
