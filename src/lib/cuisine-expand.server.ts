@@ -42,8 +42,8 @@ export async function expandCuisineQueries(opts: {
       maxOutputTokens: 400,
       output: Output.object({
         schema: Schema,
-        name: "cuisine_expansion",
-        description: "Localized cuisine query expansion",
+        name: CUISINE_EXPANSION_JSON_MODE.name,
+        description: CUISINE_EXPANSION_JSON_MODE.description,
       }),
       prompt: `用户在「${opts.city}」搜索一个中文料理类型：「${opts.cuisine}」。
 目标搜索语言代码是 "${opts.language}"。
