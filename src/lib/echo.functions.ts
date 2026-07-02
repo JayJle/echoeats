@@ -210,8 +210,8 @@ ${dishLines || "(空)"}`;
       maxOutputTokens: 2000,
       output: Output.object({
         schema: SemanticClusterOutput,
-        name: "semantic_clusters",
-        description: "Cluster restaurant requirement entries by semantic intent",
+        name: CLUSTER_JSON_MODE.name,
+        description: CLUSTER_JSON_MODE.description,
       }),
     });
     clustersOut = SemanticClusterOutput.parse(output);
