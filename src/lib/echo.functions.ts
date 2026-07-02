@@ -305,6 +305,7 @@ ${dishLines || "(空)"}`;
   const negativeFilters: WeightedCondition[] = [];
   let mergedCount = 0;
 
+  const isEnLang = uiLanguage === "en";
   for (const ids of clusters) {
     const entries = ids.map((id) => flat[id]);
     if (entries.length > 1) mergedCount += entries.length - 1;
@@ -319,14 +320,26 @@ ${dishLines || "(空)"}`;
       }
     }
     const maxWeight = entries.reduce((m, e) => Math.max(m, e.item.weight), 0);
-    const finalItem: WeightedCondition = { text: winner.item.text, weight: maxWeight };
     // 一致性：weight >= 0.8 且赢家是 soft，提升到 hard（保留与下游 promotion 一致的行为）
-    let finalBucket = winner.bucket;
+    let finalBucket: "hard" | "soft" | "neg" = winner.bucket;
     if (finalBucket === "soft" && maxWeight >= 0.8) finalBucket = "hard";
+    // 否定语气保留：当最终归到 neg 时，优先用带否定前缀的 neg 条目作为文案来源，
+    // 避免拿正向表述当负向标签导致语义反转。
+    let textSource = winner.item.text;
+    if (finalBucket === "neg") {
+      const negWithPrefix = entries.find(
+        (e) => e.bucket === "neg" && hasNegationPrefix(e.item.text),
+      );
+      const anyNeg = negWithPrefix ?? entries.find((e) => e.bucket === "neg");
+      if (anyNeg) textSource = anyNeg.item.text;
+      textSource = ensureNegationPrefix(textSource, isEnLang);
+    }
+    const finalItem: WeightedCondition = { text: textSource, weight: maxWeight };
     if (finalBucket === "hard") hardFilters.push(finalItem);
     else if (finalBucket === "soft") softPreferences.push(finalItem);
     else negativeFilters.push(finalItem);
   }
+
 
   // 菜品聚类
   const usedDishIds = new Set<number>();
