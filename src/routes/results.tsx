@@ -147,6 +147,12 @@ function ResultsPage() {
   const weekdayShort = t("results.weekday.short").split(",");
   const displayedHardFilters = parsed.hardFilters;
   const displayedSoftPreferences = parsed.softPreferences;
+  const NEG_PREFIX_ANY = /^(不要|不想|不喜欢|不接受|不能|别|勿|避免|排除|拒绝|讨厌|去掉|去除|杜绝|远离|禁止|avoid|no\s|not\s|non-|without|exclude|dislike|don'?t|hate|never|skip)/i;
+  const renderNegText = (text: string): string => {
+    const t = text.trim();
+    if (NEG_PREFIX_ANY.test(t)) return t;
+    return lang === "en" ? `Avoid ${t}` : `不要${t}`;
+  };
   const displayedNegativeFilters = parsed.negativeFilters;
   const displayedDishPreferences = parsed.dishPreferences;
 
