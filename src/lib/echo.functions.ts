@@ -542,7 +542,15 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
     {"text":"适合聊天（安静、便于交谈）","weight":0.7},
     {"text":"最好有蟹刺身","weight":0.6}
   ]
-- negativeFilters: [{"text":"不要游客店","weight":0.7}]
+- negativeFilters: [{"text":"不要游客店 → 排除游客扎堆的店","weight":0.7}]
+
+补充示例（避雷类必须保留否定语气）：
+- 用户："不要装修得像路边摊"
+  - negativeFilters: [{"text":"不要装修像路边摊 → 排除路边摊 / 大排档 / 街边摊风格","weight":0.7}]
+- 用户："不喜欢连锁店"
+  - negativeFilters: [{"text":"不喜欢连锁店 → 排除连锁品牌","weight":0.8}]
+- 用户："别太吵"
+  - negativeFilters: [{"text":"别太吵 → 避免嘈杂环境","weight":0.7}]
 - dishPreferences: ["蟹刺身"]
 
 ## 国家/语言识别（重要）
