@@ -4,17 +4,20 @@
 // 结果按 (cuisine, lang) 缓存在内存里（per-Worker 实例）。
 
 import { generateText, Output } from "ai";
+import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway";
-import {
-  CuisineExpansionSchema as Schema,
-  CUISINE_EXPANSION_JSON_MODE,
-} from "./echo-contracts";
 
 export type CuisineExpansion = {
   primary: string;
   synonyms: string[];
   negativeKeywords: string[];
 };
+
+const Schema = z.object({
+  primary: z.string(),
+  synonyms: z.array(z.string()).default([]),
+  negativeKeywords: z.array(z.string()).default([]),
+});
 
 const cache = new Map<string, CuisineExpansion>();
 
@@ -42,8 +45,8 @@ export async function expandCuisineQueries(opts: {
       maxOutputTokens: 400,
       output: Output.object({
         schema: Schema,
-        name: CUISINE_EXPANSION_JSON_MODE.name,
-        description: CUISINE_EXPANSION_JSON_MODE.description,
+        name: "cuisine_expansion",
+        description: "Localized cuisine query expansion",
       }),
       prompt: `用户在「${opts.city}」搜索一个中文料理类型：「${opts.cuisine}」。
 目标搜索语言代码是 "${opts.language}"。

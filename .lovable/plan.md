@@ -1,237 +1,96 @@
-## 修正三点理解
+# 时间解析修复方案（双保险）
 
-1. **中国大陆地区**：拦截逻辑保留（首页一进来还是要拦截）。要抛开的是**拦截之后的业务链路**——parse / search / verify / score / copy 这些主流程里不再有任何"如果是大陆城市就走 XXX"的分支、特殊 prompt、特殊搜索路径。也就是说：拦截层完整保留，主 workflow 里完全没有大陆概念。
-2. **JSON 模式全量启用**：所有模型步骤输出都是 JSON，所以每一步都强制走模型 JSON 模式，schema 来自集中合同文件，强制本地 Zod 校验兜底。Verify Pass 之前遇到的 structured output 空响应问题，通过缩小 batch + 简化 schema + 合同层 sanitize 来解决，而不是回落 raw JSON。
-3. **Agent 内部有 planner**：Agent 拿到任务后先做拆解（planner），决定调用哪些 skill、以什么顺序、是否需要 retry/降级，然后执行，最后组装输出。Skill 是 Agent 的能力单元，不直接暴露给 workflow。
+## 背景
+
+最近一次 session：用户原话「周六晚上6:30」，被解析成 `hhmm:"06:30"`，应为 `"18:30"`。
+同一句话上一次 session 解析正确。这是 LLM 不稳定，prompt 没明确"带分钟钟点 + 时段词"该如何套半区。
+
+策略：prompt 先教会模型（覆盖 95%+ 场景），代码做确定性兜底（覆盖剩余 5%，含模型漂移、模型升级回归）。
 
 ---
 
-## 架构
+## 改动 1：Prompt 补强（src/lib/echo.functions.ts，parseRequirements prompt 的 hhmm 规则段）
 
-```text
-User Input
-  ↓
-[Region Guard]  ← 大陆城市拦截，只在这层出现
-  ↓ (通过)
-Workflow Orchestrator
-  ├─ RequirementParsingAgent      (planner + skills)
-  ├─ RestaurantSearchAgent         (planner + skills)
-  └─ RestaurantRankingAgent        (planner + skills)
-  ↓
-FinalResult (合同校验后)
+在 hhmm 规则段当前的"具体钟点"那一行下面追加一条**统一半区规则**和示例：
+
+> **时段 + 钟点组合（强制）**：当原文同时出现时段词（早上/上午/morning、中午/noon、下午/afternoon、傍晚/evening、晚上/夜里/tonight/night、深夜/late night）和具体钟点（含 H:MM 或 H 点形式）时，钟点必须落到该时段对应的 12 小时半区：
+> - 早上/上午/morning + 1~11 → AM（保持原值）
+> - 中午/noon + 12 → 12:00；+ 1~11 → 跨过中午时按上下文
+> - 下午/afternoon/傍晚/evening/晚上/night + 1~11 → PM（+12）
+> - 深夜/late night + 1~5 → 次日凌晨，保持原值
+>
+> 示例：
+> - 「晚上 6:30」→ 18:30
+> - 「晚上六点半」→ 18:30
+> - 「下午 2 点」→ 14:00
+> - 「早上 7:30」→ 07:30
+> - 「tonight at 6」→ 18:00
+> - 「evening 7pm」→ 19:00（已含 pm 不再加 12）
+> - 「中午 12 点」→ 12:00
+> - 「凌晨 2 点」→ 02:00
+
+## 改动 2：代码兜底（src/lib/echo.functions.ts，sanitizeVisitTime 函数）
+
+在现有 evidence 子串校验通过之后、return 之前，加一段半区校正：
+
+```ts
+// 半区兜底：原文有明确时段词，且 hhmm 落在错误半区时强制翻转
+const PM_WORDS = /(晚上|夜里|今晚|tonight|night|傍晚|evening|下午|afternoon|pm|p\.m\.)/i;
+const AM_WORDS = /(早上|上午|清晨|morning|am|a\.m\.)/i;
+const NOON_WORDS = /(中午|noon)/i;
+const LATE_NIGHT_WORDS = /(深夜|凌晨|late\s*night|midnight)/i;
+
+const src = (data.freeText ?? "");
+const ev = vt.evidence ?? "";
+// 用更大的窗口判断：优先看 evidence 周边，evidence 不足时退回 freeText
+const ctx = ev.length >= 4 ? ev : src;
+
+if (vt.hhmm && /^\d{2}:\d{2}$/.test(vt.hhmm)) {
+  const [hh, mm] = vt.hhmm.split(":").map(Number);
+  let fixed = vt.hhmm;
+  const hasPm = PM_WORDS.test(ctx);
+  const hasAm = AM_WORDS.test(ctx);
+  const hasNoon = NOON_WORDS.test(ctx);
+  const hasLate = LATE_NIGHT_WORDS.test(ctx);
+
+  // 1) 晚上/下午/evening + 01~11 → +12
+  if (hasPm && !hasAm && !hasLate && hh >= 1 && hh <= 11) {
+    fixed = `${String(hh + 12).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  }
+  // 2) 早上/morning + 13~23 → -12
+  else if (hasAm && !hasPm && hh >= 13 && hh <= 23) {
+    fixed = `${String(hh - 12).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  }
+  // 3) 中午 + 00:xx → 12:xx（极少见但保护一下）
+  else if (hasNoon && hh === 0) {
+    fixed = `12:${String(mm).padStart(2, "0")}`;
+  }
+
+  if (fixed !== vt.hhmm) {
+    console.warn(`[sanitizeVisitTime] half-period fix: ${vt.hhmm} → ${fixed} (ctx="${ctx}")`);
+    return { ...parsed, visitTime: { ...vt, hhmm: fixed } };
+  }
+}
 ```
 
-Region Guard 之后，链路里不再出现任何大陆地区判断。
+规则只在**明确出现时段词**且**模型给的半区与时段矛盾**时翻转，不会误伤 7pm/19:00 这种本来就对的；冲突情况（同时有"早上"和"晚上"）走默认不动，由 prompt 处理。
 
 ---
 
-## 集中合同文件（唯一事实源）
-
-新增：
-
-```text
-src/lib/echo-contracts.ts
-```
-
-集中放：
-
-- Workflow 输入/输出 Schema
-- 每个 Agent 输入/输出 Schema
-- 每个 Skill 的模型调用 Schema（输入 DTO + 输出 Schema）
-- JSON 模式配置（每个 schema 显式声明是否用 `Output.object` + schema 名）
-- 默认值规则
-- sanitize / 兜底策略
-- TypeScript 类型导出
-
-原则：
-
-- prompt 不再手写"请返回如下 JSON"，直接引用合同里的字段清单。
-- 所有模型输出必须过合同 Zod parse，parse 失败进入合同定义的兜底策略。
-- Schema 尽量小、扁平、无长 enum，避免 Gemini structured output 状态机爆炸。
-- 候选池这种"动态列表"不塞进 schema enum，让 schema 保持稳定；ID 校验在 Zod 后置。
-
----
-
-## Agent 通用结构（含 planner）
-
-每个 Agent 文件结构类似：
-
-```text
-src/lib/agents/<agent-name>.server.ts
-
-- AgentInput (from 合同)
-- AgentOutput (from 合同)
-- planner(input): 返回 skill 调用计划 (steps, batchSize, retryPolicy)
-- executor(plan): 顺序/并发执行 skill
-- assembler(results): 组装最终 AgentOutput
-- 日志: agent.start / step.start / step.ok / step.fail / agent.ok
-```
-
-Skill 结构：
-
-```text
-src/lib/skills/<skill-name>.server.ts
-
-- SkillInput / SkillOutput (from 合同)
-- run(input): 单一职责执行
-- 内部若调用模型：强制 JSON 模式 + 合同 Schema + Zod sanitize
-```
-
----
-
-## RequirementParsingAgent
-
-Planner 决策：
-
-- 输入长度 / 语种 → 决定是否需要语义去重
-- 是否包含时间 → 是否需要 TimeNormalizationSkill
-- 是否包含料理关键词 → 是否需要 CuisineInferenceSkill
-
-Skills：
-
-- `RequirementExtractionSkill`（JSON 模式）
-- `SemanticDedupSkill`（JSON 模式）
-- `TimeNormalizationSkill`（JSON 模式 + 代码半区兜底）
-- `CuisineInferenceSkill`（JSON 模式，最多 1-2 个）
-
----
-
-## RestaurantSearchAgent
-
-Planner 决策：
-
-- 城市 / 料理数 → 决定启用哪几路
-- 候选池目标数 → 决定 POOL_CAP 和是否需要 enrichment
-- 是否启用 Yelp / Tabelog（根据城市/语言）
-
-Skills：
-
-- `CuisineExpansionSkill`（JSON 模式）
-- `MultiRouteSearchSkill`（Google Places 调用，规则）
-- `EnrichmentSkill`（Yelp / Tabelog，规则）
-- `GlobalDedupSkill`（规则，保证 placeId 不丢失）
-
----
-
-## RestaurantRankingAgent
-
-Planner 决策：
-
-- 候选数 → verify batch size
-- verify 结果分布 → 是否需要 score miss-only retry
-- top N → copy pass 是否启用
-
-Skills：
-
-- `VerificationSkill`（JSON 模式，小 batch，schema 扁平）
-- `MatchScoreSkill`（JSON 模式，schema 极小，缺失走 miss-only retry，最终兜底 60）
-- `CopywritingSkill`（JSON 模式，仅 top N）
-- `PhotoResolutionSkill`（规则）
-
----
-
-## JSON 模式统一规则
-
-全部模型调用一律：
-
-- 使用 AI SDK `Output.object` + 合同 schema
-- schema 保持小、扁平、无动态 enum、无 pattern/format/长度约束
-- prompt 不再重复"必须返回 XXX 字段"，改为引用合同字段清单
-- 输出后强制 Zod parse，parse 失败按合同定义兜底
-- Verify Pass：减小 batch（例如 6/组）+ schema 去掉可选字段，保证 JSON 模式稳定
-- Score Pass：schema 只有 `[{ placeId, matchScore }]`
-- Copy Pass：schema 只有 `[{ placeId, aiSummary, pros, cons }]`
-
-如果某个 batch JSON 模式仍失败：
-
-- 记录 fail
-- 触发合同定义的 fallback（miss-only retry / 缩小 batch retry / 兜底默认值）
-- 不再走 raw JSON parse 分支，保持链路统一
-
----
-
-## Workflow Orchestrator
-
-新增：
-
-```text
-src/lib/echo-workflow.server.ts
-```
-
-职责：
-
-- 顺序驱动三大 Agent
-- 派发 progress event
-- 记录每个 Agent、每个 Skill 的耗时 / 输入数 / 输出数 / 失败 / 兜底次数
-- 所有节点失败都必须记录，不允许静默
-- 最终结果统一过 `FinalResultSchema` 校验再返回
-
----
-
-## 中国大陆地区处理（修正）
-
-- 保留：入口 Region Guard 拦截（沿用现有拦截规则）。
-- 拿掉：主 workflow 里所有大陆分支、特殊 prompt、特殊搜索路径。
-- 拦截后不进入 workflow；进入 workflow 的输入一律视为国际城市。
-
----
-
-## 日志
-
-统一 helper：`src/lib/echo-observability.server.ts`
-
-每个 skill 调用都要记录：
-
-```text
-workflowId / agent / skill / status / durationMs
-inputCount / outputCount / missingCount / fallbackCount
-jsonMode=on / schemaName / errorType / errorMessage
-```
-
-关键聚合日志：
-
-```text
-[Echo/workflow] start
-[Echo/parse] ok ...
-[Echo/search] ok routes=... unique=... lost=0
-[Echo/verify] ok batches=... jsonModeFail=... fallback=...
-[Echo/score] ok missing=... retryRecovered=... fallback60=...
-[Echo/copy] ok topN=...
-[Echo/workflow] ok totalMs=...
-```
-
----
-
-## 迁移策略
-
-外部接口不变，内部替换：
-
-1. 保留 `echo.functions.ts` 作为对外 server function 壳。
-2. 内部改成调用新 workflow。
-3. 前端 progress event 名称保持兼容或做映射。
-4. 完成后旧代码路径逐步废弃。
-
----
-
-## 实施顺序
-
-1. `echo-contracts.ts` 合同文件（含所有 schema + JSON 模式声明）
-2. `echo-observability.server.ts` 统一日志
-3. Skill 层实现（每个 skill 单一职责，全部 JSON 模式）
-4. 三个 Agent（含 planner）
-5. Workflow Orchestrator
-6. 把 Region Guard 保留在入口，workflow 内部彻底去除大陆判断
-7. `echo.functions.ts` 改为调用新 workflow
-8. 用 Brunch / Sushi / Ramen / Steak 等查询跑一遍验证日志、耗时、fallback
-
----
-
-## 验证标准
-
-- Region Guard 依旧能拦截大陆城市，且拦截后 UI 行为与现在一致
-- workflow 内部代码搜索不到任何大陆关键词判断
-- 所有模型调用日志都显示 `jsonMode=on`
-- Verify / Score / Copy 每一步 schema 校验成功率显著提升
-- Score Pass fallback60 明显下降
-- Verify Pass 不再出现"No output generated" 之后 raw fallback 拖慢整体
-- 前端结果结构不变
+## 验证
+
+1. 改完后用以下 7 句话各跑一次，确认 hhmm：
+   - 周六晚上6:30 → 18:30
+   - 周六晚上六点半 → 18:30
+   - 下午 2 点 → 14:00
+   - 早上 7:30 → 07:30
+   - tonight at 6 → 18:00
+   - 中午 12 点 → 12:00
+   - 凌晨 2 点 → 02:00
+2. 同时确认现有正确用例不被改坏：7pm sushi → 19:00、明天 12:30 → 12:30、Saturday brunch → 10:30。
+3. 看 console，确认偶发的"half-period fix"日志只在 LLM 漂移时出现，便于后续观察。
+
+## 不在本次改动范围
+
+- 上一轮讨论中的"需求结构化解析 6 步"重构（拆抽取/打权重、输出字段拆分、合并规则等）继续待你拍板，本计划只修时间。
+- 进度条节奏、`未指定` 删除等历史改动保持不变。
