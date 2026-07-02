@@ -148,25 +148,8 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
 }
 
 // ---- 第二阶段：语义聚类去重（独立 AI 调用，不依赖关键词） ----
-// 把第一阶段抽出的所有 hard/soft/neg 条目（以及 dishPreferences）打平交给 AI，
-// 让 AI 给每条标"语义簇 id"。代码再按簇取 weight 最高那条作为最终保留，
-// bucket 也跟随最高 weight 那条所在的 bucket。
-const SemanticClusterOutput = z.object({
-  clusters: z
-    .array(
-      z.object({
-        ids: z.array(z.number().int().nonnegative()).min(1),
-      }),
-    )
-    .default([]),
-  dishClusters: z
-    .array(
-      z.object({
-        ids: z.array(z.number().int().nonnegative()).min(1),
-      }),
-    )
-    .default([]),
-});
+// Schema/JSON-mode 由 echo-contracts.ts 集中定义（SemanticClusterOutputSchema + CLUSTER_JSON_MODE）。
+const SemanticClusterOutput = SemanticClusterOutputSchema;
 
 type FlatEntry = {
   id: number;
