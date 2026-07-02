@@ -519,6 +519,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 ## 边界
 
 - 否定句一律进 negativeFilters，不要再复制到 hardFilters。
+- **negativeFilters[].text 必须保留否定语气**：中文以 \`不要/不想/不喜欢/不接受/不能/避免/排除/拒绝/别/勿\` 之一开头；英文以 \`Avoid/No/Not/Without/Exclude/Don't/Dislike\` 之一开头。若用户原话隐含否定（"想找不那么吵的"），也要写成"不要吵闹 → ..."。**\`→\` 右半边的标准化条件同样必须保留否定语气**（例：正确 \`"不要路边摊感 → 排除街边摊、大排档风格"\`；禁止 \`"路边摊感 → 路边摊风格"\`）。丢掉否定词会导致下游把避雷当偏好，语义完全反转。
 - 具体菜品名同时进 dishPreferences；如果用户说"必须有蟹刺身"，则 dishPreferences + hardFilters 都放（hardFilter 项带 weight）。
 
 ## 完整抽取规则（关键，务必严格执行）
