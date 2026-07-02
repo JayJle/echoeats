@@ -912,13 +912,6 @@ const ResultsSchema = z.object({
   ),
 });
 
-// AI 排序输出：每组 picks 用 placeId 引用真实候选
-const readableStringFrom = (value: unknown, fallback = "") => {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return fallback;
-};
-
 // AI 输入/输出 Schema 已迁移至 src/lib/echo-contracts.ts（唯一事实源）。
 
 function tierFromScore(score: number): "perfect" | "high" | "partial" {
