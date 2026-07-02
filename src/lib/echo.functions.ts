@@ -125,6 +125,31 @@ function uniqueStrings(items: string[]): string[] {
   return [...unique.values()];
 }
 
+// ---- 否定语气保留工具 ----
+// negativeFilters[].text 必须以否定前缀开头，否则下游 conciseCondition / AI 核验
+// 会把语义反转（"不要路边摊" → 变成 "很路边摊"）。
+const NEG_PREFIX_ZH = /^(不要|不想|不喜欢|不接受|不能|别|勿|避免|排除|拒绝|讨厌|去掉|去除|杜绝|远离|禁止)/;
+const NEG_PREFIX_EN = /^(avoid|no\s|not\s|non-|without|exclude|dislike|don'?t|hate|never|skip)/i;
+export function hasNegationPrefix(text: string): boolean {
+  const t = text.trim();
+  return NEG_PREFIX_ZH.test(t) || NEG_PREFIX_EN.test(t);
+}
+export function ensureNegationPrefix(text: string, isEn: boolean): string {
+  const parts = text.split(/\s*(?:→|->|=>)\s*/);
+  const fix = (s: string): string => {
+    const trimmed = s.trim();
+    if (!trimmed) return trimmed;
+    if (hasNegationPrefix(trimmed)) return trimmed;
+    return isEn ? `Avoid ${trimmed}` : `不要${trimmed}`;
+  };
+  if (parts.length >= 2) {
+    const left = fix(parts[0]);
+    const right = fix(parts.slice(1).join(" → "));
+    return `${left} → ${right}`;
+  }
+  return fix(text);
+}
+
 function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<typeof ParsedSchema> {
   // 兜底：仅做最严格的"完全相同字符串"去重，不再做关键词归一聚类
   // （真正的语义聚类去重在 semanticClusterMerge 里由 AI 完成）。
@@ -149,15 +174,24 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
     }
     return out;
   };
+  const isEn = parsed.uiLanguage === "en";
+  const negFixed = exactDedupe(parsed.negativeFilters).map((n) => {
+    const fixed = ensureNegationPrefix(n.text, isEn);
+    if (fixed !== n.text) {
+      console.log(`[neg-prefix] auto-prepended: "${n.text}" → "${fixed}"`);
+    }
+    return fixed === n.text ? n : { ...n, text: fixed };
+  });
   return {
     ...parsed,
     cuisines: uniqueStrings(parsed.cuisines),
     hardFilters: exactDedupe(parsed.hardFilters),
     softPreferences: exactDedupe(parsed.softPreferences),
-    negativeFilters: exactDedupe(parsed.negativeFilters),
+    negativeFilters: negFixed,
     dishPreferences: dishDedupe(parsed.dishPreferences),
   };
 }
+
 
 // ---- 第二阶段：语义聚类去重（独立 AI 调用，不依赖关键词） ----
 // 把第一阶段抽出的所有 hard/soft/neg 条目（以及 dishPreferences）打平交给 AI，
