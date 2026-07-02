@@ -1,96 +1,91 @@
-# 时间解析修复方案（双保险）
+# 保留 negativeFilters 的否定语气
 
-## 背景
+## 现象
 
-最近一次 session：用户原话「周六晚上6:30」，被解析成 `hhmm:"06:30"`，应为 `"18:30"`。
-同一句话上一次 session 解析正确。这是 LLM 不稳定，prompt 没明确"带分钟钟点 + 时段词"该如何套半区。
+用户原话是「不要路边摊感」（避雷），系统在餐厅卡上渲染出的标签是：
 
-策略：prompt 先教会模型（覆盖 95%+ 场景），代码做确定性兜底（覆盖剩余 5%，含模型漂移、模型升级回归）。
+> 很路边摊：装修漂亮，服务良好，完全不符合路边摊的特点
 
----
+「不要 / 避免」被剥掉了，只剩「路边摊」这个主题词。下游 AI 把它当作**要匹配的偏好**来评估（"不符合路边摊的特点" 听起来像 fail），语义完全反转。
 
-## 改动 1：Prompt 补强（src/lib/echo.functions.ts，parseRequirements prompt 的 hhmm 规则段）
+## 根因（三处叠加）
 
-在 hhmm 规则段当前的"具体钟点"那一行下面追加一条**统一半区规则**和示例：
+1. **Step-1 抽取（`echo.functions.ts` parseRequirements prompt 490 附近）**：`negativeFilters[].text` 只有「不要游客店」这一个示例，模型经常写成 `"路边摊感 → 排除路边摊风格"`，把否定词丢进 `→` 右半边或直接省掉，`conciseCondition` 拿的是 `→` 左半边就没有了否定。
+2. **语义聚类合并（`semanticClusterMerge` 274-294）**：一簇内取 weight 最高那条的 `text` 作为最终文案；如果这簇里同时有 soft 正向表述和 neg 负向表述，且正向那条 weight 更高，最终 bucket 会随赢家推到 neg 时用的仍是**正向那条的 text**，标签就没有否定语气。
+3. **Pass-1 核验 prompt（2084-2094、2139）**：`nonHardFilters` 把 soft/neg/dish 拉平只序列化 `text`，模型看到 `"路边摊感"` 时不知道它是 avoidance，写出的 `matchDetails[].label` 会用"很/挺/符合"这种正向语气收尾。
 
-> **时段 + 钟点组合（强制）**：当原文同时出现时段词（早上/上午/morning、中午/noon、下午/afternoon、傍晚/evening、晚上/夜里/tonight/night、深夜/late night）和具体钟点（含 H:MM 或 H 点形式）时，钟点必须落到该时段对应的 12 小时半区：
-> - 早上/上午/morning + 1~11 → AM（保持原值）
-> - 中午/noon + 12 → 12:00；+ 1~11 → 跨过中午时按上下文
-> - 下午/afternoon/傍晚/evening/晚上/night + 1~11 → PM（+12）
-> - 深夜/late night + 1~5 → 次日凌晨，保持原值
->
-> 示例：
-> - 「晚上 6:30」→ 18:30
-> - 「晚上六点半」→ 18:30
-> - 「下午 2 点」→ 14:00
-> - 「早上 7:30」→ 07:30
-> - 「tonight at 6」→ 18:00
-> - 「evening 7pm」→ 19:00（已含 pm 不再加 12）
-> - 「中午 12 点」→ 12:00
-> - 「凌晨 2 点」→ 02:00
+## 改动方案
 
-## 改动 2：代码兜底（src/lib/echo.functions.ts，sanitizeVisitTime 函数）
+只改 `src/lib/echo.functions.ts`（步骤 1-4）和 `src/routes/results.tsx`（步骤 5，UI 兜底）。不动打分逻辑、召回逻辑、其它节点。
 
-在现有 evidence 子串校验通过之后、return 之前，加一段半区校正：
+### 1. Step-1 prompt 强化 negation-preservation（parseRequirements）
+
+在现有"边界"段（474 行附近）追加硬约束，并补两条示例：
+
+- `negativeFilters[].text` **必须以否定前缀开头**（中文：`不要/避免/排除/不喜欢/不接受`；英文：`Avoid/No/Not/Exclude`），并在 `→` **右半边同样保留否定语气**（例：`"不要路边摊感 → 排除装修简陋、街边摊风格"`，禁止 `"路边摊感 → 路边摊风格"`）。
+- 新示例：
+  - `"不要装修像路边摊 → 排除路边摊/大排档风格的店"`, weight 0.7
+  - `"不喜欢连锁店 → 排除连锁品牌"`, weight 0.8
+
+### 2. Parser 兜底：`ensureNegationPrefix`（新工具函数）
+
+在 `exactDedupe` 之后、`semanticClusterMerge` 之前，对 `negativeFilters` 每条跑一次：
 
 ```ts
-// 半区兜底：原文有明确时段词，且 hhmm 落在错误半区时强制翻转
-const PM_WORDS = /(晚上|夜里|今晚|tonight|night|傍晚|evening|下午|afternoon|pm|p\.m\.)/i;
-const AM_WORDS = /(早上|上午|清晨|morning|am|a\.m\.)/i;
-const NOON_WORDS = /(中午|noon)/i;
-const LATE_NIGHT_WORDS = /(深夜|凌晨|late\s*night|midnight)/i;
-
-const src = (data.freeText ?? "");
-const ev = vt.evidence ?? "";
-// 用更大的窗口判断：优先看 evidence 周边，evidence 不足时退回 freeText
-const ctx = ev.length >= 4 ? ev : src;
-
-if (vt.hhmm && /^\d{2}:\d{2}$/.test(vt.hhmm)) {
-  const [hh, mm] = vt.hhmm.split(":").map(Number);
-  let fixed = vt.hhmm;
-  const hasPm = PM_WORDS.test(ctx);
-  const hasAm = AM_WORDS.test(ctx);
-  const hasNoon = NOON_WORDS.test(ctx);
-  const hasLate = LATE_NIGHT_WORDS.test(ctx);
-
-  // 1) 晚上/下午/evening + 01~11 → +12
-  if (hasPm && !hasAm && !hasLate && hh >= 1 && hh <= 11) {
-    fixed = `${String(hh + 12).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-  }
-  // 2) 早上/morning + 13~23 → -12
-  else if (hasAm && !hasPm && hh >= 13 && hh <= 23) {
-    fixed = `${String(hh - 12).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-  }
-  // 3) 中午 + 00:xx → 12:xx（极少见但保护一下）
-  else if (hasNoon && hh === 0) {
-    fixed = `12:${String(mm).padStart(2, "0")}`;
-  }
-
-  if (fixed !== vt.hhmm) {
-    console.warn(`[sanitizeVisitTime] half-period fix: ${vt.hhmm} → ${fixed} (ctx="${ctx}")`);
-    return { ...parsed, visitTime: { ...vt, hhmm: fixed } };
-  }
+const NEG_ZH = /^(不要|不想|不喜欢|避免|排除|拒绝|讨厌|不接受|别|勿)/;
+const NEG_EN = /^(avoid|no |not |exclude|without|don'?t|dislike)/i;
+function ensureNegationPrefix(text: string, isEn: boolean): string {
+  const [left, right] = text.split(/\s*(?:→|->|=>)\s*/);
+  const fix = (s: string) =>
+    !s ? s : (NEG_ZH.test(s) || NEG_EN.test(s)) ? s : (isEn ? `Avoid ${s}` : `不要${s}`);
+  return right ? `${fix(left)} → ${fix(right)}` : fix(left);
 }
 ```
 
-规则只在**明确出现时段词**且**模型给的半区与时段矛盾**时翻转，不会误伤 7pm/19:00 这种本来就对的；冲突情况（同时有"早上"和"晚上"）走默认不动，由 prompt 处理。
+`→` 两半各自独立检查。命中就跳过，缺失就补，日志打一行 `[neg-prefix] auto-prepended`。
 
----
+### 3. 聚类合并保留否定语气（`semanticClusterMerge` 274-294）
+
+修改选 winner 逻辑：当**最终 bucket = neg** 时，优先从簇里选一条**原本就是 `neg` 且 text 已带否定前缀**的条目作为文案来源；只有找不到才 fallback 到当前的按权重选（并对 fallback text 再跑一次 `ensureNegationPrefix`）。伪代码：
+
+```ts
+if (finalBucket === "neg") {
+  const negCandidate = entries.find(e => e.bucket === "neg" && HAS_NEG_PREFIX(e.item.text))
+                    ?? entries.find(e => e.bucket === "neg");
+  if (negCandidate) winner = negCandidate; // 保留权重仍取 maxWeight
+}
+const finalText = finalBucket === "neg"
+  ? ensureNegationPrefix(winner.item.text, isEn)
+  : winner.item.text;
+```
+
+### 4. Pass-1 核验 prompt 改造（2084-2094、2139）
+
+- `nonHardFilters` 序列化改成显式标注：avoidance 项的 `text` 前缀加 `【避雷/AVOID】`，dish 加 `【菜品/DISH】`，soft 加 `【偏好/PREFER】`。
+- 在 langDirective 后追加一条铁律（zh/en 双版本）：
+
+  > 对 kind="avoidance"（【避雷】开头）的条件：`status="ok"` = **餐厅不具备**该特征（成功避雷）；`status="fail"` = **餐厅命中**该特征（踩雷）。`label` 必须写成「避免 X：...」「未见 X 特征...」这类**保留否定语气**的表述，禁止写"很 X / 符合 X / 具备 X"。
+
+这样 Pass-1 输出的 `matchDetails[].label` 天然带否定语气，`conciseCondition` 就不会再丢。
+
+### 5. 前端渲染兜底（`src/routes/results.tsx` 361-365 + 卡片上的 matchDetails）
+
+标签本身已经在 `displayedNegativeFilters` 里，加一个 `renderNegText` helper：如果 text 没有否定前缀，前端展示时自动补一个 `✕ ` 图标 + `不要`/`Avoid`（不改 store 数据，只改 UI）。同样应用到餐厅卡上 `matchDetails` 里 status 属于避雷条目的行。
+
+只做展示兜底，不代替步骤 2-4；防止再有历史 session 缓存里落库的旧数据展示错误。
+
+## 不改动
+
+- 打分公式、`negFailHeavy` 判定、召回 8 路、Tabelog/Yelp 抓取
+- `applyHalfPeriodFix` / 时间解析
+- Reflect/repair 机制（上一轮的讨论）
 
 ## 验证
 
-1. 改完后用以下 7 句话各跑一次，确认 hhmm：
-   - 周六晚上6:30 → 18:30
-   - 周六晚上六点半 → 18:30
-   - 下午 2 点 → 14:00
-   - 早上 7:30 → 07:30
-   - tonight at 6 → 18:00
-   - 中午 12 点 → 12:00
-   - 凌晨 2 点 → 02:00
-2. 同时确认现有正确用例不被改坏：7pm sushi → 19:00、明天 12:30 → 12:30、Saturday brunch → 10:30。
-3. 看 console，确认偶发的"half-period fix"日志只在 LLM 漂移时出现，便于后续观察。
+跑三条用例，看 `parsed.negativeFilters[].text`、卡片标签、matchDetails：
 
-## 不在本次改动范围
+1. 「不要路边摊感觉」→ neg 里 text 以 `不要` 开头；标签渲染为 `不要路边摊感 · 0.7`；命中的餐厅 matchDetails 显示"避免路边摊：装修精致、未见街摊风格 · ok"。
+2. 「装修不能太简陋」→ neg 保留「不能」；卡片不出现正向措辞。
+3. 「Avoid touristy places」→ neg 保留 `Avoid`；英文 UI 下 matchDetails 用 "Avoid touristy: ..." 句式。
 
-- 上一轮讨论中的"需求结构化解析 6 步"重构（拆抽取/打权重、输出字段拆分、合并规则等）继续待你拍板，本计划只修时间。
-- 进度条节奏、`未指定` 删除等历史改动保持不变。
+历史用例回归：`"不要游客店"` 保持不变（已经带否定前缀，跳过 auto-prepend）。
