@@ -1,76 +1,46 @@
-## 目标
-把 `/chat` 的搜索进度 UI 完全恢复为原 `requirements.tsx` 里那套设计（stepper 卡片 + 细长平滑进度条 + RAF 匀速动画），同时把 AI 已识别的结构化需求（品类/时间/预算 + LLM 摘要）也在进度卡片里展示出来。
+# 修复：谷歌评分要求被显示成"≥5"的 bug
 
-## 之前的设计（原 `requirements.tsx`）
-- **容器**：`rounded-xl border border-border bg-muted/30 p-4 space-y-4` 卡片。
-- **顶部**：`<Progress value={displayProgress} className="h-1" />` 细进度条。
-- **底部**：竖排 stage 列表（`<ul className="space-y-3">`），每行：
-  - 状态图标：`Check`（完成，primary）/ `Loader2` spin（进行中）/ 空心小圆（待办）
-  - 主文案：done/active 加粗，todo muted
-  - active 时下方多一行 hint（`text-xs text-muted-foreground`）
-- **4 stage**：`parse` → `search` → `reviews` → `rank`（复用 dict 里已有的 `stage.*` key）
-- **RAF 匀速+抖动+软上限动画**：
-  - `STAGE_RANGES.deep = { parse:[0,12], search:[12,25], reviews:[25,80], rank:[80,99] }`
-  - `STAGE_EXPECTED_MS.deep = { parse:4000, search:8000, reviews:30000, rank:8000 }`
-  - `v = (hi-lo)/expectedMs * jitterFactor`（±20%，~500ms 换）
-  - `ceiling = min(target, hi-0.5)`；display<ceiling 正常速度，否则 1/6 速续爬，永不停
-  - `display = min(display, hi-0.1)`
-  - 收尾 target=100，expectedMs=600，RAF 等 display≥99.5 再 navigate（800ms 兜底）
+## 现象
+用户输入"新宿附近 谷歌评分 4.0 以上"，结果卡片里出现两条并列：
+- "新宿附近：Google Maps 实际评分 4.4 / 5；**要求 ≥ 5 分**" ❌ fail
+- "谷歌评分 4.0 以上：Google Maps 实际评分 4.4 / 5；要求 ≥ 4 分" ✅ ok
 
-## 后端事件 → stage 映射
-后端 chunk：`places / places-done / tabelog / yelp / rank / photos` + `review-progress / tabelog-progress / yelp-progress`。
-| 事件 | 处理 |
-|---|---|
-| runSearch 开始 | `parse` stage |
-| `stage: places` | 进入 `search`，target 推到 search 段中点 |
-| `stage: places-done` | 仍 `search`，target 推到 search 段尾 |
-| `stage: tabelog` / `yelp` | 进入 `reviews` |
-| `*-progress` | 用 `done/total` 在 reviews 段内计算真实 target |
-| `stage: rank` | 进入 `rank` |
-| `stage: photos` | 保持 `rank`，target 推到 rank 段后段 |
-| 最终响应 | target=100，等动画走完再跳转 |
+## 根因
+`src/lib/echo.functions.ts` 的 `checkGoogleRatingFilter()`（约 1140–1180 行）用正则判断某条 hardFilter 是否为"谷歌评分要求"，判定过宽：
 
-## 展示已识别的结构化需求
-在进度卡片顶部（Progress bar 之上）加一块「已理解」摘要区：
-- 一行 chip 列表（`flex flex-wrap gap-2 text-xs`），只在有值时显示：
-  - 📍 city（始终有）
-  - 🍱 `extracted.cuisine`
-  - ⏰ `extracted.visitTime`
-  - 💰 `extracted.budget`
-  - chip 样式：`rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5`
-- 若 `analysisSummary` 非空，独占一行 `text-xs text-muted-foreground italic`，前缀 `💡 {t("chat.summary.label")}：`。
-- 无任何识别值时整块隐藏，避免空占位。
+1. 第 1146 行 `mentionsRating` 把裸字 `分`/`星` 也算作评分线索。用户的位置条件文本是"新宿附近 → 地理位置在东京都新宿区或步行/地铁**5分**钟可达范围"，"5分钟"里的 `分` 命中。
+2. 第 1150 行阈值正则 `/([1-5](?:\.\d+)?)\s*(?:分|星|\/\s*5)?/` 从整段文本随便抓一个 1–5 的数字，抓到了"5分钟"的 `5`。
+3. 于是这条位置约束被当作"评分 ≥ 5"核验，`rating=4.4 < 5` → fail。
 
-## 前端改动 (`src/routes/chat.tsx`)
-- 删除现有 `ProgressState / chunkToProgress` 单条百分比实现和当前 `SearchProgressOverlay`。
-- 新增：
-  - `type StageKey = "parse" | "search" | "reviews" | "rank"`
-  - refs：`displayProgressRef / targetProgressRef / stageExpectedMsRef / jitterRef / rafProgressRef / lastFrameAtRef`
-  - state：`currentStage: StageKey | null`, `displayProgress: number`
-  - helpers：`STAGE_RANGES`、`STAGE_EXPECTED_MS`、`setRangeForStage`、`startProgressLoop / stopProgressLoop`、`computeReviewsTarget(done,total)`、`reviewsHintKey(city)`
-- `runSearch` 改写：
-  1. reset refs → `startProgressLoop` → `setCurrentStage("parse")` → `setRangeForStage("parse")`
-  2. 调 `parseFn` 期间保持 parse
-  3. 调 `searchFn` 拿 iterator → 在 `consumeSearchStream` 回调里按上表推进 stage/target
-  4. 完成后 target=100，RAF 等动画到位再 `navigate("/results")`（800ms 兜底）
-  5. 组件卸载 / 错误 → `stopProgressLoop`
-- `SearchProgressOverlay` 组件重写：
-  - 外层保留全屏 backdrop（`fixed inset-0 bg-background/85 backdrop-blur-sm`）
-  - 内层：`rounded-2xl border bg-card p-6 space-y-4 w-full max-w-md shadow-lg`
-  - 顶部标题：`chat.progress.title` + spinner 图标
-  - **新加"已理解"区**（见上）
-  - `<Progress value={displayProgress} className="h-1" />`
-  - stage 列表（Check / Loader2 / 空心圆 三态）
-  - 每个 active stage 显示 hint（其中 `search` 用 `stage.search.label` 里的 `{city}` 插值，`reviews` 用 `reviewsHintKey(city)` 决定 jp/other 版本）
+不是 LLM 幻觉，parseRequirements 解析出来的 hardFilters 是对的（日志可确认，两条分别是"新宿附近…"和"谷歌评分 4.0 以上…"）。是硬过滤核验步骤的正则误伤。
 
-## i18n
-- 复用现有：`stage.parse.label/hint`、`stage.search.label/placeholder/hintDeep`、`stage.reviews.label/hint.jp/hint.other`、`stage.rank.label/hintDeep`；`chat.progress.title`；`chat.summary.label`。
-- 移除的旧 chat.progress.* 单条式文案暂留在 dict 不动。
+## 上次查询用到的模型（已切到 Qwen/DashScope 之后）
+- parseRequirements: `qwen-plus`，失败 fallback `qwen-max`
+- Pass-1 AI 排序/核验: `qwen-plus`
+- cuisine-expand: `qwen-turbo`
+- Tabelog / Yelp 检索: 仍是 Perplexity `sonar/sonar-pro`（未替换）
 
-## 依赖
-- `import { Progress } from "@/components/ui/progress"`（已存在）
-- `import { Check, Loader2 } from "lucide-react"`
+## 修复方案（只改 `checkGoogleRatingFilter`）
 
-## 不改动
-- 多轮澄清逻辑（`runIntro / submitAnswer / askNext / analyzeAndAskNext`）保持不变
-- store、其它路由、其它组件保持不变
+收紧"是不是评分要求"的判定 + 阈值抽取，避免和"X分钟 / 5号线 / 步行5分钟"这类文本冲突。
+
+1. **门槛判定**：必须同时满足
+   - 文本里出现明确的评分词：`评分 / 評分 / 评级 / rating / rated / stars? / score / ⭐` 之一；或出现 `谷歌/Google` + `分|星|/5` 的组合。
+   - 单独一个 `分` 或 `星` **不再算**评分线索（"5分钟""五星级酒店"等会误伤）。
+2. **阈值抽取**：改为在评分关键词附近就近匹配，例如：
+   - `/(?:评分|評分|rating|score|stars?)\s*(?:≥|>=|>|以上|大于|超过|不低于|at\s*least|above|over)?\s*([1-5](?:\.\d+)?)/i`
+   - 或先找到 `/5` / `分 / 5` 形式再回抓数字。
+   - 只有在成功匹配到评分锚点时才返回阈值；否则返回 `null`（当作"这条不是评分要求"）。
+3. **保留** `≤ / < / >` 等比较符方向识别，测试用例覆盖：
+   - "谷歌评分 4.0 以上" → ≥ 4
+   - "Google rating above 4.5" → > 4.5
+   - "地铁 5 分钟可达" → 判为非评分（返回 null）
+   - "步行 3 分钟" → 非评分
+   - "评分不低于 4" → ≥ 4
+
+## 涉及文件
+- `src/lib/echo.functions.ts`：只改 `checkGoogleRatingFilter()`（约 1140–1181 行），其它逻辑不动。
+
+## 验证
+- 复跑同一 query（Tokyo + "想吃 butadon 新宿附近 谷歌评分 4.0 以上"），结果里应只剩一条评分核验："谷歌评分 4.0 以上 …要求 ≥ 4 分"，位置那条不再被显示为评分 fail。
+- 位置类硬条件目前没有确定性核验器，会走 LLM 的 `matchDetails`（Pass-1），符合现有设计。

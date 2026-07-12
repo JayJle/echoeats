@@ -79,7 +79,7 @@ export type ResultsGroup = {
 };
 
 export type SearchWarning = {
-  stage: string;
+  stage: string;          // "places" | "tabelog" | "yelp" | "cuisine-expand" | "photos" | "ai-rank"
   cuisine?: string;
   message: string;
   retryable?: boolean;
@@ -92,51 +92,21 @@ export type SearchResults = {
   warnings?: SearchWarning[];
 };
 
-export type ChatMsg = {
-  role: "ai" | "user";
-  text: string;
-  field?: string;
-};
-
-export type ExtractedKeyFields = {
-  cuisine: string | null;
-  visitTime: string | null;
-  budget: string | null;
-  cuisineSuggestions: string[];
-};
-
 type QueryState = {
   city: string;
   cuisines: string[];
   autoInferCuisines: boolean;
   date: string;
   freeText: string;
-  chatHistory: ChatMsg[];
-  askedFields: string[];
-  skippedFields: string[];
-  extracted: ExtractedKeyFields | null;
   parsed: ParsedRequirements | null;
   results: SearchResults | null;
-  roundsUsed: number;
-  currentQuestion: string | null;
-  currentSuggestions: string[];
-  analysisSummary: string;
   setCity: (v: string) => void;
   setCuisines: (v: string[]) => void;
   setAutoInferCuisines: (v: boolean) => void;
   setDate: (v: string) => void;
   setFreeText: (v: string) => void;
-  setChatHistory: (v: ChatMsg[]) => void;
-  setAskedFields: (v: string[]) => void;
-  setSkippedFields: (v: string[]) => void;
-  setExtracted: (v: ExtractedKeyFields | null) => void;
   setParsed: (v: ParsedRequirements | null) => void;
   setResults: (v: SearchResults | null) => void;
-  setRoundsUsed: (v: number) => void;
-  setCurrentQuestion: (v: string | null) => void;
-  setCurrentSuggestions: (v: string[]) => void;
-  setAnalysisSummary: (v: string) => void;
-  resetChat: () => void;
   reset: () => void;
 };
 
@@ -148,45 +118,15 @@ export const useQueryStore = create<QueryState>()(
       autoInferCuisines: true,
       date: "",
       freeText: "",
-      chatHistory: [],
-      askedFields: [],
-      skippedFields: [],
-      extracted: null,
       parsed: null,
       results: null,
-      roundsUsed: 0,
-      currentQuestion: null,
-      currentSuggestions: [],
-      analysisSummary: "",
       setCity: (v) => set({ city: v }),
       setCuisines: (v) => set({ cuisines: v }),
       setAutoInferCuisines: (v) => set({ autoInferCuisines: v }),
       setDate: (v) => set({ date: v }),
       setFreeText: (v) => set({ freeText: v }),
-      setChatHistory: (v) => set({ chatHistory: v }),
-      setAskedFields: (v) => set({ askedFields: v }),
-      setSkippedFields: (v) => set({ skippedFields: v }),
-      setExtracted: (v) => set({ extracted: v }),
       setParsed: (v) => set({ parsed: v }),
       setResults: (v) => set({ results: v }),
-      setRoundsUsed: (v) => set({ roundsUsed: v }),
-      setCurrentQuestion: (v) => set({ currentQuestion: v }),
-      setCurrentSuggestions: (v) => set({ currentSuggestions: v }),
-      setAnalysisSummary: (v) => set({ analysisSummary: v }),
-      resetChat: () =>
-        set({
-          chatHistory: [],
-          askedFields: [],
-          skippedFields: [],
-          extracted: null,
-          freeText: "",
-          parsed: null,
-          results: null,
-          roundsUsed: 0,
-          currentQuestion: null,
-          currentSuggestions: [],
-          analysisSummary: "",
-        }),
       reset: () =>
         set({
           city: "",
@@ -194,29 +134,17 @@ export const useQueryStore = create<QueryState>()(
           autoInferCuisines: true,
           date: "",
           freeText: "",
-          chatHistory: [],
-          askedFields: [],
-          skippedFields: [],
-          extracted: null,
           parsed: null,
           results: null,
-          roundsUsed: 0,
-          currentQuestion: null,
-          currentSuggestions: [],
-          analysisSummary: "",
         }),
     }),
 
-
     {
       name: "echo-eats-query",
-      version: 5,
+      version: 2,
       migrate: (persisted: unknown, version: number) => {
-        const state = persisted as
-          | (Partial<QueryState> & { parsed?: ParsedRequirements | null })
-          | undefined;
-        if (!state) return state as unknown as QueryState;
-        if (version < 2 && state.parsed) {
+        const state = persisted as { parsed?: ParsedRequirements | null } | undefined;
+        if (version < 2 && state?.parsed) {
           const upgrade = (arr: unknown): WeightedCondition[] => {
             if (!Array.isArray(arr)) return [];
             return arr.map((item) =>
@@ -233,31 +161,8 @@ export const useQueryStore = create<QueryState>()(
             negativeFilters: upgrade(p.negativeFilters),
           };
         }
-        if (version < 3) {
-          state.chatHistory = state.chatHistory ?? [];
-          state.askedFields = state.askedFields ?? [];
-          state.skippedFields = state.skippedFields ?? [];
-        }
-        if (version < 4) {
-          state.extracted = null;
-          state.chatHistory = [];
-          state.askedFields = [];
-          state.skippedFields = [];
-        }
-        if (version < 5) {
-          state.roundsUsed = 0;
-          state.currentQuestion = null;
-          state.currentSuggestions = [];
-          state.analysisSummary = "";
-          state.chatHistory = [];
-          state.askedFields = [];
-          state.skippedFields = [];
-          state.extracted = null;
-        }
-        return state as unknown as QueryState;
+        return state as QueryState;
       },
-
-
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),
       ),

@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { FormEvent, useState } from "react";
 import { Loader2, MapPin, Info } from "lucide-react";
+import { StepShell } from "@/components/StepShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,7 +16,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useQueryStore } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
-import { LanguageToggle } from "@/components/LanguageToggle";
 import {
   validateCity,
   type CityValidationCandidate,
@@ -29,7 +29,7 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Tell Echo Eats your city and chat through what you want. It searches across platforms, reads the reviews, and finds the best match.",
+          "Describe what you want in one sentence. Echo Eats searches across platforms, reads the reviews, and finds the best match.",
       },
     ],
   }),
@@ -40,7 +40,6 @@ function StepCity() {
   const navigate = useNavigate();
   const city = useQueryStore((s) => s.city);
   const setCity = useQueryStore((s) => s.setCity);
-  const resetChat = useQueryStore((s) => s.resetChat);
   const [value, setValue] = useState(city);
   const [isChecking, setIsChecking] = useState(false);
   const [error, setError] = useState("");
@@ -50,9 +49,8 @@ function StepCity() {
 
   const continueWithCity = (candidate: CityValidationCandidate) => {
     setCity(candidate.displayName);
-    resetChat();
     setCandidates([]);
-    navigate({ to: "/chat" });
+    navigate({ to: "/cuisines" });
   };
 
   const handleResult = (result: CityValidationResult) => {
@@ -92,70 +90,62 @@ function StepCity() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="px-6 py-5 flex items-center justify-between border-b border-border/60">
-        <span className="font-semibold tracking-tight">
-          Echo <span className="text-primary">Eats</span>
-        </span>
-        <LanguageToggle />
-      </header>
-      <main className="max-w-xl mx-auto px-6 py-16">
-        <h1 className="text-2xl font-semibold tracking-tight mb-8">{t("step1.title")}</h1>
-        <form onSubmit={onSubmit} className="space-y-6">
-          <Input
-            autoFocus
-            value={value}
-            onChange={(e) => {
-              setValue(e.target.value);
-              setError("");
-            }}
-            placeholder={t("step1.placeholder")}
-            className="h-12 text-base"
-            maxLength={80}
-            aria-invalid={Boolean(error)}
-            aria-describedby={error ? "city-error" : undefined}
-          />
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Info className="h-3.5 w-3.5 shrink-0 opacity-70" />
-            <span>{t("step1.notice")}</span>
-          </div>
-          {error ? <p id="city-error" className="text-sm text-destructive" role="alert">{error}</p> : null}
-          <div className="flex justify-end">
-            <Button type="submit" disabled={!value.trim() || isChecking} size="lg">
-              {isChecking ? <><Loader2 className="animate-spin" />{t("step1.checking")}</> : t("common.next")}
-            </Button>
-          </div>
-        </form>
+    <StepShell step={1} total={3} title={t("step1.title")}>
+      <form onSubmit={onSubmit} className="space-y-6">
+        <Input
+          autoFocus
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError("");
+          }}
+          placeholder={t("step1.placeholder")}
+          className="h-12 text-base"
+          maxLength={80}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? "city-error" : undefined}
+        />
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Info className="h-3.5 w-3.5 shrink-0 opacity-70" />
+          <span>{t("step1.notice")}</span>
+        </div>
+        {error ? <p id="city-error" className="text-sm text-destructive" role="alert">{error}</p> : null}
+        <div className="flex justify-end">
+          <Button type="submit" disabled={!value.trim() || isChecking} size="lg">
+            {isChecking ? <><Loader2 className="animate-spin" />{t("step1.checking")}</> : t("common.next")}
+          </Button>
+        </div>
+      </form>
 
-        <AlertDialog open={candidates.length > 0} onOpenChange={(open) => !open && setCandidates([])}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t("step1.chooseTitle")}</AlertDialogTitle>
-              <AlertDialogDescription>{t("step1.chooseDesc", { city: value.trim() })}</AlertDialogDescription>
-            </AlertDialogHeader>
-            <div className="grid gap-2">
-              {candidates.map((candidate) => (
-                <Button
-                  key={candidate.placeId}
-                  type="button"
-                  variant="outline"
-                  className="h-auto justify-start whitespace-normal px-4 py-3 text-left"
-                  onClick={() => continueWithCity(candidate)}
-                >
-                  <MapPin className="shrink-0 text-primary" />
-                  <span>
-                    <span className="block font-medium">{candidate.city}</span>
-                    {candidate.countryOrRegion ? <span className="block text-xs text-muted-foreground">{candidate.countryOrRegion}</span> : null}
-                  </span>
-                </Button>
-              ))}
-            </div>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </main>
-    </div>
+      <AlertDialog open={candidates.length > 0} onOpenChange={(open) => !open && setCandidates([])}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("step1.chooseTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("step1.chooseDesc", { city: value.trim() })}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-2">
+            {candidates.map((candidate) => (
+              <Button
+                key={candidate.placeId}
+                type="button"
+                variant="outline"
+                className="h-auto justify-start whitespace-normal px-4 py-3 text-left"
+                onClick={() => continueWithCity(candidate)}
+              >
+                <MapPin className="shrink-0 text-primary" />
+                <span>
+                  <span className="block font-medium">{candidate.city}</span>
+                  {candidate.countryOrRegion ? <span className="block text-xs text-muted-foreground">{candidate.countryOrRegion}</span> : null}
+                </span>
+              </Button>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </StepShell>
+
   );
 }
