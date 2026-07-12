@@ -371,8 +371,8 @@ function ChatPage() {
             </div>
 
             {awaitingAnswer && lastAiField && !thinking && !searching && (
-              <div className="space-y-3 border-t border-border/60 pt-4">
-                <div className="flex flex-wrap gap-2">
+              <div className="space-y-4 border-t border-border/60 pt-5">
+                <div className="flex flex-wrap gap-2 justify-center">
                   {chipsFor(lastAiField, extracted).map((chip) => (
                     <Button
                       key={chip}
@@ -393,24 +393,42 @@ function ChatPage() {
                     {t("chat.skip")}
                   </Button>
                 </div>
-                <form onSubmit={onFreeSubmit} className="flex gap-2 items-start">
-                  <Input
-                    value={freeInput}
-                    onChange={(e) => setFreeInput(e.target.value)}
-                    placeholder={t("chat.orTypeYourOwn")}
-                    className="flex-1"
-                    maxLength={200}
+
+                <div className="py-2">
+                  <VoiceInput
+                    variant="hero"
+                    onTranscript={(text) => {
+                      setFreeInput(text);
+                      void submitAnswer(text);
+                    }}
                   />
-                  <MicButton
-                    onTranscript={(text) =>
-                      setFreeInput((prev) => (prev ? `${prev} ${text}` : text).slice(0, 200))
-                    }
-                    size="icon"
-                  />
-                  <Button type="submit" size="icon" disabled={!freeInput.trim()}>
-                    <Send className="w-4 h-4" />
-                  </Button>
-                </form>
+                </div>
+
+                {!showFreeText ? (
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowFreeText(true)}
+                      className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                    >
+                      {t("step3.voice.orType")}
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={onFreeSubmit} className="flex gap-2 items-center">
+                    <Input
+                      autoFocus
+                      value={freeInput}
+                      onChange={(e) => setFreeInput(e.target.value)}
+                      placeholder={t("chat.orTypeYourOwn")}
+                      className="flex-1"
+                      maxLength={200}
+                    />
+                    <Button type="submit" size="icon" disabled={!freeInput.trim()}>
+                      <Send className="w-4 h-4" />
+                    </Button>
+                  </form>
+                )}
               </div>
             )}
           </>
