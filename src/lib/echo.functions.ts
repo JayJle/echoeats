@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateText, Output } from "ai";
+import { generateText, Output, NoObjectGeneratedError } from "ai";
 import { z } from "zod";
 import { createQwenProvider } from "./ai-gateway";
 
@@ -3292,12 +3292,14 @@ const ClarifyInput = z.object({
 const FIELD_ORDER = ["cuisine", "visitTime", "budget", "vibe", "dish", "avoid"] as const;
 type ClarifyField = (typeof FIELD_ORDER)[number];
 
+// Loose schema so Qwen JSON passes even if it omits optional-ish keys.
+// Enum/nullable/boolean constraints are enforced in code after parse.
 const ClarifyOutput = z.object({
-  action: z.enum(["ask", "search"]),
-  field: z.enum(FIELD_ORDER).nullable(),
-  question: z.string().nullable(),
-  suggestions: z.array(z.string()).nullable(),
-  allowSkip: z.boolean().nullable(),
+  action: z.string(),
+  field: z.string().nullish(),
+  question: z.string().nullish(),
+  suggestions: z.array(z.string()).nullish(),
+  allowSkip: z.boolean().nullish(),
 });
 
 type FieldFallback = { q: string; s: string[] };
@@ -3411,8 +3413,8 @@ Rules:
 2. "field" MUST be one of remaining askable fields. Never re-ask an answered or skipped field.
 3. Pick the most useful next field given prior answers (cuisine first if unknown; else biggest gap).
 4. If prior messages already give enough to search (cuisine + at least one of time/budget/vibe, or a rich free-form sentence), set action="search".
-5. Otherwise action="ask": write a short warm natural question (<= 12 words). Provide 4–6 short chip suggestions (<= 3 words each), localized to the city and prior answers. allowSkip=true.
-6. Return ONLY JSON matching the schema.`
+5. Otherwise action="ask": write a short warm natural question (<= 12 words). "suggestions" MUST be an array of 4–6 short strings (<= 3 words each), localized to the city and prior answers — never null, never empty. allowSkip=true.
+6. Return ONLY JSON. Example: {"action":"ask","field":"budget","question":"What's your budget?","suggestions":["Under $30","$30-60","$60-120","$120+"],"allowSkip":true}`
       : `你是 Echo Eats 的餐厅发现 Planner。请决定"下一步问哪一个字段"，或者直接开始搜索。
 
 城市：${data.city}
@@ -3432,51 +3434,79 @@ ${historyLines || "（空）"}
 2. field 只能从"剩余可问字段"里选，绝不重复已回答或已跳过的字段。
 3. 结合用户已说过的话，挑当前最有价值的下一个字段（不知道品类先问 cuisine；否则补最大信息缺口）。
 4. 如果用户已经给了足够信息可以搜（cuisine + 时间/预算/氛围至少一项，或一句话信息量大），就 action="search"。
-5. 否则 action="ask"：写一句短、自然、有温度的问题（≤ 24 字），并给 4–6 个短 chip（每个 ≤ 8 字），结合城市和已有回答做本地化。allowSkip=true。
-6. 只输出符合 schema 的 JSON。`;
+5. 否则 action="ask"：写一句短、自然、有温度的问题（≤ 24 字）。suggestions 必须是 4–6 个短字符串（每个 ≤ 8 字）的数组，结合城市和已有回答做本地化——绝不能为 null 或空数组。allowSkip=true。
+6. 只输出 JSON。示例：{"action":"ask","field":"budget","question":"人均预算大概多少？","suggestions":["100 元内","100-300","300-800","800+"],"allowSkip":true}`;
 
+    let raw: unknown = null;
     try {
       const gateway = createQwenProvider(key);
       const { output } = await generateText({
         model: gateway("qwen-plus"),
         prompt,
-        maxOutputTokens: 400,
+        maxOutputTokens: 600,
         output: Output.object({
           schema: ClarifyOutput,
           name: "clarify_next_step",
           description: "Decide next clarify question or search",
         }),
       });
-      const parsed = ClarifyOutput.parse(output);
-
-      if (parsed.action === "ask") {
-        if (!parsed.field || !remaining.includes(parsed.field)) {
-          return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
-        }
-        const suggestions = (parsed.suggestions ?? [])
-          .slice(0, 6)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0);
-        const fb = (isEn ? FALLBACKS_EN : FALLBACKS_ZH)[parsed.field as ClarifyField];
-        return {
-          action: "ask" as const,
-          field: parsed.field as string,
-          question: (parsed.question ?? "").trim() || fb.q,
-          suggestions: suggestions.length ? suggestions : fb.s,
-          allowSkip: parsed.allowSkip ?? true,
-        };
-      }
-      return {
-        action: "search" as const,
-        field: null,
-        question: null,
-        suggestions: [] as string[],
-        allowSkip: false,
-      };
+      raw = output;
     } catch (e) {
-      console.warn("[clarifyNextStep] LLM 失败，回退确定性问题：", e instanceof Error ? e.message : e);
+      if (NoObjectGeneratedError.isInstance(e) && typeof e.text === "string") {
+        // Try to salvage: strip code fences and parse JSON manually.
+        const cleaned = e.text.trim().replace(/^```json\s*|^```\s*|```$/g, "").trim();
+        try {
+          raw = JSON.parse(cleaned);
+        } catch {
+          const m = cleaned.match(/\{[\s\S]*\}/);
+          if (m) {
+            try { raw = JSON.parse(m[0]); } catch { /* ignore */ }
+          }
+        }
+      }
+      if (!raw) {
+        console.warn("[clarifyNextStep] LLM 失败，回退确定性问题：", e instanceof Error ? e.message : e);
+        return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
+      }
+    }
+
+    const safe = ClarifyOutput.safeParse(raw);
+    if (!safe.success) {
+      console.warn("[clarifyNextStep] 解析失败，回退：", safe.error.message);
       return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
     }
+    const parsed = safe.data;
+    console.log("[clarifyNextStep] LLM parsed:", JSON.stringify({
+      action: parsed.action,
+      field: parsed.field,
+      q: parsed.question,
+      s: parsed.suggestions,
+    }));
+
+    if (parsed.action === "ask") {
+      if (!parsed.field || !(FIELD_ORDER as readonly string[]).includes(parsed.field) || !remaining.includes(parsed.field as ClarifyField)) {
+        return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
+      }
+      const suggestions = (parsed.suggestions ?? [])
+        .slice(0, 6)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const fb = (isEn ? FALLBACKS_EN : FALLBACKS_ZH)[parsed.field as ClarifyField];
+      return {
+        action: "ask" as const,
+        field: parsed.field as string,
+        question: (parsed.question ?? "").trim() || fb.q,
+        suggestions: suggestions.length ? suggestions : fb.s,
+        allowSkip: parsed.allowSkip ?? true,
+      };
+    }
+    return {
+      action: "search" as const,
+      field: null,
+      question: null,
+      suggestions: [] as string[],
+      allowSkip: false,
+    };
   });
 
 
