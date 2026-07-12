@@ -11,8 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as Char91indexChar93RouteImport } from './routes/[index]'
 import { Route as ResultsRouteImport } from './routes/results'
-import { Route as RequirementsRouteImport } from './routes/requirements'
-import { Route as CuisinesRouteImport } from './routes/cuisines'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
@@ -26,16 +24,6 @@ const Char91indexChar93Route = Char91indexChar93RouteImport.update({
 const ResultsRoute = ResultsRouteImport.update({
   id: '/results',
   path: '/results',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const RequirementsRoute = RequirementsRouteImport.update({
-  id: '/requirements',
-  path: '/requirements',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const CuisinesRoute = CuisinesRouteImport.update({
-  id: '/cuisines',
-  path: '/cuisines',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatRoute = ChatRouteImport.update({
@@ -62,9 +50,7 @@ const AdminFeedbackRoute = AdminFeedbackRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
-  '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
-  '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
   '/admin/feedback': typeof AdminFeedbackRoute
   '/api/transcribe': typeof ApiTranscribeRoute
@@ -72,9 +58,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
-  '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
-  '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
   '/admin/feedback': typeof AdminFeedbackRoute
   '/api/transcribe': typeof ApiTranscribeRoute
@@ -83,9 +67,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
-  '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
-  '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
   '/admin/feedback': typeof AdminFeedbackRoute
   '/api/transcribe': typeof ApiTranscribeRoute
@@ -95,9 +77,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/chat'
-    | '/cuisines'
     | '/index'
-    | '/requirements'
     | '/results'
     | '/admin/feedback'
     | '/api/transcribe'
@@ -105,9 +85,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/chat'
-    | '/cuisines'
     | '/index'
-    | '/requirements'
     | '/results'
     | '/admin/feedback'
     | '/api/transcribe'
@@ -115,9 +93,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/chat'
-    | '/cuisines'
     | '/index'
-    | '/requirements'
     | '/results'
     | '/admin/feedback'
     | '/api/transcribe'
@@ -126,9 +102,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ChatRoute: typeof ChatRoute
-  CuisinesRoute: typeof CuisinesRoute
   Char91indexChar93Route: typeof Char91indexChar93Route
-  RequirementsRoute: typeof RequirementsRoute
   ResultsRoute: typeof ResultsRoute
   AdminFeedbackRoute: typeof AdminFeedbackRoute
   ApiTranscribeRoute: typeof ApiTranscribeRoute
@@ -148,20 +122,6 @@ declare module '@tanstack/react-router' {
       path: '/results'
       fullPath: '/results'
       preLoaderRoute: typeof ResultsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/requirements': {
-      id: '/requirements'
-      path: '/requirements'
-      fullPath: '/requirements'
-      preLoaderRoute: typeof RequirementsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/cuisines': {
-      id: '/cuisines'
-      path: '/cuisines'
-      fullPath: '/cuisines'
-      preLoaderRoute: typeof CuisinesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/chat': {
@@ -198,9 +158,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ChatRoute: ChatRoute,
-  CuisinesRoute: CuisinesRoute,
   Char91indexChar93Route: Char91indexChar93Route,
-  RequirementsRoute: RequirementsRoute,
   ResultsRoute: ResultsRoute,
   AdminFeedbackRoute: AdminFeedbackRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
