@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useQueryStore, type ChatMsg, type ExtractedKeyFields } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { LanguageToggle } from "@/components/LanguageToggle";
+import { MicButton } from "@/components/MicButton";
 import {
   extractKeyFields,
   parseRequirements,
@@ -303,7 +304,14 @@ function ChatPage() {
               className="min-h-[120px] text-base resize-none"
               maxLength={500}
             />
-            <div className="flex justify-end">
+            <div className="flex items-center justify-between gap-2">
+              <MicButton
+                onTranscript={(text) =>
+                  setIntroText((prev) => (prev ? `${prev} ${text}` : text).slice(0, 500))
+                }
+                disabled={thinking}
+                size="icon"
+              />
               <Button type="submit" size="lg" disabled={!introText.trim() || thinking}>
                 {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
               </Button>
@@ -358,13 +366,19 @@ function ChatPage() {
                     {t("chat.skip")}
                   </Button>
                 </div>
-                <form onSubmit={onFreeSubmit} className="flex gap-2">
+                <form onSubmit={onFreeSubmit} className="flex gap-2 items-start">
                   <Input
                     value={freeInput}
                     onChange={(e) => setFreeInput(e.target.value)}
                     placeholder={t("chat.orTypeYourOwn")}
                     className="flex-1"
                     maxLength={200}
+                  />
+                  <MicButton
+                    onTranscript={(text) =>
+                      setFreeInput((prev) => (prev ? `${prev} ${text}` : text).slice(0, 200))
+                    }
+                    size="icon"
                   />
                   <Button type="submit" size="icon" disabled={!freeInput.trim()}>
                     <Send className="w-4 h-4" />
