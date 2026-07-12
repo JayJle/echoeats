@@ -16,6 +16,7 @@ import {
 import { useQueryStore } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { LanguageToggle } from "@/components/LanguageToggle";
+import { MicButton } from "@/components/MicButton";
 import {
   validateCity,
   type CityValidationCandidate,
