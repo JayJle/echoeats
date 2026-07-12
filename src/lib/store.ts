@@ -210,7 +210,7 @@ export const useQueryStore = create<QueryState>()(
 
     {
       name: "echo-eats-query",
-      version: 4,
+      version: 5,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as
           | (Partial<QueryState> & { parsed?: ParsedRequirements | null })
@@ -243,6 +243,16 @@ export const useQueryStore = create<QueryState>()(
           state.chatHistory = [];
           state.askedFields = [];
           state.skippedFields = [];
+        }
+        if (version < 5) {
+          state.roundsUsed = 0;
+          state.currentQuestion = null;
+          state.currentSuggestions = [];
+          state.analysisSummary = "";
+          state.chatHistory = [];
+          state.askedFields = [];
+          state.skippedFields = [];
+          state.extracted = null;
         }
         return state as unknown as QueryState;
       },
