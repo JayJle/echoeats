@@ -89,6 +89,7 @@ function ChatPage() {
           city,
           askedFields: asked,
           skippedFields: skipped,
+          history: history.map((m) => ({ role: m.role, text: m.text, field: m.field ?? null })),
           lastUserMessage: lastUser,
           roundIndex: asked.length,
           uiLanguage: lang,
