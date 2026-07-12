@@ -1,10 +1,11 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState, FormEvent } from "react";
-import { Loader2, Send } from "lucide-react";
+import { Check, Loader2, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Progress } from "@/components/ui/progress";
 import { useQueryStore, type ChatMsg, type ExtractedKeyFields } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { LanguageToggle } from "@/components/LanguageToggle";
@@ -30,38 +31,32 @@ export const Route = createFileRoute("/chat")({
 
 const MAX_CLARIFY_ROUNDS = 5;
 
-// ---- progress helpers ----
-type ProgressState = {
-  phase: "startingUp" | "places" | "reviews" | "rank" | "photos" | "done";
-  percent: number;
-  detail: string;
+// ---- stepper progress ----
+type StageKey = "parse" | "search" | "reviews" | "rank";
+
+const STAGE_RANGES: Record<StageKey, [number, number]> = {
+  parse: [0, 12],
+  search: [12, 25],
+  reviews: [25, 80],
+  rank: [80, 99],
 };
 
-function chunkToProgress(chunk: SearchStreamChunk, prev: ProgressState): ProgressState {
-  if (chunk.type === "stage") {
-    switch (chunk.stage) {
-      case "places":
-        return { phase: "places", percent: 15, detail: "" };
-      case "places-done":
-        return { phase: "places", percent: 25, detail: chunk.count ? `${chunk.count}` : "" };
-      case "tabelog":
-      case "yelp":
-        return { phase: "reviews", percent: Math.max(prev.percent, 30), detail: chunk.total ? `0 / ${chunk.total}` : "" };
-      case "rank":
-        return { phase: "rank", percent: 80, detail: "" };
-      case "photos":
-        return { phase: "photos", percent: 92, detail: "" };
-      default:
-        return prev;
-    }
-  }
-  if (chunk.type === "review-progress" || chunk.type === "tabelog-progress" || chunk.type === "yelp-progress") {
-    const ratio = chunk.total ? chunk.done / chunk.total : 0;
-    const percent = 30 + Math.round(ratio * 48);
-    return { phase: "reviews", percent: Math.max(prev.percent, percent), detail: `${chunk.done} / ${chunk.total}` };
-  }
-  return prev;
+const STAGE_EXPECTED_MS: Record<StageKey, number> = {
+  parse: 4000,
+  search: 8000,
+  reviews: 30000,
+  rank: 8000,
+};
+
+const STAGE_ORDER: StageKey[] = ["parse", "search", "reviews", "rank"];
+
+const JP_CITIES = ["东京", "大阪", "京都", "名古屋", "福冈", "札幌", "横滨", "tokyo", "osaka", "kyoto", "nagoya", "fukuoka", "sapporo", "yokohama"];
+function reviewsHintKey(city: string): string {
+  const c = (city || "").toLowerCase();
+  if (JP_CITIES.some((x) => c.includes(x.toLowerCase()))) return "stage.reviews.hint.jp";
+  return "stage.reviews.hint.other";
 }
+
 
 function ChatPage() {
   const navigate = useNavigate();
