@@ -179,7 +179,7 @@ export const useQueryStore = create<QueryState>()(
         const state = persisted as
           | (Partial<QueryState> & { parsed?: ParsedRequirements | null })
           | undefined;
-        if (!state) return state as QueryState;
+        if (!state) return state as unknown as QueryState;
         if (version < 2 && state.parsed) {
           const upgrade = (arr: unknown): WeightedCondition[] => {
             if (!Array.isArray(arr)) return [];
