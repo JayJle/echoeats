@@ -85,11 +85,77 @@ function ChatPage() {
 
   const [thinking, setThinking] = useState(false);
   const [searching, setSearching] = useState(false);
-  const [progress, setProgress] = useState<ProgressState>({ phase: "startingUp", percent: 5, detail: "" });
+  const [currentStage, setCurrentStage] = useState<StageKey | null>(null);
+  const [displayProgress, setDisplayProgress] = useState(0);
   const [introText, setIntroText] = useState("");
   const [freeInput, setFreeInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // progress animation refs
+  const displayProgressRef = useRef(0);
+  const targetProgressRef = useRef(0);
+  const stageExpectedMsRef = useRef<number>(STAGE_EXPECTED_MS.parse);
+  const jitterRef = useRef({ at: 0, factor: 1 });
+  const rafProgressRef = useRef<number | null>(null);
+  const lastFrameAtRef = useRef<number>(0);
+  const currentStageRef = useRef<StageKey | null>(null);
+
+  const setRangeForStage = (stage: StageKey) => {
+    const [lo] = STAGE_RANGES[stage];
+    stageExpectedMsRef.current = STAGE_EXPECTED_MS[stage];
+    targetProgressRef.current = Math.max(targetProgressRef.current, lo);
+    currentStageRef.current = stage;
+    setCurrentStage(stage);
+  };
+
+  const bumpTarget = (v: number) => {
+    targetProgressRef.current = Math.max(targetProgressRef.current, v);
+  };
+
+  const startProgressLoop = () => {
+    if (rafProgressRef.current != null) return;
+    lastFrameAtRef.current = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.max(0, now - lastFrameAtRef.current);
+      lastFrameAtRef.current = now;
+      // refresh jitter every ~500ms
+      if (now - jitterRef.current.at > 500) {
+        jitterRef.current = { at: now, factor: 0.8 + Math.random() * 0.4 };
+      }
+      const stage = currentStageRef.current;
+      if (stage) {
+        const [lo, hi] = STAGE_RANGES[stage];
+        const expected = Math.max(500, stageExpectedMsRef.current);
+        const vBase = (hi - lo) / expected;
+        const v = vBase * jitterRef.current.factor;
+        const target = targetProgressRef.current;
+        const ceiling = Math.min(target, hi - 0.5);
+        const d = displayProgressRef.current;
+        let next = d;
+        if (d < ceiling) next = d + v * dt;
+        else next = d + (v * dt) / 6;
+        next = Math.min(next, hi - 0.1);
+        if (stage === "rank" && target >= 100) next = Math.min(d + v * dt * 3, target);
+        if (next !== d) {
+          displayProgressRef.current = next;
+          setDisplayProgress(next);
+        }
+      }
+      rafProgressRef.current = requestAnimationFrame(tick);
+    };
+    rafProgressRef.current = requestAnimationFrame(tick);
+  };
+
+  const stopProgressLoop = () => {
+    if (rafProgressRef.current != null) {
+      cancelAnimationFrame(rafProgressRef.current);
+      rafProgressRef.current = null;
+    }
+  };
+
+  useEffect(() => () => stopProgressLoop(), []);
+
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
