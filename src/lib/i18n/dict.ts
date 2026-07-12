@@ -260,6 +260,9 @@ export const dict: Record<Lang, Dict> = {
     "chat.progress.photos": "整理照片与详情…",
     "chat.progress.done": "完成，正在打开结果…",
     "chat.progress.startingUp": "启动中…",
+    "chat.roundsHint": "最多再聊 {n} 轮",
+    "chat.summary.label": "已理解",
+    "chat.autoSearchNotice": "信息够啦，帮你搜~",
 
   },
   en: {
@@ -514,6 +517,9 @@ export const dict: Record<Lang, Dict> = {
     "chat.progress.photos": "Organizing photos and details…",
     "chat.progress.done": "Done, opening results…",
     "chat.progress.startingUp": "Starting up…",
+    "chat.roundsHint": "Up to {n} more turn(s)",
+    "chat.summary.label": "Understood",
+    "chat.autoSearchNotice": "Got enough — searching now~",
 
   },
 };
