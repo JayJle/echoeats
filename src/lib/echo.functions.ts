@@ -3267,3 +3267,74 @@ Schema：
     }
   });
 
+// ============================================================
+// Agent Planner: 单次澄清决策
+// 优先级栈：cuisine → visitTime → budget → vibe → dish → avoid
+// 4 轮之后强制搜索；已跳过的字段不再问。
+// ============================================================
+
+const ClarifyInput = z.object({
+  city: z.string().min(1),
+  askedFields: z.array(z.string()).default([]),
+  skippedFields: z.array(z.string()).default([]),
+  lastUserMessage: z.string().default(""),
+  roundIndex: z.number().int().min(0).default(0),
+  uiLanguage: z.enum(["zh", "en"]).default("zh"),
+});
+
+const FIELD_ORDER = ["cuisine", "visitTime", "budget", "vibe", "dish", "avoid"] as const;
+
+type ClarifyField = (typeof FIELD_ORDER)[number];
+
+type FieldFallback = { q: string; s: string[] };
+
+const FALLBACKS_ZH: Record<ClarifyField, FieldFallback> = {
+  cuisine: { q: "想吃什么？", s: ["寿司", "拉面", "烧鸟", "烤肉", "意餐", "咖啡"] },
+  visitTime: { q: "什么时候去？", s: ["现在", "午餐", "晚餐", "深夜", "明天"] },
+  budget: { q: "人均预算多少？", s: ["100 元以内", "100-300", "300-800", "800+"] },
+  vibe: { q: "想要什么氛围？", s: ["随意", "约会", "安静", "热闹", "商务"] },
+  dish: { q: "有想吃的招牌菜吗？", s: ["招牌菜", "当季", "辣的", "新鲜"] },
+  avoid: { q: "有什么要避雷的吗？", s: ["不排队", "不去游客店", "无烟", "不能辣"] },
+};
+
+const FALLBACKS_EN: Record<ClarifyField, FieldFallback> = {
+  cuisine: { q: "What are you in the mood for?", s: ["Sushi", "Ramen", "Yakitori", "BBQ", "Italian", "Cafe"] },
+  visitTime: { q: "When are you going?", s: ["Now", "Lunch", "Dinner", "Late night", "Tomorrow"] },
+  budget: { q: "What's your budget per person?", s: ["Under $20", "$20-50", "$50-100", "$100+"] },
+  vibe: { q: "What vibe are you looking for?", s: ["Casual", "Date-night", "Quiet", "Lively", "Business"] },
+  dish: { q: "Any specific dish in mind?", s: ["Signature", "Seasonal", "Spicy", "Fresh"] },
+  avoid: { q: "Anything to avoid?", s: ["No queue", "No tourist traps", "No smoking", "Not spicy"] },
+};
+
+const MAX_ROUNDS = 4;
+
+export const clarifyNextStep = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => ClarifyInput.parse(input))
+  .handler(async ({ data }) => {
+    const isEn = data.uiLanguage === "en";
+    // 决定下一字段（确定性）
+    const asked = new Set(data.askedFields);
+    const skipped = new Set(data.skippedFields);
+    const nextField = FIELD_ORDER.find((f) => !asked.has(f) && !skipped.has(f)) ?? null;
+
+    if (!nextField || data.roundIndex >= MAX_ROUNDS) {
+      return {
+        action: "search" as const,
+        field: null,
+        question: null,
+        suggestions: [] as string[],
+        allowSkip: false,
+      };
+    }
+
+    const fallback = (isEn ? FALLBACKS_EN : FALLBACKS_ZH)[nextField];
+    return {
+      action: "ask" as const,
+      field: nextField as string,
+      question: fallback.q,
+      suggestions: fallback.s,
+      allowSkip: true,
+    };
+  });
+
+
