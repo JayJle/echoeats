@@ -117,6 +117,10 @@ type QueryState = {
   extracted: ExtractedKeyFields | null;
   parsed: ParsedRequirements | null;
   results: SearchResults | null;
+  roundsUsed: number;
+  currentQuestion: string | null;
+  currentSuggestions: string[];
+  analysisSummary: string;
   setCity: (v: string) => void;
   setCuisines: (v: string[]) => void;
   setAutoInferCuisines: (v: boolean) => void;
@@ -128,6 +132,10 @@ type QueryState = {
   setExtracted: (v: ExtractedKeyFields | null) => void;
   setParsed: (v: ParsedRequirements | null) => void;
   setResults: (v: SearchResults | null) => void;
+  setRoundsUsed: (v: number) => void;
+  setCurrentQuestion: (v: string | null) => void;
+  setCurrentSuggestions: (v: string[]) => void;
+  setAnalysisSummary: (v: string) => void;
   resetChat: () => void;
   reset: () => void;
 };
@@ -146,6 +154,10 @@ export const useQueryStore = create<QueryState>()(
       extracted: null,
       parsed: null,
       results: null,
+      roundsUsed: 0,
+      currentQuestion: null,
+      currentSuggestions: [],
+      analysisSummary: "",
       setCity: (v) => set({ city: v }),
       setCuisines: (v) => set({ cuisines: v }),
       setAutoInferCuisines: (v) => set({ autoInferCuisines: v }),
@@ -157,6 +169,10 @@ export const useQueryStore = create<QueryState>()(
       setExtracted: (v) => set({ extracted: v }),
       setParsed: (v) => set({ parsed: v }),
       setResults: (v) => set({ results: v }),
+      setRoundsUsed: (v) => set({ roundsUsed: v }),
+      setCurrentQuestion: (v) => set({ currentQuestion: v }),
+      setCurrentSuggestions: (v) => set({ currentSuggestions: v }),
+      setAnalysisSummary: (v) => set({ analysisSummary: v }),
       resetChat: () =>
         set({
           chatHistory: [],
@@ -166,6 +182,10 @@ export const useQueryStore = create<QueryState>()(
           freeText: "",
           parsed: null,
           results: null,
+          roundsUsed: 0,
+          currentQuestion: null,
+          currentSuggestions: [],
+          analysisSummary: "",
         }),
       reset: () =>
         set({
@@ -180,6 +200,10 @@ export const useQueryStore = create<QueryState>()(
           extracted: null,
           parsed: null,
           results: null,
+          roundsUsed: 0,
+          currentQuestion: null,
+          currentSuggestions: [],
+          analysisSummary: "",
         }),
     }),
 
