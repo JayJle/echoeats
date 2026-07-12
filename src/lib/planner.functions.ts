@@ -3,7 +3,6 @@ import { generateText } from "ai";
 import { createQwenProvider } from "./ai-gateway";
 import {
   detectMissingFields,
-  emptyParsed,
   localFallbackResponse,
   MAX_PLANNER_TURNS,
   PlannerInput,
@@ -12,7 +11,8 @@ import {
   type PlannerResponse,
 } from "./planner-utils";
 
-export type { PlannerField, PlannerResponse, PlannerTurn } from "./planner-utils";
+export type { PlannerField, PlannerResponse, PlannerTurn, ReaskInfo } from "./planner-utils";
+
 
 /** Planner Agent: merges answers, asks one needed clarification, max 5 turns. */
 export const plannerTurn = createServerFn({ method: "POST" })
