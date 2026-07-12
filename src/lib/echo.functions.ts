@@ -3502,6 +3502,5 @@ ${historyLines || "（空）"}
       allowSkip: false,
     };
   });
-  });
 
 
