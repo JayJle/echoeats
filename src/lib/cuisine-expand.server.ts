@@ -5,7 +5,7 @@
 
 import { generateText, Output } from "ai";
 import { z } from "zod";
-import { createLovableAiGatewayProvider } from "./ai-gateway";
+import { createQwenProvider } from "./ai-gateway";
 
 export type CuisineExpansion = {
   primary: string;
@@ -38,8 +38,8 @@ export async function expandCuisineQueries(opts: {
   };
 
   try {
-    const gateway = createLovableAiGatewayProvider(opts.apiKey);
-    const model = gateway("google/gemini-3-flash-preview");
+    const gateway = createQwenProvider(opts.apiKey);
+    const model = gateway("qwen-turbo");
     const { output } = await generateText({
       model,
       maxOutputTokens: 400,
