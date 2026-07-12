@@ -1605,7 +1605,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       (data.country && data.country.toUpperCase()) ||
       "";
 
-    // cuisines 兜底：用户跳过且 AI 也没推断出来时，按通用「餐厅」搜索
+    // 搜索兜底：用户未提供品类时只用通用餐厅查询，不把它写回结构化 cuisines。
     const cuisinesAutoFilled = data.cuisines.length === 0;
     if (cuisinesAutoFilled) {
       const lang = (data.language || guessLanguageCode(data.city)).toLowerCase();
