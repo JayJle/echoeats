@@ -1141,16 +1141,31 @@ function verifyGoogleRatingFilter(
   isEn: boolean,
 ): { status: "ok" | "unknown" | "fail"; note: string } | null {
   const text = filterText.toLowerCase();
-  // 用户常写“谷歌 4.5 以上”，解析器也可能标准化成“评分 ≥ 4.5”而丢掉“谷歌”。
+  // 明确的"评分"关键词（不含裸字"分/星"，避免"5分钟""五号线""五星级酒店"等误伤）
+  const RATING_WORD_RE = /(评分|評分|评级|評級|星级|星級|rating|rated|stars?|score|⭐)/i;
   const mentionsGoogle = /(google(?:\s+maps)?|谷歌(?:地图)?|グーグル)/i.test(text);
-  const mentionsRating = /(评分|評分|评级|評級|星级|星級|rating|rated|stars?|score|分|星|\/\s*5)/i.test(text);
-  if (!mentionsGoogle && !mentionsRating) {
+  const mentionsRatingWord = RATING_WORD_RE.test(text);
+  // 允许 "谷歌 4.5 以上" / "google 4.5+" 这种不含"评分"字样但明确指向谷歌的写法
+  const googleWithScoreShape = mentionsGoogle && /([1-5](?:\.\d+)?)\s*(?:\/\s*5|以上|以下|\+|星|stars?)/i.test(text);
+  if (!mentionsRatingWord && !googleWithScoreShape) {
     return null;
   }
-  const thresholdMatch = text.match(/([1-5](?:\.\d+)?)\s*(?:分|星|\/\s*5)?/);
-  if (!thresholdMatch) return null;
-  const threshold = Number(thresholdMatch[1]);
-  if (!Number.isFinite(threshold) || threshold < 1 || threshold > 5) return null;
+
+  // 在评分关键词附近就近抓阈值；否则回退到 "n / 5" 形式
+  let threshold: number | null = null;
+  const nearWord = text.match(
+    /(?:评分|評分|评级|評級|星级|星級|rating|rated|stars?|score|⭐|google(?:\s+maps)?|谷歌(?:地图)?|グーグル)[^0-9]{0,12}([1-5](?:\.\d+)?)/i,
+  );
+  if (nearWord) {
+    threshold = Number(nearWord[1]);
+  } else {
+    const slashFive = text.match(/([1-5](?:\.\d+)?)\s*\/\s*5\b/);
+    if (slashFive) threshold = Number(slashFive[1]);
+  }
+  if (threshold == null || !Number.isFinite(threshold) || threshold < 1 || threshold > 5) {
+    return null;
+  }
+
   if (rating == null) {
     return { status: "unknown", note: isEn ? "Google Maps rating is unavailable" : "Google Maps 评分数据缺失" };
   }
@@ -1178,6 +1193,7 @@ function verifyGoogleRatingFilter(
       ? `Google Maps rating is ${rating.toFixed(1)} / 5; requirement: ${comparator} ${threshold}`
       : `Google Maps 实际评分 ${rating.toFixed(1)} / 5；要求 ${comparator} ${threshold} 分`,
   };
+
 }
 
 const KIND_TAG_RE = /^\s*(?:【(?:偏好|避雷|菜品)】|\[(?:PREFER|AVOID|DISH)\])\s*/i;
