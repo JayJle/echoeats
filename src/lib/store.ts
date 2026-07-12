@@ -186,7 +186,7 @@ export const useQueryStore = create<QueryState>()(
 
     {
       name: "echo-eats-query",
-      version: 3,
+      version: 4,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as
           | (Partial<QueryState> & { parsed?: ParsedRequirements | null })
@@ -214,8 +214,12 @@ export const useQueryStore = create<QueryState>()(
           state.askedFields = state.askedFields ?? [];
           state.skippedFields = state.skippedFields ?? [];
         }
+        if (version < 4) {
+          state.extracted = state.extracted ?? null;
+        }
         return state as unknown as QueryState;
       },
+
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),
       ),
