@@ -92,8 +92,9 @@ export type PlannerResponse = z.infer<typeof PlannerOutput>;
 export const MAX_PLANNER_TURNS = 5;
 
 const BUDGET_RE = /(预算|人均|¥|￥|\$|€|£|jpy|usd|cny|rmb|日元|円|元|块|budget|per person|price|便宜|实惠|性价比|中等|适中|高端|奢侈|贵|affordable|cheap|moderate|mid\s*range|splurge|expensive)/i;
-const SKIP_RE = /^(skip|跳过|不用了|不了|不需要|no thanks|—)$/i;
+const SKIP_RE = /^[（(\[]?\s*(skip|跳过|不用了|不了|不需要|no thanks|—)\s*[)）\]]?$/i;
 const VAGUE_RE = /^(随便|都行|不限|无所谓|不知道|anything|any|whatever|no preference)$/i;
+
 
 export function emptyParsed(city: string): PlannerResponse["parsed"] {
   return {
