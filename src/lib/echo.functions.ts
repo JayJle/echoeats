@@ -3434,8 +3434,8 @@ ${historyLines || "（空）"}
 2. field 只能从"剩余可问字段"里选，绝不重复已回答或已跳过的字段。
 3. 结合用户已说过的话，挑当前最有价值的下一个字段（不知道品类先问 cuisine；否则补最大信息缺口）。
 4. 如果用户已经给了足够信息可以搜（cuisine + 时间/预算/氛围至少一项，或一句话信息量大），就 action="search"。
-5. 否则 action="ask"：写一句短、自然、有温度的问题（≤ 24 字），并给 4–6 个短 chip（每个 ≤ 8 字），结合城市和已有回答做本地化。allowSkip=true。
-6. 只输出符合 schema 的 JSON。`;
+5. 否则 action="ask"：写一句短、自然、有温度的问题（≤ 24 字）。suggestions 必须是 4–6 个短字符串（每个 ≤ 8 字）的数组，结合城市和已有回答做本地化——绝不能为 null 或空数组。allowSkip=true。
+6. 只输出 JSON。示例：{"action":"ask","field":"budget","question":"人均预算大概多少？","suggestions":["100 元内","100-300","300-800","800+"],"allowSkip":true}`;
 
     let raw: unknown = null;
     try {
