@@ -133,7 +133,9 @@ export function postProcessPlannerOutput(args: {
 }): PlannerResponse {
   const { out, data, isEn } = args;
   const skipSet = new Set<PlannerField>(data.skippedFields);
-  out.parsed = normalizeParsed(out.parsed, data.city);
+  // Planner suggestions are allowed to be inferred, but structured facts are not.
+  // Start from the already-confirmed parsed state and merge only the user's latest answer deterministically.
+  out.parsed = normalizeParsed(data.parsed ?? emptyParsed(data.city), data.city);
   const answeredField = enforceAnsweredField(out, data.history, data.city);
   const stillMissing = detectMissingFields(out.parsed as ParsedRequirements | null, skipSet);
 
@@ -241,6 +243,13 @@ function isUsefulAnswer(field: PlannerField, answer: string): boolean {
   return true;
 }
 
+function splitCuisineAnswer(answer: string): string[] {
+  return answer
+    .split(/\s*(?:、|，|,|\/|或|或者|和|and|or)\s*/i)
+    .map((v) => v.trim())
+    .filter((v) => v && v.length <= 40 && !/[?？]/.test(v));
+}
+
 function enforceAnsweredField(
   out: PlannerResponse,
   history: PlannerTurn[],
@@ -267,8 +276,14 @@ function enforceAnsweredField(
       touched("visitTime");
     }
   } else if (last.field === "cuisine") {
-    if (!p.cuisines.some((c) => c.trim() === answer)) {
-      p.cuisines = [...p.cuisines, answer];
+    const cuisines = splitCuisineAnswer(answer);
+    const next = [...p.cuisines];
+    for (const cuisine of cuisines) {
+      if (!next.some((c) => c.trim() === cuisine)) next.push(cuisine);
+    }
+    if (next.length !== p.cuisines.length) {
+      p.cuisines = next;
+      p.cuisinesInferred = false;
       touched("cuisines");
     }
   } else if (last.field === "budget") {
@@ -282,7 +297,11 @@ function enforceAnsweredField(
     const has = (p.hardFilters ?? []).some((s) => s.text === answer) ||
       (p.softPreferences ?? []).some((s) => s.text === answer);
     if (!has) {
-      p.softPreferences = [...(p.softPreferences ?? []), { text: answer, weight: 0.7 }];
+      if (last.field === "hardFilter") {
+        p.hardFilters = [...(p.hardFilters ?? []), { text: answer, weight: 0.8 }];
+      } else {
+        p.softPreferences = [...(p.softPreferences ?? []), { text: answer, weight: 0.7 }];
+      }
       touched(last.field === "hardFilter" ? "hardFilters" : "softPreferences");
     }
   }
