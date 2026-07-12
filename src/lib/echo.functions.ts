@@ -3268,245 +3268,148 @@ Schema：
   });
 
 // ============================================================
-// Agent Planner: LLM 驱动的单次澄清决策
-// 由 LLM 决定：下一问哪个字段、问题文案、chips、是否可跳过、
-// 或者信息已够时直接 search。带确定性 fallback。
+// Key-field extraction + deterministic clarify (cuisine / visitTime / budget)
 // ============================================================
 
-const ClarifyHistoryMsg = z.object({
-  role: z.enum(["user", "ai"]),
-  text: z.string(),
-  field: z.string().nullable().optional(),
-});
+const KEY_FIELDS = ["cuisine", "visitTime", "budget"] as const;
+type KeyField = (typeof KEY_FIELDS)[number];
 
-const ClarifyInput = z.object({
+const ExtractInput = z.object({
   city: z.string().min(1),
-  askedFields: z.array(z.string()).default([]),
-  skippedFields: z.array(z.string()).default([]),
-  history: z.array(ClarifyHistoryMsg).default([]),
-  lastUserMessage: z.string().default(""),
-  roundIndex: z.number().int().min(0).default(0),
+  freeText: z.string().default(""),
   uiLanguage: z.enum(["zh", "en"]).default("zh"),
 });
 
-const FIELD_ORDER = ["cuisine", "visitTime", "budget", "vibe", "dish", "avoid"] as const;
-type ClarifyField = (typeof FIELD_ORDER)[number];
-
-// Loose schema so Qwen JSON passes even if it omits optional-ish keys.
-// Enum/nullable/boolean constraints are enforced in code after parse.
-const ClarifyOutput = z.object({
-  action: z.string(),
-  field: z.string().nullish(),
-  question: z.string().nullish(),
-  suggestions: z.array(z.string()).nullish(),
-  allowSkip: z.boolean().nullish(),
+const ExtractSchema = z.object({
+  cuisine: z.string().nullish(),
+  visitTime: z.string().nullish(),
+  budget: z.string().nullish(),
+  cuisineSuggestions: z.array(z.string()).nullish(),
 });
 
-type FieldFallback = { q: string; s: string[] };
-
-const FALLBACKS_ZH: Record<ClarifyField, FieldFallback> = {
-  cuisine: { q: "想吃什么？", s: ["寿司", "拉面", "烧鸟", "烤肉", "意餐", "咖啡"] },
-  visitTime: { q: "什么时候去？", s: ["现在", "午餐", "晚餐", "深夜", "明天"] },
-  budget: { q: "人均预算多少？", s: ["100 元以内", "100-300", "300-800", "800+"] },
-  vibe: { q: "想要什么氛围？", s: ["随意", "约会", "安静", "热闹", "商务"] },
-  dish: { q: "有想吃的招牌菜吗？", s: ["招牌菜", "当季", "辣的", "新鲜"] },
-  avoid: { q: "有什么要避雷的吗？", s: ["不排队", "不去游客店", "无烟", "不能辣"] },
-};
-
-const FALLBACKS_EN: Record<ClarifyField, FieldFallback> = {
-  cuisine: { q: "What are you in the mood for?", s: ["Sushi", "Ramen", "Yakitori", "BBQ", "Italian", "Cafe"] },
-  visitTime: { q: "When are you going?", s: ["Now", "Lunch", "Dinner", "Late night", "Tomorrow"] },
-  budget: { q: "What's your budget per person?", s: ["Under $20", "$20-50", "$50-100", "$100+"] },
-  vibe: { q: "What vibe are you looking for?", s: ["Casual", "Date-night", "Quiet", "Lively", "Business"] },
-  dish: { q: "Any specific dish in mind?", s: ["Signature", "Seasonal", "Spicy", "Fresh"] },
-  avoid: { q: "Anything to avoid?", s: ["No queue", "No tourist traps", "No smoking", "Not spicy"] },
-};
-
-const MAX_ROUNDS = 4;
-
-function deterministicFallback(
-  askedFields: string[],
-  skippedFields: string[],
-  roundIndex: number,
-  uiLang: "zh" | "en",
-) {
-  const asked = new Set(askedFields);
-  const skipped = new Set(skippedFields);
-  const nextField = FIELD_ORDER.find((f) => !asked.has(f) && !skipped.has(f)) ?? null;
-  if (!nextField || roundIndex >= MAX_ROUNDS) {
-    return {
-      action: "search" as const,
-      field: null,
-      question: null,
-      suggestions: [] as string[],
-      allowSkip: false,
-    };
-  }
-  const fb = (uiLang === "en" ? FALLBACKS_EN : FALLBACKS_ZH)[nextField];
-  return {
-    action: "ask" as const,
-    field: nextField as string,
-    question: fb.q,
-    suggestions: fb.s,
-    allowSkip: true,
-  };
-}
-
-export const clarifyNextStep = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => ClarifyInput.parse(input))
+export const extractKeyFields = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => ExtractInput.parse(input))
   .handler(async ({ data }) => {
     const isEn = data.uiLanguage === "en";
-    const asked = new Set(data.askedFields);
-    const skipped = new Set(data.skippedFields);
-    const remaining = FIELD_ORDER.filter((f) => !asked.has(f) && !skipped.has(f));
-
-    if (remaining.length === 0 || data.roundIndex >= MAX_ROUNDS) {
-      return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
-    }
-
+    const empty = {
+      cuisine: null as string | null,
+      visitTime: null as string | null,
+      budget: null as string | null,
+      cuisineSuggestions: [] as string[],
+    };
     const key = process.env.QWEN_API_KEY;
-    if (!key) {
-      return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
-    }
-
-    const historyLines = data.history
-      .slice(-10)
-      .map((m) => `${m.role === "ai" ? "AI" : "USER"}${m.field ? `[${m.field}]` : ""}: ${m.text}`)
-      .join("\n");
-
-    const langName = isEn ? "English" : "简体中文";
-    const fieldDoc = isEn
-      ? [
-          "- cuisine: cuisine type / craving",
-          "- visitTime: when they go",
-          "- budget: per-person budget",
-          "- vibe: atmosphere",
-          "- dish: specific dish / signature",
-          "- avoid: things to avoid",
-        ].join("\n")
-      : [
-          "- cuisine：想吃的品类",
-          "- visitTime：什么时候去",
-          "- budget：人均预算",
-          "- vibe：氛围",
-          "- dish：具体想吃的菜 / 招牌",
-          "- avoid：要避雷的",
-        ].join("\n");
+    if (!key) return empty;
 
     const prompt = isEn
-      ? `You are Echo Eats' restaurant-discovery planner. Decide the ONE next question, or stop and search.
+      ? `Extract three restaurant-search fields from the user's message. Reply STRICT JSON only.
 
 City: ${data.city}
-Round index (0-based): ${data.roundIndex} / max ${MAX_ROUNDS}
-Answered fields: ${data.askedFields.join(", ") || "(none)"}
-Skipped fields (do NOT ask again): ${data.skippedFields.join(", ") || "(none)"}
-Remaining askable fields: ${remaining.join(", ")}
+User message: """${data.freeText || "(empty)"}"""
 
-Field meanings:
-${fieldDoc}
+Fields:
+- cuisine: cuisine/category the user wants (e.g. "Sushi", "Ramen", "Italian"). If not explicitly given, set null.
+- visitTime: when they plan to go (e.g. "Tonight", "Tomorrow lunch", "This weekend"). null if not given.
+- budget: per-person budget (e.g. "Under $30", "$30-60", "$60-120"). null if not given.
+- cuisineSuggestions: If cuisine is null, predict 4-6 plausible cuisine options based on the user's message and city. Each <= 3 words, localized. If cuisine IS given, return [].
 
-Conversation so far:
-${historyLines || "(empty)"}
-
-Rules:
-1. Reply in ${langName}.
-2. "field" MUST be one of remaining askable fields. Never re-ask an answered or skipped field.
-3. Pick the most useful next field given prior answers (cuisine first if unknown; else biggest gap).
-4. If prior messages already give enough to search (cuisine + at least one of time/budget/vibe, or a rich free-form sentence), set action="search".
-5. Otherwise action="ask": write a short warm natural question (<= 12 words). "suggestions" MUST be an array of 4–6 short strings (<= 3 words each), localized to the city and prior answers — never null, never empty. allowSkip=true.
-6. Return ONLY JSON. Example: {"action":"ask","field":"budget","question":"What's your budget?","suggestions":["Under $30","$30-60","$60-120","$120+"],"allowSkip":true}`
-      : `你是 Echo Eats 的餐厅发现 Planner。请决定"下一步问哪一个字段"，或者直接开始搜索。
+Output JSON exactly: {"cuisine":..., "visitTime":..., "budget":..., "cuisineSuggestions":[...]}`
+      : `从用户这句话里抽取餐厅搜索的三个字段，只输出严格 JSON。
 
 城市：${data.city}
-当前轮次（从 0 起）：${data.roundIndex} / 上限 ${MAX_ROUNDS}
-已回答字段：${data.askedFields.join("、") || "（无）"}
-用户已跳过的字段（不要再问）：${data.skippedFields.join("、") || "（无）"}
-剩余可问字段：${remaining.join("、")}
+用户输入："""${data.freeText || "（空）"}"""
 
-字段含义：
-${fieldDoc}
+字段：
+- cuisine：用户想吃的品类（如"日料""拉面""川菜"）。没明说就 null。
+- visitTime：什么时候去（如"今晚""明天午餐""周末"）。没说就 null。
+- budget：人均预算（如"100 元内""100-300""300-800"）。没说就 null。
+- cuisineSuggestions：如果 cuisine 为 null，根据用户输入和城市预测 4–6 个可能的品类选项，每个 ≤ 6 字，本地化。如果 cuisine 已有，返回 []。
 
-已有对话：
-${historyLines || "（空）"}
+只输出 JSON：{"cuisine":..., "visitTime":..., "budget":..., "cuisineSuggestions":[...]}`;
 
-规则：
-1. 用${langName}回复。
-2. field 只能从"剩余可问字段"里选，绝不重复已回答或已跳过的字段。
-3. 结合用户已说过的话，挑当前最有价值的下一个字段（不知道品类先问 cuisine；否则补最大信息缺口）。
-4. 如果用户已经给了足够信息可以搜（cuisine + 时间/预算/氛围至少一项，或一句话信息量大），就 action="search"。
-5. 否则 action="ask"：写一句短、自然、有温度的问题（≤ 24 字）。suggestions 必须是 4–6 个短字符串（每个 ≤ 8 字）的数组，结合城市和已有回答做本地化——绝不能为 null 或空数组。allowSkip=true。
-6. 只输出 JSON。示例：{"action":"ask","field":"budget","question":"人均预算大概多少？","suggestions":["100 元内","100-300","300-800","800+"],"allowSkip":true}`;
-
-    let raw: unknown = null;
     try {
       const gateway = createQwenProvider(key);
       const { output } = await generateText({
         model: gateway("qwen-plus"),
         prompt,
-        maxOutputTokens: 600,
+        maxOutputTokens: 400,
         output: Output.object({
-          schema: ClarifyOutput,
-          name: "clarify_next_step",
-          description: "Decide next clarify question or search",
+          schema: ExtractSchema,
+          name: "extract_key_fields",
+          description: "Extract cuisine/visitTime/budget and cuisine suggestions",
         }),
       });
-      raw = output;
+      const parsed = ExtractSchema.parse(output);
+      const norm = (s: string | null | undefined) => {
+        const t = (s ?? "").trim();
+        return t.length > 0 ? t : null;
+      };
+      return {
+        cuisine: norm(parsed.cuisine),
+        visitTime: norm(parsed.visitTime),
+        budget: norm(parsed.budget),
+        cuisineSuggestions: (parsed.cuisineSuggestions ?? [])
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+          .slice(0, 6),
+      };
     } catch (e) {
+      console.warn("[extractKeyFields] 失败：", e instanceof Error ? e.message : e);
+      // Best-effort NoObjectGeneratedError salvage
       if (NoObjectGeneratedError.isInstance(e) && typeof e.text === "string") {
-        // Try to salvage: strip code fences and parse JSON manually.
-        const cleaned = e.text.trim().replace(/^```json\s*|^```\s*|```$/g, "").trim();
-        try {
-          raw = JSON.parse(cleaned);
-        } catch {
-          const m = cleaned.match(/\{[\s\S]*\}/);
-          if (m) {
-            try { raw = JSON.parse(m[0]); } catch { /* ignore */ }
-          }
+        const m = e.text.match(/\{[\s\S]*\}/);
+        if (m) {
+          try {
+            const parsed = ExtractSchema.parse(JSON.parse(m[0]));
+            return {
+              cuisine: parsed.cuisine ?? null,
+              visitTime: parsed.visitTime ?? null,
+              budget: parsed.budget ?? null,
+              cuisineSuggestions: (parsed.cuisineSuggestions ?? []).slice(0, 6),
+            };
+          } catch { /* ignore */ }
         }
       }
-      if (!raw) {
-        console.warn("[clarifyNextStep] LLM 失败，回退确定性问题：", e instanceof Error ? e.message : e);
-        return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
-      }
+      return empty;
     }
+  });
 
-    const safe = ClarifyOutput.safeParse(raw);
-    if (!safe.success) {
-      console.warn("[clarifyNextStep] 解析失败，回退：", safe.error.message);
-      return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
-    }
-    const parsed = safe.data;
-    console.log("[clarifyNextStep] LLM parsed:", JSON.stringify({
-      action: parsed.action,
-      field: parsed.field,
-      q: parsed.question,
-      s: parsed.suggestions,
-    }));
+// Kept for backward compat: deterministic-only clarify for the 3 key fields.
+const ClarifyInput = z.object({
+  city: z.string().min(1),
+  askedFields: z.array(z.string()).default([]),
+  skippedFields: z.array(z.string()).default([]),
+  uiLanguage: z.enum(["zh", "en"]).default("zh"),
+});
 
-    if (parsed.action === "ask") {
-      if (!parsed.field || !(FIELD_ORDER as readonly string[]).includes(parsed.field) || !remaining.includes(parsed.field as ClarifyField)) {
-        return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
-      }
-      const suggestions = (parsed.suggestions ?? [])
-        .slice(0, 6)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      const fb = (isEn ? FALLBACKS_EN : FALLBACKS_ZH)[parsed.field as ClarifyField];
-      return {
-        action: "ask" as const,
-        field: parsed.field as string,
-        question: (parsed.question ?? "").trim() || fb.q,
-        suggestions: suggestions.length ? suggestions : fb.s,
-        allowSkip: parsed.allowSkip ?? true,
-      };
+const CLARIFY_FALLBACKS_ZH: Record<KeyField, { q: string; s: string[] }> = {
+  cuisine: { q: "想吃什么品类？", s: ["日料", "中餐", "西餐", "东南亚", "咖啡简餐"] },
+  visitTime: { q: "什么时候去？", s: ["现在", "今晚", "明天午餐", "明天晚上", "周末"] },
+  budget: { q: "人均预算大概多少？", s: ["100 元内", "100-200", "200-400", "400+", "不限"] },
+};
+const CLARIFY_FALLBACKS_EN: Record<KeyField, { q: string; s: string[] }> = {
+  cuisine: { q: "What cuisine are you in the mood for?", s: ["Japanese", "Chinese", "Western", "Southeast Asian", "Cafe"] },
+  visitTime: { q: "When are you going?", s: ["Now", "Tonight", "Tomorrow lunch", "Tomorrow dinner", "Weekend"] },
+  budget: { q: "What's your per-person budget?", s: ["Under $20", "$20-40", "$40-80", "$80+", "No limit"] },
+};
+
+export const clarifyNextStep = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => ClarifyInput.parse(input))
+  .handler(async ({ data }) => {
+    const asked = new Set(data.askedFields);
+    const skipped = new Set(data.skippedFields);
+    const next = KEY_FIELDS.find((f) => !asked.has(f) && !skipped.has(f)) ?? null;
+    if (!next) {
+      return { action: "search" as const, field: null, question: null, suggestions: [] as string[], allowSkip: false };
     }
+    const fb = (data.uiLanguage === "en" ? CLARIFY_FALLBACKS_EN : CLARIFY_FALLBACKS_ZH)[next];
     return {
-      action: "search" as const,
-      field: null,
-      question: null,
-      suggestions: [] as string[],
-      allowSkip: false,
+      action: "ask" as const,
+      field: next as string,
+      question: fb.q,
+      suggestions: fb.s,
+      allowSkip: true,
     };
   });
+
 
 
