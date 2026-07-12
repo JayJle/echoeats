@@ -203,10 +203,19 @@ Return ONLY the JSON object, no markdown fences, no commentary.`;
 
     try {
       const out = await runModel("qwen-plus");
+      enforceAnsweredField(out, data.history, data.city);
+      const stillMissing = detectMissingFields(
+        out.parsed as ParsedRequirements | null,
+        skipSet,
+      );
       // 兜底：LLM 忘了触发但本地检测到缺失 → 强制补一条 question
-      if (!out.done && !out.question && missing.length > 0) {
+      if (stillMissing.length === 0) {
+        out.done = true;
+        out.needsClarification = false;
+        out.question = null;
+      } else if (!out.done && !out.question) {
         out.needsClarification = true;
-        out.question = fallbackQuestion(missing[0], data.city, isEn);
+        out.question = fallbackQuestion(stillMissing[0], data.city, isEn);
       }
       return out;
     } catch (e1) {
