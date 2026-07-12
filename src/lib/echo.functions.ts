@@ -3437,6 +3437,7 @@ ${historyLines || "（空）"}
 5. 否则 action="ask"：写一句短、自然、有温度的问题（≤ 24 字），并给 4–6 个短 chip（每个 ≤ 8 字），结合城市和已有回答做本地化。allowSkip=true。
 6. 只输出符合 schema 的 JSON。`;
 
+    let raw: unknown = null;
     try {
       const gateway = createQwenProvider(key);
       const { output } = await generateText({
@@ -3449,36 +3450,58 @@ ${historyLines || "（空）"}
           description: "Decide next clarify question or search",
         }),
       });
-      const parsed = ClarifyOutput.parse(output);
-
-      if (parsed.action === "ask") {
-        if (!parsed.field || !(FIELD_ORDER as readonly string[]).includes(parsed.field) || !remaining.includes(parsed.field as ClarifyField)) {
-          return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
-        }
-        const suggestions = (parsed.suggestions ?? [])
-          .slice(0, 6)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0);
-        const fb = (isEn ? FALLBACKS_EN : FALLBACKS_ZH)[parsed.field as ClarifyField];
-        return {
-          action: "ask" as const,
-          field: parsed.field as string,
-          question: (parsed.question ?? "").trim() || fb.q,
-          suggestions: suggestions.length ? suggestions : fb.s,
-          allowSkip: parsed.allowSkip ?? true,
-        };
-      }
-      return {
-        action: "search" as const,
-        field: null,
-        question: null,
-        suggestions: [] as string[],
-        allowSkip: false,
-      };
+      raw = output;
     } catch (e) {
-      console.warn("[clarifyNextStep] LLM 失败，回退确定性问题：", e instanceof Error ? e.message : e);
+      if (NoObjectGeneratedError.isInstance(e) && typeof e.text === "string") {
+        // Try to salvage: strip code fences and parse JSON manually.
+        const cleaned = e.text.trim().replace(/^```json\s*|^```\s*|```$/g, "").trim();
+        try {
+          raw = JSON.parse(cleaned);
+        } catch {
+          const m = cleaned.match(/\{[\s\S]*\}/);
+          if (m) {
+            try { raw = JSON.parse(m[0]); } catch { /* ignore */ }
+          }
+        }
+      }
+      if (!raw) {
+        console.warn("[clarifyNextStep] LLM 失败，回退确定性问题：", e instanceof Error ? e.message : e);
+        return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
+      }
+    }
+
+    const safe = ClarifyOutput.safeParse(raw);
+    if (!safe.success) {
+      console.warn("[clarifyNextStep] 解析失败，回退：", safe.error.message);
       return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
     }
+    const parsed = safe.data;
+
+    if (parsed.action === "ask") {
+      if (!parsed.field || !(FIELD_ORDER as readonly string[]).includes(parsed.field) || !remaining.includes(parsed.field as ClarifyField)) {
+        return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
+      }
+      const suggestions = (parsed.suggestions ?? [])
+        .slice(0, 6)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const fb = (isEn ? FALLBACKS_EN : FALLBACKS_ZH)[parsed.field as ClarifyField];
+      return {
+        action: "ask" as const,
+        field: parsed.field as string,
+        question: (parsed.question ?? "").trim() || fb.q,
+        suggestions: suggestions.length ? suggestions : fb.s,
+        allowSkip: parsed.allowSkip ?? true,
+      };
+    }
+    return {
+      action: "search" as const,
+      field: null,
+      question: null,
+      suggestions: [] as string[],
+      allowSkip: false,
+    };
+  });
   });
 
 
