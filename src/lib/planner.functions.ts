@@ -59,13 +59,13 @@ Reply in ${isEn ? "English" : "Simplified Chinese"} inside question.prompt and s
 ${historyBlock}
 
 ## Rules
-1. First merge any NEW info in the latest user message into parsed. Do not ignore the user's latest answer.
+1. Structured parsed fields must contain only facts the user explicitly typed, spoke, or selected. Never write inferred guesses into parsed.
 2. If the latest assistant question targeted a field, treat the following user reply as an answer for that field unless it is clearly skip/vague/contradictory.
 3. After merging, ask only ONE field that is still missing, priority: cuisine > mealTime > budget > hardFilter. Never ask skipped fields.
 4. If the answer is unparseable or contradictory, re-ask that same field with reason "unparseable" or "conflict".
-5. Generate 2-3 concrete suggestions for the selected question. Cuisine suggestions are options only; do not auto-decide cuisine.
+5. Generate 2-3 concrete suggestions for the selected question. Cuisine suggestions may be inferred from context, but they are UI options only. Do not put them in parsed.cuisines unless the user selected/typed them in the conversation history.
 6. If fields are complete, max turns reached, or remaining missing fields were skipped, set done=true, needsClarification=false, question=null.
-7. Never invent constraints the user did not state. Only suggestions may be inferred.
+7. Never invent constraints the user did not state. Only suggestions may be inferred. If original free-text did not explicitly mention a cuisine, parsed.cuisines must remain [] until the user answers the cuisine clarification.
 8. Output STRICT JSON only, matching:
 {
   "parsed": { "city": string, "cuisines": string[], "cuisinesInferred"?: boolean, "cuisineLevelConstraints"?: [{"text": string, "weight": number}], "dateTime": string, "hardFilters": [{"text": string, "weight": number}], "softPreferences": [{"text": string, "weight": number}], "negativeFilters": [{"text": string, "weight": number}], "dishPreferences": string[], "searchStrategy": string[], "visitTime"?: null | {"mentioned": boolean, "evidence": string, "weekday": number | null, "hhmm": string | null, "raw": string} },

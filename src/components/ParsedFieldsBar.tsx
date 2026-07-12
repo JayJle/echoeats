@@ -54,10 +54,9 @@ export function ParsedFieldsBar({ parsed, highlight = [] }: Props) {
           <Pill
             key={`cu-${i}`}
             icon={<Utensils className="h-3 w-3" />}
-            tone={parsed.cuisinesInferred ? "primary-soft" : "muted"}
+            tone="muted"
             className={ring("cuisines")}
           >
-            {parsed.cuisinesInferred && <span className="mr-0.5">✨</span>}
             {c}
           </Pill>
         ))}

@@ -309,13 +309,8 @@ function ResultsPage() {
                 {parsed.cuisines.map((c, i) => (
                   <span
                     key={i}
-                    className={
-                      parsed.cuisinesInferred
-                        ? "inline-flex items-center px-2.5 py-0.5 text-base font-medium rounded-full bg-primary/10 text-primary border border-primary/20"
-                        : "inline-flex items-center px-2.5 py-0.5 text-base font-medium rounded-full bg-muted text-foreground border border-border"
-                    }
+                    className="inline-flex items-center px-2.5 py-0.5 text-base font-medium rounded-full bg-muted text-foreground border border-border"
                   >
-                    {parsed.cuisinesInferred && <span className="mr-1">✨</span>}
                     {c}
                   </span>
                 ))}

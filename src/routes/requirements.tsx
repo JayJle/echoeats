@@ -39,7 +39,6 @@ function StepRequirements() {
   const { lang, t } = useT();
   const city = useQueryStore((s) => s.city);
   const cuisines = useQueryStore((s) => s.cuisines);
-  const autoInferCuisines = useQueryStore((s) => s.autoInferCuisines);
 
   const freeText = useQueryStore((s) => s.freeText);
   const setFreeText = useQueryStore((s) => s.setFreeText);
@@ -51,7 +50,6 @@ function StepRequirements() {
   const [currentStage, setCurrentStage] = useState<StageKey | null>(null);
   const [searchMode, setSearchMode] = useState<"quick" | "deep">("deep");
   const [error, setError] = useState<string | null>(null);
-  const [inferredCuisines, setInferredCuisines] = useState<string[] | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef(0);
@@ -107,7 +105,7 @@ function StepRequirements() {
     pendingModeRef.current = mode;
     try {
       const parsed = await parseFn({
-        data: { city, cuisines, autoInferCuisines: false, date: "", freeText: text, uiLanguage: lang },
+        data: { city, cuisines, date: "", freeText: text, uiLanguage: lang },
       });
       const missing = detectMissing(parsed);
       if (missing.length === 0) {
@@ -242,7 +240,6 @@ function StepRequirements() {
     setLoading(true);
     setSearchMode(mode);
     setFreeText(text);
-    setInferredCuisines(null);
     setParsedPreview(null);
     runIdRef.current += 1;
     const myRunId = runIdRef.current;
@@ -269,25 +266,13 @@ function StepRequirements() {
       let parsed = preParsed
         ? preParsed
         : await parseFn({
-            data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
+            data: { city, cuisines, date: "", freeText: text, uiLanguage: lang },
             signal: ac.signal,
           } as Parameters<typeof parseFn>[0]);
-      // If the planner was skipped and cuisines are still empty, auto-infer now
-      // so the search stage has something to query against.
-      if (preParsed && (!parsed.cuisines || parsed.cuisines.length === 0)) {
-        const inferred = await parseFn({
-          data: { city, cuisines: [], autoInferCuisines: true, date: "", freeText: text, uiLanguage: lang },
-          signal: ac.signal,
-        } as Parameters<typeof parseFn>[0]);
-        parsed = { ...parsed, cuisines: inferred.cuisines, cuisinesInferred: true };
-      }
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode, uiLanguage: lang };
       setParsed(parsedWithMode);
       setParsedPreview(parsed);
-      if (parsed.cuisinesInferred && parsed.cuisines.length > 0) {
-        setInferredCuisines(parsed.cuisines);
-      }
 
 
       setCurrentStage("search");
@@ -398,7 +383,6 @@ function StepRequirements() {
     setLoading(false);
     setCurrentStage(null);
     setError(null);
-    setInferredCuisines(null);
     setParsedPreview(null);
   };
 
@@ -584,13 +568,6 @@ function StepRequirements() {
                       {state === "active" && (
                         <p className="mt-0.5 text-xs text-muted-foreground">{s.hint}</p>
                       )}
-                      {state === "active" &&
-                        (s.key === "search" || s.key === "reviews") &&
-                        inferredCuisines && inferredCuisines.length > 0 && (
-                          <p className="mt-1 text-xs text-primary/80">
-                            {t("step3.inferred", { n: inferredCuisines.length, list: inferredCuisines.join(" / ") })}
-                          </p>
-                        )}
                     </div>
                   </li>
                 );
@@ -611,13 +588,8 @@ function StepRequirements() {
                     {parsedPreview.cuisines.map((c, i) => (
                       <span
                         key={`cu-${i}`}
-                        className={
-                          parsedPreview.cuisinesInferred
-                            ? "px-2 py-0.5 text-xs rounded-full bg-primary/10 text-primary border border-primary/20"
-                            : "px-2 py-0.5 text-xs rounded-full bg-muted text-foreground border border-border"
-                        }
+                        className="px-2 py-0.5 text-xs rounded-full bg-muted text-foreground border border-border"
                       >
-                        {parsedPreview.cuisinesInferred && <span className="mr-0.5">✨</span>}
                         {c}
                       </span>
                     ))}
