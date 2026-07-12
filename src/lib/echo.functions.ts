@@ -3476,6 +3476,12 @@ ${historyLines || "（空）"}
       return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
     }
     const parsed = safe.data;
+    console.log("[clarifyNextStep] LLM parsed:", JSON.stringify({
+      action: parsed.action,
+      field: parsed.field,
+      q: parsed.question,
+      s: parsed.suggestions,
+    }));
 
     if (parsed.action === "ask") {
       if (!parsed.field || !(FIELD_ORDER as readonly string[]).includes(parsed.field) || !remaining.includes(parsed.field as ClarifyField)) {
