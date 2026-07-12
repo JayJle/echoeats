@@ -672,7 +672,7 @@ function StepRequirements() {
         )}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <Link
-            to="/cuisines"
+            to="/"
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             {t("common.back")}
@@ -682,8 +682,8 @@ function StepRequirements() {
               type="button"
               variant="secondary"
               size="lg"
-              disabled={loading}
-              onClick={() => void runSearch(value, "quick")}
+              disabled={loading || prechecking || plannerOpen}
+              onClick={() => void handleSubmitClick("quick")}
               className="w-full sm:w-auto"
             >
               {loading && searchMode === "quick" ? t("step3.quickLoading") : t("step3.quickBtn")}
@@ -691,12 +691,13 @@ function StepRequirements() {
             <div className="relative w-full sm:w-auto">
               <Button
                 type="submit"
-                disabled={loading}
+                disabled={loading || prechecking || plannerOpen}
                 size="lg"
                 className="w-full sm:w-auto"
               >
-                {loading && searchMode === "deep" ? t("step3.deepLoading") : t("step3.deepBtn")}
+                {prechecking ? t("common.loading") : loading && searchMode === "deep" ? t("step3.deepLoading") : t("step3.deepBtn")}
               </Button>
+
               <Popover>
                 <PopoverTrigger asChild>
                   <button
