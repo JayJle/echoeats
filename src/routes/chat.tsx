@@ -155,9 +155,8 @@ function ChatPage() {
     setChatHistory([...history, aiMsg]);
   };
 
-  const onIntroSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    const text = introText.trim();
+  const runIntro = async (rawText: string) => {
+    const text = rawText.trim();
     if (!text || thinking) return;
     setError(null);
     setThinking(true);
@@ -174,6 +173,11 @@ function ChatPage() {
     } finally {
       setThinking(false);
     }
+  };
+
+  const onIntroSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    void runIntro(introText);
   };
 
   const submitAnswer = async (text: string, opts: { skipped?: boolean } = {}) => {
