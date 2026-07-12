@@ -248,7 +248,61 @@ function splitCuisineAnswer(answer: string): string[] {
   return answer
     .split(/\s*(?:、|，|,|\/|或|或者|和|and|or)\s*/i)
     .map((v) => v.trim())
-    .filter((v) => v && v.length <= 40 && !/[?？]/.test(v));
+    .filter((v) => v && v.length <= 40 && !/[?？]/.test(v))
+    .filter((v) => !BUDGET_RE.test(v) && !/(预算|人均|元|円|块|\d+\s*(?:点|:|am|pm))/i.test(v));
+}
+
+function parseMealTimeAnswer(answer: string): {
+  weekday: number | null;
+  hhmm: string | null;
+} {
+  const today = new Date().getDay();
+  let weekday: number | null = null;
+  if (/后天/.test(answer)) weekday = (today + 2) % 7;
+  else if (/明天|tomorrow/i.test(answer)) weekday = (today + 1) % 7;
+  else if (/今天|今晚|today|tonight/i.test(answer)) weekday = today;
+  else {
+    const map: Array<[RegExp, number]> = [
+      [/(?:周|星期|礼拜)[日天]|sunday/i, 0],
+      [/(?:周|星期|礼拜)一|monday/i, 1],
+      [/(?:周|星期|礼拜)二|tuesday/i, 2],
+      [/(?:周|星期|礼拜)三|wednesday/i, 3],
+      [/(?:周|星期|礼拜)四|thursday/i, 4],
+      [/(?:周|星期|礼拜)五|friday/i, 5],
+      [/(?:周|星期|礼拜)六|saturday/i, 6],
+    ];
+    weekday = map.find(([pattern]) => pattern.test(answer))?.[1] ?? null;
+  }
+
+  let hhmm: string | null = null;
+  const clock24 = answer.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (clock24) {
+    hhmm = `${clock24[1].padStart(2, "0")}:${clock24[2]}`;
+  } else {
+    const clock12 = answer.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/i);
+    if (clock12) {
+      const hour = (Number(clock12[1]) % 12) + (clock12[3].toLowerCase() === "pm" ? 12 : 0);
+      hhmm = `${String(hour).padStart(2, "0")}:${clock12[2] ?? "00"}`;
+    } else {
+      const zhHour = answer.match(/(?:早上|上午|中午|下午|傍晚|晚上|今晚|夜里|凌晨)?\s*(\d{1,2})\s*点(?:半|([0-5]?\d)分?)?/);
+      if (zhHour) {
+        let hour = Number(zhHour[1]);
+        const minute = zhHour[0].includes("半") ? "30" : (zhHour[2] ?? "00").padStart(2, "0");
+        if (/(下午|傍晚|晚上|今晚|夜里)/.test(answer) && hour >= 1 && hour <= 11) hour += 12;
+        if (/(凌晨)/.test(answer) && hour === 12) hour = 0;
+        if (hour >= 0 && hour <= 23) hhmm = `${String(hour).padStart(2, "0")}:${minute}`;
+      } else if (/早午餐|brunch/i.test(answer)) hhmm = "10:30";
+      else if (/早餐|breakfast/i.test(answer)) hhmm = "08:30";
+      else if (/午餐|午饭|中午|lunch|noon/i.test(answer)) hhmm = "12:30";
+      else if (/晚餐|晚饭|晚上|dinner|supper|evening|tonight/i.test(answer)) hhmm = "19:00";
+      else if (/夜宵|宵夜|late[-\s]?night/i.test(answer)) hhmm = "22:00";
+    }
+  }
+
+  if (hhmm && weekday == null && /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\d{1,2}\s*点/i.test(answer)) {
+    weekday = today;
+  }
+  return { weekday, hhmm };
 }
 
 function enforceAnsweredField(
@@ -267,11 +321,12 @@ function enforceAnsweredField(
 
   if (last.field === "mealTime") {
     if (!p.visitTime || !p.visitTime.mentioned) {
+      const mealTime = parseMealTimeAnswer(answer);
       p.visitTime = {
         mentioned: true,
         evidence: answer,
-        weekday: p.visitTime?.weekday ?? null,
-        hhmm: p.visitTime?.hhmm ?? null,
+        weekday: mealTime.weekday,
+        hhmm: mealTime.hhmm,
         raw: answer,
       };
       touched("visitTime");
