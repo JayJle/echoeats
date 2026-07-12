@@ -222,7 +222,7 @@ type FlatEntry = {
 
 async function semanticClusterMerge(
   parsed: z.infer<typeof ParsedSchema>,
-  gateway: ReturnType<typeof createLovableAiGatewayProvider>,
+  gateway: ReturnType<typeof createQwenProvider>,
   uiLanguage: "zh" | "en",
 ): Promise<z.infer<typeof ParsedSchema>> {
   const flat: FlatEntry[] = [];
@@ -268,7 +268,7 @@ ${dishLines || "(空)"}`;
   let clustersOut: z.infer<typeof SemanticClusterOutput>;
   try {
     const { output } = await generateText({
-      model: gateway("google/gemini-2.5-flash"),
+      model: gateway("qwen-plus"),
       prompt: clusterPrompt,
       maxOutputTokens: 2000,
       output: Output.object({
@@ -420,9 +420,9 @@ function inferExplicitClock(text: string): string | null {
 export const parseRequirements = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ParseInput.parse(input))
   .handler(async ({ data }) => {
-    const key = process.env.LOVABLE_API_KEY;
-    if (!key) throw new Error("Missing LOVABLE_API_KEY");
-    const gateway = createLovableAiGatewayProvider(key);
+    const key = process.env.QWEN_API_KEY;
+    if (!key) throw new Error("Missing QWEN_API_KEY");
+    const gateway = createQwenProvider(key);
 
     // 松散 schema：让 AI SDK 转出的 JSON Schema 极宽松，避免模型偶尔返回
     // weight:"0.8" / hhmm:"7:00" 之类被 SDK 内部 zod 直接判失败。
@@ -671,7 +671,7 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         "[parseRequirements] 用户要求 AI 识别但首轮返回兜底词，跨模型重试 forceInfer",
       );
       try {
-        const retry = await runOnce("openai/gpt-5-mini", { forceInfer: true });
+        const retry = await runOnce("qwen-max", { forceInfer: true });
         if (!isAllFallback(retry.cuisines)) return retry;
         console.warn("[parseRequirements] forceInfer 重试仍为兜底，沿用首轮结果");
       } catch (e) {
@@ -792,12 +792,12 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
     try {
       let parsed: z.infer<typeof ParsedSchema>;
       try {
-        const first = await runOnce("google/gemini-2.5-flash");
+        const first = await runOnce("qwen-plus");
         parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(first)));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
-        // 跨供应商重试，避免同模型以同样方式再次失败
-        const second = await runOnce("openai/gpt-5-mini");
+        // 跨模型重试，避免同模型以同样方式再次失败
+        const second = await runOnce("qwen-max");
         parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(second)));
       }
       const beforeCluster = {
@@ -1530,7 +1530,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       lang: uiLang,
     });
     try {
-    const aiKey = process.env.LOVABLE_API_KEY;
+    const aiKey = process.env.QWEN_API_KEY;
     if (!aiKey) {
       yield {
         type: "result",
@@ -2126,10 +2126,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       `[Echo/AI-rank] sending ${totalCandidatesForPrompt} candidates across ${candidatesForPrompt.length} cuisine(s) to model`,
     );
 
-    const gateway = createLovableAiGatewayProvider(aiKey);
-    // gemini-3-flash-preview 在当前 AI Gateway 下不支持 responseFormat JSON Schema
-    // （会触发 "Output.object failed: No output generated."），换回稳定的 2.5-flash。
-    const model = gateway("google/gemini-2.5-flash");
+    const gateway = createQwenProvider(aiKey);
+    const model = gateway("qwen-plus");
 
 
     const hardFiltersList = data.hardFilters.map((h) => h.text);
