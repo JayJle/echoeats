@@ -107,7 +107,7 @@ function StepRequirements() {
     pendingModeRef.current = mode;
     try {
       const parsed = await parseFn({
-        data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
+        data: { city, cuisines, autoInferCuisines: false, date: "", freeText: text, uiLanguage: lang },
       });
       const missing = detectMissing(parsed);
       if (missing.length === 0) {
