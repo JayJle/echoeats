@@ -3465,9 +3465,13 @@ export const analyzeAndAskNext = createServerFn({ method: "POST" })
       .join("\n");
 
     const prompt = isEn
-      ? `You help pick restaurants in ${data.city}. Read the conversation and decide if one more short question would meaningfully improve the search. Focus on soft signals: preferences, vibe/atmosphere, dishes they want or want to avoid, occasion, companions, dietary needs. Hard fields (cuisine/time/budget) matter less — do NOT ask about them unless truly critical.
+      ? `You help pick restaurants in ${data.city}. Read the conversation and decide if one more short question would meaningfully improve the search. Focus on soft signals: preferences, vibe/atmosphere, specific dishes they want or want to avoid, occasion, companions, dietary needs.
 
-Rounds remaining after this one: ${remaining - 1}. Be conservative — only ask if it clearly helps. If already good enough, set done=true.
+IMPORTANT: If the user has NOT mentioned ANY preference or hard requirement yet (no vibe, no dish, no must-have, no avoid, no dietary/occasion/companion info) — you MUST ask one focused question about these, with concrete example chips (e.g. "quiet", "date night", "must have sashimi", "no cilantro", "outdoor seats", "kid-friendly"). Do NOT set done=true in that case.
+
+Hard fields (cuisine/time/budget) are handled elsewhere — do NOT ask about them.
+
+Rounds remaining after this one: ${remaining - 1}. Otherwise be conservative — only ask if it clearly helps. If already good enough, set done=true.
 
 Conversation:
 ${convo || "(empty)"}
@@ -3477,9 +3481,13 @@ Return STRICT JSON:
  "question": string|null,   // <=20 words, one focused question, null if done
  "suggestions": string[],   // 3-5 short chips, each <=4 words, [] if done
  "summary": string}         // one short line summarizing what you understand`
-      : `你在帮用户挑选 ${data.city} 的餐厅。读完对话，判断再多问一个问题是否真的能明显提升推荐质量。重点关注软信号：偏好、氛围环境、想吃/忌口的菜、场合、同行人、饮食需求。硬字段（品类/时间/预算）不重要，除非非常关键，否则不要问。
+      : `你在帮用户挑选 ${data.city} 的餐厅。读完对话，判断再多问一个问题是否真的能明显提升推荐质量。重点关注软信号：偏好、氛围环境、具体想吃/忌口的菜、场合、同行人、饮食需求。
 
-本轮之后还剩 ${remaining - 1} 轮可问。保守一些——只有明显有帮助才问。信息已够就 done=true。
+重要：如果用户到目前为止**完全没提到任何偏好或硬性要求**（没提氛围/环境、没提具体想吃的菜、没提忌口、没提场合/同行/饮食需求）——你**必须**问一个聚焦问题来了解这类要求，并给出具体示例芯片（如"安静"、"约会"、"必须有刺身"、"不吃香菜"、"有露台"、"适合带娃"）。这种情况下不要 done=true。
+
+品类/时间/预算这类硬字段由别处处理，不要问。
+
+本轮之后还剩 ${remaining - 1} 轮可问。其他情况保守一些——只有明显有帮助才问。信息已够就 done=true。
 
 对话：
 ${convo || "（空）"}
