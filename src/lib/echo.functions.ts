@@ -3443,7 +3443,7 @@ ${historyLines || "（空）"}
       const { output } = await generateText({
         model: gateway("qwen-plus"),
         prompt,
-        maxOutputTokens: 400,
+        maxOutputTokens: 600,
         output: Output.object({
           schema: ClarifyOutput,
           name: "clarify_next_step",
