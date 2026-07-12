@@ -98,7 +98,9 @@ function ChatPage() {
   const [searching, setSearching] = useState(false);
   const [progress, setProgress] = useState<ProgressState>({ phase: "startingUp", percent: 5, detail: "" });
   const [introText, setIntroText] = useState("");
+  const [showIntroText, setShowIntroText] = useState(false);
   const [freeInput, setFreeInput] = useState("");
+  const [showFreeText, setShowFreeText] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
