@@ -236,6 +236,20 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "需求灵感",
+
+    "planner.title": "Planner 正在补齐你的需求",
+    "planner.subtitle": "多轮澄清 · {progress}",
+    "planner.parsedTitle": "AI 已识别的字段",
+    "planner.thinking": "Planner 正在思考…",
+    "planner.startingSoon": "正在生成第一个问题…",
+    "planner.voiceHint": "点击麦克风语音回答，或选下方推荐 / 跳过",
+    "planner.skipOne": "跳过此项",
+    "planner.skipAll": "跳过全部",
+    "planner.custom": "自定义回答",
+    "planner.customPlaceholder": "在此输入你的回答…",
+    "planner.send": "发送",
+    "planner.skipMark": "（跳过）",
+    "planner.error": "澄清服务暂不可用，可以点击\"跳过全部\"直接搜索。",
   },
   en: {
     "brand.tagline": "AI Restaurant Discovery Agent",
