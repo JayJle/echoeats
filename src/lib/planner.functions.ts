@@ -250,6 +250,85 @@ function emptyParsed(city: string): PlannerResponse["parsed"] {
   };
 }
 
+/**
+ * Deterministic safety net: if the assistant's last question targeted a field
+ * and the user actually answered it (not a skip / not empty), force that field
+ * to appear in `parsed` — otherwise the LLM sometimes forgets to merge it and
+ * we re-ask the same question next turn.
+ */
+function enforceAnsweredField(
+  out: PlannerResponse,
+  history: PlannerTurn[],
+  city: string,
+): void {
+  // Find last assistant turn with a field, and the user reply after it.
+  let lastAsst: PlannerTurn | null = null;
+  let userReply: PlannerTurn | null = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const t = history[i];
+    if (t.role === "assistant" && t.field) {
+      lastAsst = t;
+      userReply = history[i + 1] && history[i + 1].role === "user" ? history[i + 1] : null;
+      break;
+    }
+  }
+  if (!lastAsst || !lastAsst.field || !userReply) return;
+  const answer = userReply.content.trim();
+  if (!answer) return;
+  // Skip marker heuristic: very short skip words. If user skipped, the panel
+  // still writes a user turn; treat those as non-answers.
+  if (/^(skip|跳过|不用了|no thanks|—)$/i.test(answer)) return;
+
+  const p = (out.parsed ??= {
+    city,
+    cuisines: [],
+    dateTime: "",
+    hardFilters: [],
+    softPreferences: [],
+    negativeFilters: [],
+    dishPreferences: [],
+    searchStrategy: [],
+    visitTime: null,
+  } as PlannerResponse["parsed"]);
+
+  const field = lastAsst.field;
+  const touched = (name: string) => {
+    if (!out.newlyFilled.includes(name)) out.newlyFilled.push(name);
+  };
+
+  if (field === "mealTime") {
+    if (!p.visitTime || !p.visitTime.mentioned) {
+      p.visitTime = {
+        mentioned: true,
+        evidence: answer,
+        weekday: p.visitTime?.weekday ?? null,
+        hhmm: p.visitTime?.hhmm ?? null,
+        raw: answer,
+      };
+      touched("visitTime");
+    }
+  } else if (field === "cuisine") {
+    if (!p.cuisines.some((c) => c.trim() === answer)) {
+      p.cuisines = [...p.cuisines, answer];
+      touched("cuisines");
+    }
+  } else if (field === "budget") {
+    const has = (p.softPreferences ?? []).some((s) => s.text === answer) ||
+      (p.hardFilters ?? []).some((s) => s.text === answer);
+    if (!has) {
+      p.softPreferences = [...(p.softPreferences ?? []), { text: answer, weight: 0.7 }];
+      touched("budget");
+    }
+  } else if (field === "hardFilter" || field === "softPreference") {
+    const has = (p.hardFilters ?? []).some((s) => s.text === answer) ||
+      (p.softPreferences ?? []).some((s) => s.text === answer);
+    if (!has) {
+      p.softPreferences = [...(p.softPreferences ?? []), { text: answer, weight: 0.7 }];
+      touched(field === "hardFilter" ? "hardFilters" : "softPreferences");
+    }
+  }
+}
+
 function fallbackQuestion(
   field: PlannerField,
   city: string,
