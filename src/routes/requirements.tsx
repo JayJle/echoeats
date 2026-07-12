@@ -182,7 +182,11 @@ function StepRequirements() {
 
   useEffect(() => () => stopProgressLoop(), []);
 
-  const runSearch = async (text: string, mode: "quick" | "deep" = "deep") => {
+  const runSearch = async (
+    text: string,
+    mode: "quick" | "deep" = "deep",
+    preParsed?: ParsedRequirements,
+  ) => {
     setError(null);
     setLoading(true);
     setSearchMode(mode);
@@ -207,15 +211,16 @@ function StepRequirements() {
     try {
       setCurrentStage("parse");
       setRangeForStage(mode, "parse");
-      // parse 是单次 LLM，没有子事件 → 把 target 抬到该阶段末，让动画匀速跑完
       targetProgressRef.current = Math.max(
         targetProgressRef.current,
         STAGE_RANGES[mode].parse[1],
       );
-      const parsed = await parseFn({
-        data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
-        signal: ac.signal,
-      } as Parameters<typeof parseFn>[0]);
+      const parsed = preParsed
+        ? preParsed
+        : await parseFn({
+            data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
+            signal: ac.signal,
+          } as Parameters<typeof parseFn>[0]);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode, uiLanguage: lang };
       setParsed(parsedWithMode);
@@ -223,6 +228,7 @@ function StepRequirements() {
       if (parsed.cuisinesInferred && parsed.cuisines.length > 0) {
         setInferredCuisines(parsed.cuisines);
       }
+
 
       setCurrentStage("search");
       setRangeForStage(mode, "search");
