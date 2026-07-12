@@ -1,105 +1,75 @@
 ## 目标
+保留原本好用的结构化解析能力，但修复两个严重问题：
 
-让项目更 agent 化：删掉硬性的"选品类"环节和第三页气泡引导，改成用户一句话输入后由一个 **Planner Agent** 判断结构化字段是否充分；不充分则在原地打开一个多轮澄清面板（语音优先 + 每轮 2-3 个 AI 推荐选项 + 跳过 + 自定义输入），并实时把新识别到的字段显示给用户。澄清结束后再走现有的搜索进度条。
+1. **结构化字段只能写入用户明说/选择的内容**
+   - 用户没有输入品类时，`parsed.cuisines` 必须是 `[]`。
+   - AI 可以根据输入推断 2–3 个品类作为澄清选项，但这些只是选项，不能写入结构。
 
-## 流程改动
+2. **用户澄清后的回答必须被纳入结构**
+   - 用户回答/点击选项后，要立即合并到 `parsed`。
+   - 如果已经补齐，不允许反复问同一个问题。
 
-```text
-旧: 城市 → 品类 → 需求(气泡) → 搜索进度 → 结果
-新: 城市 → 需求(纯输入，语音优先，无气泡) → [Planner 判断] → 若需澄清则原地展开 chat 面板(≤5轮) → 搜索进度 → 结果
-```
+## 修复计划
 
-- StepShell 从 `step X / 3` 改成 `step X / 2`。
-- `/cuisines` 路由删除；`/requirements` 从"第 3 步"变"第 2 步"。首页 `/` 提交后 `navigate({ to: "/requirements" })`。
-- `NeedBubbles` 组件从 requirements 页移除（组件文件保留但不再引用，避免影响其他人）。
-- `useQueryStore` 保留 `cuisines / autoInferCuisines` 字段（parseRequirements 仍读它们），但默认置空 + `autoInferCuisines: true`，由 planner/parser 自行推断。
+### 1. 修复结构化解析里的品类规则
+- 在 `parseRequirements` 中保留品类提取，但改成严格规则：
+  - 只提取用户文本里明确出现的品类，例如“寿司 / 居酒屋 / 川菜 / pizza / ramen”。
+  - 不允许根据城市、氛围、预算、约会、安静、本地人爱去等上下文猜品类。
+  - 没提到品类就返回 `cuisines: []`。
+- 删除任何会把推断品类写入 `parsed.cuisines` 的逻辑。
 
-## Planner Agent（新）
+### 2. 缺品类时只生成澄清选项
+- 如果 `parsed.cuisines` 为空，planner 仍然触发 cuisine 澄清。
+- planner 可以根据用户原始输入生成 2–3 个推荐品类选项。
+- 这些选项只显示在澄清 UI 中。
+- 只有用户点击选项、语音输入、或手动输入后，才写入 `parsed.cuisines`。
 
-新增 `src/lib/planner.functions.ts`，导出 `plannerTurn` server fn（`requireSupabaseAuth` 不需要，与现有 parseRequirements 一致 public）。
+### 3. 删除搜索前的自动补品类 fallback
+- 删除 `requirements.tsx` 中“如果 cuisines 为空就重新 autoInfer”的逻辑。
+- 用户跳过品类澄清后，搜索流程必须保持 `cuisines: []`，不能自动补“居酒屋/拉面/寿司”。
 
-**输入**：`{ city, uiLanguage, freeText, history: PlannerTurn[], parsed: ParsedRequirements | null, skippedFields: string[] }`
+### 4. 强制修复澄清答案未并入结构的问题
+- 在 planner server fn 里调整顺序：
+  1. 先读取最后一个 assistant 问题对应的 field。
+  2. 再读取紧跟着的用户回答。
+  3. 先用确定性代码把这个回答写入对应字段。
+  4. 然后再重新计算 missing fields。
+- 不能依赖模型自己 merge；模型输出后也要被 deterministic post-process 覆盖。
 
-**输出（LLM 结构化 JSON）**：
-```ts
-{
-  parsed: ParsedRequirements;          // 融合本轮新信息后的最新结构化需求
-  newlyFilled: string[];               // 本轮新增/更新的字段名，用于前端高亮
-  needsClarification: boolean;
-  question?: {
-    field: "cuisine" | "hardFilter" | "softPreference" | "mealTime" | "budget" | "ambiguity";
-    prompt: string;                    // 追问文案，语言跟 uiLanguage
-    reason: "missing" | "conflict" | "unparseable";
-    suggestions: { label: string; value: string }[]; // 2-3 条 AI 基于已有信息推荐
-    allowSkip: true;
-    allowCustom: true;
-  };
-  done: boolean;                       // planner 认为可以进入搜索
-}
-```
+### 5. 修复重复澄清
+- 如果当前 field 已经通过用户回答补齐，就从 missing list 移除。
+- 如果用户点击“跳过本轮”，该 field 加入 skipped fields，本轮和后续都不再问。
+- 如果用户点击“全部跳过”，所有关键缺失字段都加入 skipped fields，不再继续澄清。
+- 历史 assistant 消息里的旧选项保持不可点击，避免旧选项误写入当前问题。
 
-**判定规则（LLM prompt 里表达；服务端再兜一层校验）**：
-- 关键字段：`cuisines`、`hardFilters + softPreferences`（合并视为 preference）、`visitTime`（用餐时间）、`budget`（预算——从 hardFilters/softPreferences 里正则/关键词抽取）。
-- **触发条件（用户答案的选择）**：以上任一关键字段缺失 → `needsClarification=true`。
-- 已经在 `skippedFields` 中的字段：视为用户主动放弃，不再追问。
-- 若用户新一轮回答**无法解析或与已有信息矛盾**，针对该字段以 `reason: "conflict" | "unparseable"` 再追问一次；用户再次跳过 → 加入 `skippedFields` 永久放弃。
-- 上限 5 轮 或 `done=true` 或 `skippedFields` 覆盖所有关键字段 → 结束澄清。
-- 每轮 `suggestions` 由 LLM 基于 city + parsed 上下文动态生成（例："东京 + 未指定品类" → ["寿司", "拉面", "居酒屋"]）。
+### 6. 修复 cuisine 答案写入判定
+- 对 cuisine 的写入只接受：
+  - 用户直接输入的内容；
+  - 当前最新 cuisine 问题下用户点击的选项；
+  - 当前最新 cuisine 问题下语音识别出的文本。
+- planner 自己生成的 suggestions 不得进入 `parsed.cuisines`。
 
-**实现方式**：独立 planner server fn，每轮把完整 `history + parsed` 送给 LLM，LLM 一次输出上述 JSON（复用 `qwen-plus`/AI Gateway，超时 fallback）。这样 parser 逻辑不动，planner 只做"融合 + 追问"这一层。
+### 7. 验收用例
+- 输入：“想找个安静适合约会的地方”
+  - `parsed.cuisines` 必须是 `[]`。
+  - UI 可以展示推荐品类选项。
+  - 不点击选项时，不能出现“居酒屋”。
+- 输入：“周六中午吃寿司”
+  - `parsed.cuisines` 必须只包含“寿司”。
+  - 不能追加其他推断品类。
+- 澄清问：“想吃什么品类？” 用户点“寿司”
+  - `parsed.cuisines` 写入“寿司”。
+  - 不再重复问品类。
+- 澄清问：“什么时候去吃？” 用户答“周六12点”
+  - `visitTime` 写入。
+  - 不再重复问时间。
+- 用户跳过品类
+  - 后续不再问品类。
+  - 搜索不自动补品类。
 
-## 前端：澄清面板
-
-在 `/requirements` 页面新增内联组件 `<PlannerClarifyPanel />`：
-
-- 位置：紧贴需求输入框下方展开，不跳路由。
-- 结构（AI Elements）：
-  - 顶部 `ParsedFieldsBar`：胶囊标签形式实时展示当前 `parsed` 里的 city / cuisines / hardFilters / softPreferences / visitTime / budget；`newlyFilled` 里的字段做 200ms fade-in + 高亮环。
-  - 中部 `Conversation + Message`：显示 planner 追问和用户回答。
-  - 每条 AI 追问下方：`suggestions` 渲染为 2-3 个大按钮 + "跳过此项" 按钮 + "自定义回答"（点开展开 PromptInput）。
-  - 底部 `PromptInput`：语音按钮（复用现有 requirements 页的 MediaRecorder + `/api/transcribe` 逻辑，抽成 `useVoiceInput` hook 供两处共享）为主，textarea 为辅；提交后调用 `plannerTurn`。
-  - 面板右上角"跳过全部澄清，直接搜索"。
-- 状态：`turnCount`（≤5）、`skippedFields: Set<string>`、`history`、`parsed`。
-- 每轮 planner 返回后：
-  - `setParsed(next.parsed)`；对比 diff 得 `newlyFilled` 用于高亮。
-  - 若 `done || turnCount>=5` → 关闭面板，`runSearch(freeText, "deep")` 走现有搜索进度条。
-- 首次提交需求时，先跑 `parseRequirements` 得到 initial parsed（同时展示 ParsedFieldsBar），再本地判断是否任一关键字段缺失：
-  - 不缺 → 直接进搜索。
-  - 缺 → 用 initial parsed 作为种子调用 `plannerTurn` 展开面板。
-
-## 保留 & 不动
-
-- `parseRequirements` 逻辑、搜索进度条（parse/search/reviews/rank）、结果页、i18n 键位 —— 全部保留。
-- 语音录音 / 转写路径 —— 抽到 `src/hooks/use-voice-input.ts` 复用。
-
-## 文件变更清单
-
-新增：
-- `src/lib/planner.functions.ts` — `plannerTurn` server fn。
-- `src/components/PlannerClarifyPanel.tsx` — 澄清面板 UI。
-- `src/components/ParsedFieldsBar.tsx` — 实时字段胶囊条。
-- `src/hooks/use-voice-input.ts` — 抽取现有 requirements 页录音/转写逻辑。
-
-修改：
-- `src/routes/index.tsx` — 提交后跳 `/requirements`。
-- `src/routes/requirements.tsx` — StepShell 改 `step 2 / 2`；删除 `<NeedBubbles>`；接入 `<PlannerClarifyPanel />`；用 `useVoiceInput` 替换本地录音代码。
-- `src/components/StepShell.tsx` — 支持 total=2（若目前硬编码 3）。
-- `src/lib/store.ts` — 保留字段，但 `setCuisines`/`setAutoInferCuisines` 不再由 UI 主动调用。
-- `src/lib/i18n/dict.ts` — 新增 planner/clarify 相关文案键（zh/en/ja/ko）。
-
-删除：
-- `src/routes/cuisines.tsx`（连带路由树自动重生成 `src/routeTree.gen.ts`）。
-- 首页里指向 `/cuisines` 的 `navigate` 改到 `/requirements`。
-- 不删 `NeedBubbles.tsx` 组件文件（避免误删），但从 requirements 页移除引用。
-
-## 边界与验证
-
-- Planner LLM 失败 → 前端提示"跳过澄清直接搜索"按钮，回退到旧路径。
-- 5 轮上限硬性生效，即使 planner 还想追问也强制 done。
-- `skippedFields` 存 sessionStorage，防止用户误刷。
-- 手工验证：
-  1. 输入"东京 想吃拉面 便宜点 明天中午"→ 关键字段齐 → 无澄清直接搜索。
-  2. 输入"东京 找家餐厅"→ 触发澄清，AI 推荐 3 个品类；跳过 → 追问用餐时间；再跳过 → 追问预算；跳过全部 → 直接搜索。
-  3. 澄清中回答"5分钟后就吃"→ visitTime 被填充，字段条高亮。
-  4. 回答"预算 500 但要米其林三星"→ planner 识别矛盾 → 针对预算再澄清一次。
-  5. `/cuisines` 直接访问 → 404（或重定向到 `/requirements`，二选一，倾向 404 自然）。
+## 主要改动文件
+- `src/lib/echo.functions.ts`
+- `src/routes/requirements.tsx`
+- `src/lib/planner-utils.ts`
+- `src/lib/planner.functions.ts`
+- 必要时小改 `src/components/PlannerClarifyPanel.tsx`，确保只有最新问题可提交答案。
