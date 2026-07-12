@@ -45,6 +45,13 @@ export const ParsedIn = z.object({
   visitTime: VisitTimeIn.optional(),
 });
 
+const ReaskFieldSchema = z.object({
+  field: PlannerFieldEnum,
+  reason: z.enum(["unparseable", "conflict"]),
+  prev: z.string().optional(),
+}).nullable();
+export type ReaskInfo = z.infer<typeof ReaskFieldSchema>;
+
 export const PlannerInput = z.object({
   city: z.string().default(""),
   uiLanguage: z.enum(["zh", "en"]).default("zh"),
@@ -52,6 +59,8 @@ export const PlannerInput = z.object({
   history: z.array(TurnSchema).default([]),
   parsed: ParsedIn.nullable().default(null),
   skippedFields: z.array(PlannerFieldEnum).default([]),
+  askedFields: z.array(PlannerFieldEnum).default([]),
+  reaskField: ReaskFieldSchema.default(null),
   turnCount: z.number().int().default(0),
 });
 export type PlannerInputData = z.infer<typeof PlannerInput>;
@@ -74,8 +83,11 @@ export const PlannerOutput = z.object({
   needsClarification: z.boolean().default(false),
   done: z.boolean().default(false),
   question: QuestionSchema.nullable().default(null),
+  askedFields: z.array(PlannerFieldEnum).default([]),
+  reaskField: ReaskFieldSchema.default(null),
 });
 export type PlannerResponse = z.infer<typeof PlannerOutput>;
+
 
 export const MAX_PLANNER_TURNS = 5;
 
