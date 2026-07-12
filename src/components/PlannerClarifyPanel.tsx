@@ -49,10 +49,13 @@ export function PlannerClarifyPanel({
   const [highlight, setHighlight] = useState<string[]>([]);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [skipped, setSkipped] = useState<PlannerField[]>([]);
+  const [asked, setAsked] = useState<PlannerField[]>([]);
+  const [reask, setReask] = useState<ReaskInfo>(null);
   const [turnCount, setTurnCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [customValue, setCustomValue] = useState("");
+
   const [error, setError] = useState<string | null>(null);
   const currentQuestionRef = useRef<PlannerResponse["question"]>(null);
   const inFlightRef = useRef(false);
