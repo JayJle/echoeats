@@ -95,12 +95,14 @@ export type SearchResults = {
 type QueryState = {
   city: string;
   cuisines: string[];
+  autoInferCuisines: boolean;
   date: string;
   freeText: string;
   parsed: ParsedRequirements | null;
   results: SearchResults | null;
   setCity: (v: string) => void;
   setCuisines: (v: string[]) => void;
+  setAutoInferCuisines: (v: boolean) => void;
   setDate: (v: string) => void;
   setFreeText: (v: string) => void;
   setParsed: (v: ParsedRequirements | null) => void;
@@ -113,12 +115,14 @@ export const useQueryStore = create<QueryState>()(
     (set) => ({
       city: "",
       cuisines: [],
+      autoInferCuisines: true,
       date: "",
       freeText: "",
       parsed: null,
       results: null,
       setCity: (v) => set({ city: v }),
       setCuisines: (v) => set({ cuisines: v }),
+      setAutoInferCuisines: (v) => set({ autoInferCuisines: v }),
       setDate: (v) => set({ date: v }),
       setFreeText: (v) => set({ freeText: v }),
       setParsed: (v) => set({ parsed: v }),
@@ -127,6 +131,7 @@ export const useQueryStore = create<QueryState>()(
         set({
           city: "",
           cuisines: [],
+          autoInferCuisines: true,
           date: "",
           freeText: "",
           parsed: null,

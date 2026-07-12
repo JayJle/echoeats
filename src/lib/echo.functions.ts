@@ -40,6 +40,7 @@ const echoLog = {
 const ParseInput = z.object({
   city: z.string().min(1),
   cuisines: z.array(z.string()).default([]),
+  autoInferCuisines: z.boolean().default(true),
   date: z.string().default(""),
   freeText: z.string().default(""),
   uiLanguage: z.enum(["zh", "en"]).default("zh"),
@@ -188,99 +189,6 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
     softPreferences: exactDedupe(parsed.softPreferences),
     negativeFilters: negFixed,
     dishPreferences: dishDedupe(parsed.dishPreferences),
-  };
-}
-
-const GENERIC_CUISINE_WORDS = new Set([
-  "餐厅",
-  "餐廳",
-  "restaurants",
-  "restaurant",
-  "レストラン",
-  "음식점",
-  "食堂",
-]);
-
-const CUISINE_ALIASES: string[][] = [
-  ["寿司", "壽司", "sushi", "すし", "鮨"],
-  ["拉面", "拉麵", "ramen", "ラーメン"],
-  ["居酒屋", "izakaya"],
-  ["日料", "日本料理", "日本菜", "japanese"],
-  ["韩餐", "韩国菜", "韓餐", "韓國菜", "korean"],
-  ["中餐", "中国菜", "中國菜", "chinese"],
-  ["川菜", "四川菜", "sichuan", "szechuan"],
-  ["粤菜", "粵菜", "广府菜", "廣府菜", "cantonese"],
-  ["点心", "點心", "dim sum"],
-  ["泰国菜", "泰國菜", "thai"],
-  ["越南菜", "vietnamese"],
-  ["印度菜", "indian"],
-  ["意大利菜", "義大利菜", "italian"],
-  ["法餐", "法国菜", "法國菜", "french"],
-  ["西班牙菜", "spanish"],
-  ["墨西哥菜", "mexican"],
-  ["披萨", "披薩", "pizza"],
-  ["汉堡", "漢堡", "burger", "hamburger"],
-  ["牛排", "steak", "steakhouse"],
-  ["烧烤", "燒烤", "烤肉", "bbq", "barbecue", "yakiniku", "焼肉"],
-  ["火锅", "火鍋", "hotpot", "hot pot", "しゃぶしゃぶ"],
-  ["串烧", "串燒", "yakitori", "焼き鳥"],
-  ["天妇罗", "天婦羅", "tempura", "天ぷら"],
-  ["荞麦面", "蕎麦麵", "soba", "そば"],
-  ["乌冬", "烏冬", "udon", "うどん"],
-  ["怀石", "懐石", "会席", "kaiseki"],
-  ["咖喱", "curry"],
-  ["海鲜", "海鮮", "seafood"],
-  ["素食", "vegetarian", "vegan"],
-  ["咖啡", "咖啡馆", "咖啡館", "cafe", "coffee"],
-  ["甜品", "甜点", "甜點", "dessert"],
-];
-
-function normalizeCuisineText(text: string): string {
-  return text.normalize("NFKC").toLocaleLowerCase().replace(/[\s\-_/・·.。．,，、'’]/g, "");
-}
-
-function cuisineExplicitlyMentioned(cuisine: string, sourceText: string): boolean {
-  const c = cuisine.trim();
-  if (!c) return false;
-  const normalizedCuisine = normalizeCuisineText(c);
-  if (GENERIC_CUISINE_WORDS.has(normalizedCuisine)) return false;
-  const normalizedSource = normalizeCuisineText(sourceText);
-  if (normalizedCuisine && normalizedSource.includes(normalizedCuisine)) return true;
-  return CUISINE_ALIASES.some((group) => {
-    const normalizedGroup = group.map(normalizeCuisineText);
-    if (!normalizedGroup.includes(normalizedCuisine)) return false;
-    return normalizedGroup.some((alias) => alias && normalizedSource.includes(alias));
-  });
-}
-
-function extractExplicitCuisinesFromText(sourceText: string): string[] {
-  const normalizedSource = normalizeCuisineText(sourceText);
-  const found: string[] = [];
-  for (const group of CUISINE_ALIASES) {
-    const hit = group.find((alias) => {
-      const normalizedAlias = normalizeCuisineText(alias);
-      return normalizedAlias && normalizedSource.includes(normalizedAlias);
-    });
-    if (hit) found.push(hit);
-  }
-  return uniqueStrings(found);
-}
-
-function sanitizeParsedCuisines(
-  parsed: z.infer<typeof ParsedSchema>,
-  selectedCuisines: string[],
-  freeText: string,
-): z.infer<typeof ParsedSchema> {
-  const explicitParsedCuisines = parsed.cuisines.filter((c) => cuisineExplicitlyMentioned(c, freeText));
-  const cuisines = selectedCuisines.length
-    ? selectedCuisines
-    : explicitParsedCuisines.length
-      ? explicitParsedCuisines
-      : extractExplicitCuisinesFromText(freeText);
-  return {
-    ...parsed,
-    cuisines: uniqueStrings(cuisines),
-    cuisinesInferred: false,
   };
 }
 
@@ -539,7 +447,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
     const prompt = `你是 Echo Eats 的需求结构化引擎。用户填写了餐厅搜索表单：
 
 - 城市：${data.city}
-- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : "（用户未选择料理类型；只能从「其它需求」里提取用户明确写出的品类，没写就返回空数组 []）"}
+- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : data.autoInferCuisines ? "（用户跳过了料理选择并要求 AI 自动识别，请从「其它需求」推断 1-2 个料理候选；推断不出来再填 [\"餐厅\"]）" : "（用户跳过了料理选择并要求按所有品类搜索，cuisines 字段直接填 [\"餐厅\"]）"}
 - 日期：${data.date || (data.uiLanguage === "en" ? "（用户未指定，dateTime 字段必须填英文字符串 \"Unspecified\"，不要填中文，也不要把日期/营业时间当 hardFilter）" : "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）")}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
@@ -547,7 +455,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 ## 字段说明
 
-- city：原样回传。cuisines：若用户已选则原样回传；若用户未选，只提取「其它需求」里**明确出现**的餐厅品类/菜系词（如「寿司」「居酒屋」「川菜」「pizza」「ramen」等）。禁止根据城市、氛围、预算、约会、安静、本地人爱去、想吃辣/清淡/轻食等上下文猜品类。没明确写品类就返回 []，也不要填 ["餐厅"] / ["Restaurants"] 兜底。
+- city：原样回传。cuisines：若用户已选则原样回传；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-2 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
 - dateTime：直接用日期字符串，如 "2026/05/20"。
 - hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
 - dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight）。
@@ -556,7 +464,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 ## 品类级 vs 餐厅级约束（最高优先级，先判这一条）
 
-有一类条件**本质上不是单家餐厅的可查属性，而是「整个品类」的特征**。这类条件直接当 hardFilter 塞给地图文本搜索会查不到（候选变空），必须单独记录为品类级约束；但不得把它们转成结构化 cuisines。
+有一类条件**本质上不是单家餐厅的可查属性，而是「整个品类」的特征**。这类条件直接当 hardFilter 塞给地图文本搜索会查不到（候选变空），必须用「先推品类、再搜索」的方式处理。
 
 **品类级约束识别清单**（凡涉及以下语义之一，即视为品类级，按需自行扩展）：
 
@@ -571,7 +479,10 @@ export const parseRequirements = createServerFn({ method: "POST" })
 1. 这类条件**必须**进 \`cuisineLevelConstraints\`（带 weight，规则同下文权重表）。
 2. **同时**把同一条复制进 \`softPreferences\`（保留排序信号，weight 相同）。
 3. **绝对不要**进 \`hardFilters\`（会让 Google Maps 文本搜索查不到候选）。
-4. 当**用户输入的 cuisines 为空时**，也**绝对不要**根据这些约束写入 cuisines；这些约束只进入 \`cuisineLevelConstraints\` / \`softPreferences\`，后续 planner 会把可推断品类作为 UI 选项展示给用户选择。
+4. 当**用户输入的 cuisines 为空时**，模型必须根据这些约束在 \`cuisines\` 字段里**主动产出 1–2 个匹配品类**，替代之前那种 \`["餐厅"]\` 的兜底。例：
+   - 「东京、用餐 1 小时内、想轻一点」→ cuisines: ["拉面","定食"]
+   - 「大阪、带 3 岁小孩、想吃饱」→ cuisines: ["家庭餐厅","回转寿司"]
+   - 「京都、想慢慢吃、安静」→ cuisines: ["怀石","会席料理"]
 5. 当用户**已显式提供 cuisines** 时，**不要覆盖** cuisines；在 \`searchStrategy\` 里说明会按这些品类级约束做排序倾斜即可。
 
 ## hardFilters 判定规则（关键，务必严格执行）
@@ -704,11 +615,15 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
 - 输入「周日早午餐」→ \`{"mentioned":true,"evidence":"周日早午餐","weekday":0,"hhmm":"10:30","raw":"周日早午餐"}\`
 - 输入「brunch place」→ \`{"mentioned":true,"evidence":"brunch","weekday":null,"hhmm":"10:30","raw":"brunch"}\`（保留餐段意图，但不虚构日期、不做指定星期硬过滤）`;
 
-    const runOnce = async (modelId: string) => {
+    const runOnce = async (modelId: string, opts?: { forceInfer?: boolean }) => {
       const model = gateway(modelId);
+      const effectivePrompt = opts?.forceInfer
+        ? prompt +
+          `\n\n## 强制识别品类（重试指令）\n用户已**明确要求**自动识别料理品类。即使「其它需求」线索很弱，也必须从菜品、口味、人群、场景、时段、价位中任选维度，给出 1-2 个最相关的**具体**料理品类。**禁止**返回 ["餐厅"] / ["restaurants"] / ["レストラン"] / ["음식점"] 等通用兜底词。`
+        : prompt;
       const { output } = await generateText({
         model,
-        prompt,
+        prompt: effectivePrompt,
         maxOutputTokens: 8000,
         output: Output.object({
           schema: LooseParsedSchema,
@@ -724,7 +639,48 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         parsed.hardFilters = [...parsed.hardFilters, ...promoted];
         parsed.softPreferences = parsed.softPreferences.filter((s) => s.weight < 0.8);
       }
-      return dedupeParsedConditions(sanitizeParsedCuisines(parsed, data.cuisines, data.freeText));
+      // 用户未选 cuisines 且 AI 推断出了非兜底品类 → 标注为 AI 识别
+      const userProvidedCuisines = data.cuisines.length > 0;
+      const fallbackWord = data.uiLanguage === "en" ? "Restaurants" : "餐厅";
+      parsed.cuisinesInferred =
+        !userProvidedCuisines &&
+        parsed.cuisines.length > 0 &&
+        !(parsed.cuisines.length === 1 && parsed.cuisines[0] === fallbackWord);
+      return dedupeParsedConditions(parsed);
+    };
+
+    const FALLBACK_CUISINE_WORDS = new Set([
+      "餐厅",
+      "restaurants",
+      "restaurant",
+      "レストラン",
+      "음식점",
+      "食堂",
+    ]);
+    const isAllFallback = (arr: string[]) =>
+      arr.length > 0 &&
+      arr.every((c) => FALLBACK_CUISINE_WORDS.has(c.trim().toLowerCase()));
+
+    const enforceInferIfRequested = async (
+      parsed: z.infer<typeof ParsedSchema>,
+    ): Promise<z.infer<typeof ParsedSchema>> => {
+      const userProvidedCuisines = data.cuisines.length > 0;
+      const wantsInfer = !userProvidedCuisines && data.autoInferCuisines !== false;
+      if (!wantsInfer || !isAllFallback(parsed.cuisines)) return parsed;
+      console.warn(
+        "[parseRequirements] 用户要求 AI 识别但首轮返回兜底词，跨模型重试 forceInfer",
+      );
+      try {
+        const retry = await runOnce("qwen-max", { forceInfer: true });
+        if (!isAllFallback(retry.cuisines)) return retry;
+        console.warn("[parseRequirements] forceInfer 重试仍为兜底，沿用首轮结果");
+      } catch (e) {
+        console.warn(
+          "[parseRequirements] forceInfer 重试失败：",
+          e instanceof Error ? e.message : e,
+        );
+      }
+      return parsed;
     };
 
     const sanitizeVisitTime = (
@@ -829,6 +785,7 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
     echoLog.start("parseRequirements", {
       city: data.city,
       cuisines: data.cuisines.length,
+      autoInfer: data.autoInferCuisines,
       freeTextLen: (data.freeText ?? "").length,
       uiLang: data.uiLanguage,
     });
@@ -836,12 +793,12 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
       let parsed: z.infer<typeof ParsedSchema>;
       try {
         const first = await runOnce("qwen-plus");
-        parsed = applyHalfPeriodFix(sanitizeVisitTime(first));
+        parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(first)));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨模型重试，避免同模型以同样方式再次失败
         const second = await runOnce("qwen-max");
-        parsed = applyHalfPeriodFix(sanitizeVisitTime(second));
+        parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(second)));
       }
       const beforeCluster = {
         hard: parsed.hardFilters.length,
@@ -869,7 +826,9 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
       console.warn("[parseRequirements] AI 解析失败，使用兜底结构：", msg);
       return ParsedSchema.parse({
         city: data.city,
-        cuisines: data.cuisines,
+        cuisines: data.cuisines.length
+          ? data.cuisines
+          : [data.uiLanguage === "en" ? "Restaurants" : "餐厅"],
         dateTime: data.date || (data.uiLanguage === "en" ? "Unspecified" : "未指定"),
         country: "",
         language: "",
@@ -1605,9 +1564,9 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       (data.country && data.country.toUpperCase()) ||
       "";
 
-    // 搜索兜底：用户未提供品类时只用通用餐厅查询，不把它写回结构化 cuisines。
-    const usedGenericCuisineQuery = data.cuisines.length === 0;
-    if (usedGenericCuisineQuery) {
+    // cuisines 兜底：用户跳过且 AI 也没推断出来时，按通用「餐厅」搜索
+    const cuisinesAutoFilled = data.cuisines.length === 0;
+    if (cuisinesAutoFilled) {
       const lang = (data.language || guessLanguageCode(data.city)).toLowerCase();
       const fallback =
         lang === "ja"
@@ -3163,7 +3122,7 @@ Schema：
       console.log(`[score] cuisine="${cuisine}" pool=${pool.length} admitted=${builtList.filter((b) => b.admitted).length} top5-avg=${avgFinal}`);
 
       return {
-        cuisine: usedGenericCuisineQuery ? (isEn ? "Recommended for you" : "为你推荐") : cuisine,
+        cuisine: cuisinesAutoFilled ? (isEn ? "Recommended for you" : "为你推荐") : cuisine,
         restaurants,
         ...(partialRestaurants.length ? { partialRestaurants } : {}),
         ...(failedRestaurants.length ? { failedRestaurants } : {}),

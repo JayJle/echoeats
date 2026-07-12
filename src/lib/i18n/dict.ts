@@ -41,13 +41,13 @@ export const dict: Record<Lang, Dict> = {
     "step1.chooseDesc": "没有直接确认“{city}”。请选择你想搜索的地点，我们不会自动替换。",
 
     "step2.title": "想吃什么料理？",
-    "step2.hint": "可输入多个，用逗号或空格分隔；不确定也可以跳过，稍后以选项确认",
+    "step2.hint": "可输入多个，用逗号或空格分隔；不确定也可以跳过，由 AI 根据其它需求推荐",
     "step2.placeholder": "牛排,居酒屋,拉面",
 
     "cuisines.skipDialog.title": "跳过料理选择？",
-    "cuisines.skipDialog.body": "未填写品类时，系统不会直接决定；稍后会把可能的品类作为选项让你确认。",
-    "cuisines.skipDialog.auto": "继续",
-    "cuisines.skipDialog.all": "搜全部品类",
+    "cuisines.skipDialog.body": "让系统从你的「其它需求」自动识别品类？选「否」将按所有品类搜索。",
+    "cuisines.skipDialog.auto": "是，自动识别",
+    "cuisines.skipDialog.all": "否，搜全部品类",
 
 
 
@@ -67,7 +67,7 @@ export const dict: Record<Lang, Dict> = {
     "step3.mic.transcribing": "转写中…",
     "step3.mic.recording": "{s}s · 点击停止",
     "step3.cancel": "取消搜索",
-    "step3.inferred": "已选择 {n} 个品类（{list}），正在并行搜索，可能稍慢",
+    "step3.inferred": "✨ AI 推断了 {n} 个品类（{list}），正在并行搜索，可能稍慢",
     "step3.voice.cta": "点按说出你的需求",
     "step3.voice.sub": "比打字更快 — 说说预算、氛围、想吃什么…",
     "step3.voice.badge": "推荐",
@@ -236,20 +236,6 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "需求灵感",
-
-    "planner.title": "Planner 正在补齐你的需求",
-    "planner.subtitle": "多轮澄清 · {progress}",
-    "planner.parsedTitle": "AI 已识别的字段",
-    "planner.thinking": "Planner 正在思考…",
-    "planner.startingSoon": "正在生成第一个问题…",
-    "planner.voiceHint": "点击麦克风语音回答，或选下方推荐 / 跳过",
-    "planner.skipOne": "跳过此项",
-    "planner.skipAll": "跳过全部",
-    "planner.custom": "自定义回答",
-    "planner.customPlaceholder": "在此输入你的回答…",
-    "planner.send": "发送",
-    "planner.skipMark": "（跳过）",
-    "planner.error": "澄清服务暂不可用，可以点击\"跳过全部\"直接搜索。",
   },
   en: {
     "brand.tagline": "AI Restaurant Discovery Agent",
@@ -286,13 +272,13 @@ export const dict: Record<Lang, Dict> = {
     "step1.chooseDesc": "We couldn't directly confirm “{city}”. Choose the location you meant; we won't replace it automatically.",
 
     "step2.title": "What cuisine are you in the mood for?",
-    "step2.hint": "Enter one or more, separated by commas or spaces. Not sure? Skip and confirm from options later.",
+    "step2.hint": "Enter one or more, separated by commas or spaces. Not sure? Skip and let AI suggest based on the rest.",
     "step2.placeholder": "steak, ramen, izakaya",
 
     "cuisines.skipDialog.title": "Skip cuisine selection?",
-    "cuisines.skipDialog.body": "If cuisine is missing, the system will not decide it automatically; it will show possible options for you to confirm later.",
-    "cuisines.skipDialog.auto": "Continue",
-    "cuisines.skipDialog.all": "Search all",
+    "cuisines.skipDialog.body": "Let the system auto-detect cuisines from your other requirements? Choose \"No\" to search across all cuisines.",
+    "cuisines.skipDialog.auto": "Yes, auto-detect",
+    "cuisines.skipDialog.all": "No, search all",
 
 
 
@@ -312,7 +298,7 @@ export const dict: Record<Lang, Dict> = {
     "step3.mic.transcribing": "Transcribing…",
     "step3.mic.recording": "{s}s · tap to stop",
     "step3.cancel": "Cancel search",
-    "step3.inferred": "Selected {n} cuisine(s) ({list}), searching in parallel — may be a bit slower",
+    "step3.inferred": "✨ AI inferred {n} cuisine(s) ({list}), searching in parallel — may be a bit slower",
     "step3.voice.cta": "Tap to speak your needs",
     "step3.voice.sub": "Faster than typing — say budget, vibe, dishes…",
     "step3.voice.badge": "Recommended",
@@ -479,20 +465,6 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "Need inspiration",
-
-    "planner.title": "Planner is filling in your needs",
-    "planner.subtitle": "Multi-turn clarify · {progress}",
-    "planner.parsedTitle": "Fields understood so far",
-    "planner.thinking": "Planner is thinking…",
-    "planner.startingSoon": "Preparing the first question…",
-    "planner.voiceHint": "Tap the mic to answer by voice, or pick a suggestion / skip",
-    "planner.skipOne": "Skip this",
-    "planner.skipAll": "Skip all",
-    "planner.custom": "Custom answer",
-    "planner.customPlaceholder": "Type your answer…",
-    "planner.send": "Send",
-    "planner.skipMark": "(skip)",
-    "planner.error": "Clarification service unavailable. Tap \"Skip all\" to search now.",
   },
 };
 

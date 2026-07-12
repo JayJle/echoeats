@@ -50,7 +50,7 @@ function StepCity() {
   const continueWithCity = (candidate: CityValidationCandidate) => {
     setCity(candidate.displayName);
     setCandidates([]);
-    navigate({ to: "/requirements" });
+    navigate({ to: "/cuisines" });
   };
 
   const handleResult = (result: CityValidationResult) => {
@@ -90,7 +90,7 @@ function StepCity() {
   };
 
   return (
-    <StepShell step={1} total={2} title={t("step1.title")}>
+    <StepShell step={1} total={3} title={t("step1.title")}>
       <form onSubmit={onSubmit} className="space-y-6">
         <Input
           autoFocus
