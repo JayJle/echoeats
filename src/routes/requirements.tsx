@@ -72,8 +72,59 @@ function StepRequirements() {
   // —— 提前展示解析出的需求 ——
   const [parsedPreview, setParsedPreview] = useState<ParsedRequirements | null>(null);
 
+  // —— Planner 澄清面板 ——
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [plannerSeed, setPlannerSeed] = useState<ParsedRequirements | null>(null);
+  const [prechecking, setPrechecking] = useState(false);
+  const pendingModeRef = useRef<"quick" | "deep">("deep");
+
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
+
+  const detectMissing = (p: ParsedRequirements): string[] => {
+    const missing: string[] = [];
+    const hasCuisine =
+      p.cuisines.length > 0 &&
+      !p.cuisines.every((c) => c === "餐厅" || c.toLowerCase() === "restaurants");
+    if (!hasCuisine) missing.push("cuisine");
+    const prefs = [...(p.hardFilters ?? []), ...(p.softPreferences ?? [])];
+    if (prefs.length === 0) missing.push("hardFilter");
+    if (!p.visitTime?.mentioned) missing.push("mealTime");
+    const budgetRe = /(预算|人均|¥|￥|\$|€|£|jpy|usd|cny|rmb|元|块|budget|per person|price)/i;
+    if (!prefs.some((f) => budgetRe.test(f.text))) missing.push("budget");
+    return missing;
+  };
+
+  const handleSubmitClick = async (mode: "quick" | "deep") => {
+    if (loading || prechecking) return;
+    const text = value.trim();
+    if (!text) {
+      void runSearch(value, mode);
+      return;
+    }
+    setError(null);
+    setPrechecking(true);
+    pendingModeRef.current = mode;
+    try {
+      const parsed = await parseFn({
+        data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
+      });
+      const missing = detectMissing(parsed);
+      if (missing.length === 0) {
+        setPrechecking(false);
+        void runSearch(text, mode, parsed);
+        return;
+      }
+      setPlannerSeed(parsed);
+      setPlannerOpen(true);
+      setPrechecking(false);
+    } catch (e) {
+      console.warn("[precheck] parse failed, fallback to direct search", e);
+      setPrechecking(false);
+      void runSearch(text, mode);
+    }
+  };
+
 
   useEffect(() => () => {
     timersRef.current.forEach(clearTimeout);
