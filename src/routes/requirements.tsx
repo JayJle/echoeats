@@ -107,7 +107,7 @@ function StepRequirements() {
     pendingModeRef.current = mode;
     try {
       const parsed = await parseFn({
-        data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
+        data: { city, cuisines, autoInferCuisines: false, date: "", freeText: text, uiLanguage: lang },
       });
       const missing = detectMissing(parsed);
       if (missing.length === 0) {
@@ -266,12 +266,21 @@ function StepRequirements() {
         targetProgressRef.current,
         STAGE_RANGES[mode].parse[1],
       );
-      const parsed = preParsed
+      let parsed = preParsed
         ? preParsed
         : await parseFn({
             data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
             signal: ac.signal,
           } as Parameters<typeof parseFn>[0]);
+      // If the planner was skipped and cuisines are still empty, auto-infer now
+      // so the search stage has something to query against.
+      if (preParsed && (!parsed.cuisines || parsed.cuisines.length === 0)) {
+        const inferred = await parseFn({
+          data: { city, cuisines: [], autoInferCuisines: true, date: "", freeText: text, uiLanguage: lang },
+          signal: ac.signal,
+        } as Parameters<typeof parseFn>[0]);
+        parsed = { ...parsed, cuisines: inferred.cuisines, cuisinesInferred: true };
+      }
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode, uiLanguage: lang };
       setParsed(parsedWithMode);
