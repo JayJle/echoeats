@@ -1,8 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Check, HelpCircle, Loader2, Mic, Sparkles, Square } from "lucide-react";
-import { toast } from "sonner";
-import { NeedBubbles } from "@/components/NeedBubbles";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +11,8 @@ import { useQueryStore, type ParsedRequirements } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { useServerFn } from "@tanstack/react-start";
 import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
+import { useVoiceInput } from "@/hooks/use-voice-input";
+import { PlannerClarifyPanel } from "@/components/PlannerClarifyPanel";
 
 export const Route = createFileRoute("/requirements")({
   head: () => ({
