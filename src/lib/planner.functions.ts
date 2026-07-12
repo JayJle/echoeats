@@ -20,18 +20,16 @@ export const plannerTurn = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<PlannerResponse> => {
     const isEn = data.uiLanguage === "en";
     const skipSet = new Set(data.skippedFields);
-    const missing = detectMissingFields(data.parsed, skipSet);
+    const askedSet = new Set(data.askedFields);
+    const missing = detectMissingFields(data.parsed, skipSet).filter(
+      (f) => !askedSet.has(f) || data.reaskField?.field === f,
+    );
     const reachedLimit = data.turnCount >= MAX_PLANNER_TURNS;
 
-    if (missing.length === 0 || reachedLimit) {
-      return {
-        parsed: data.parsed ?? emptyParsed(data.city),
-        newlyFilled: [],
-        needsClarification: false,
-        done: true,
-        question: null,
-      };
+    if ((missing.length === 0 && !data.reaskField) || reachedLimit) {
+      return localFallbackResponse({ data, isEn });
     }
+
 
     const key = process.env.QWEN_API_KEY;
     if (!key) return localFallbackResponse({ data, isEn });
