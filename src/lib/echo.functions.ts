@@ -271,12 +271,12 @@ function sanitizeParsedCuisines(
   selectedCuisines: string[],
   freeText: string,
 ): z.infer<typeof ParsedSchema> {
+  const explicitParsedCuisines = parsed.cuisines.filter((c) => cuisineExplicitlyMentioned(c, freeText));
   const cuisines = selectedCuisines.length
     ? selectedCuisines
-    : uniqueStrings([
-        ...extractExplicitCuisinesFromText(freeText),
-        ...parsed.cuisines.filter((c) => cuisineExplicitlyMentioned(c, freeText)),
-      ]);
+    : explicitParsedCuisines.length
+      ? explicitParsedCuisines
+      : extractExplicitCuisinesFromText(freeText);
   return {
     ...parsed,
     cuisines: uniqueStrings(cuisines),
