@@ -153,6 +153,8 @@ function ChatPage() {
     const next = missing[0];
     const aiMsg: ChatMsg = { role: "ai", text: questionFor(next), field: next };
     setChatHistory([...history, aiMsg]);
+    setShowFreeText(false);
+    setFreeInput("");
   };
 
   const runIntro = async (rawText: string) => {
