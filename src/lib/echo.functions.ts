@@ -2237,6 +2237,7 @@ ${JSON.stringify(group.candidates, null, 2)}
 5. **禁止输出文案 / 打分字段**：不要写 aiSummary、不要写 pros/cons、**不要写 matchScore / score / rating** —— 这一步只做核验。
 6. **禁止泄露内部字段名**：note 和 label 里不要出现 "primaryType" / "editorialSummary" / "realWorldReviews" 等字段名。
 7. **note / label 控制在 20–40 字**，简短结论 + 简短依据即可。
+8. **每条 matchDetail 只核验它对应的那一个条件**：label 里只能就"当前这一条软偏好/避雷"给结论 + 依据；**严禁**在同一条 label 里同时评价其他软偏好、菜品偏好（dishPreferences）、硬条件或时段/菜名等无关维度。**严禁**出现"…，但未说明是否…（另一个条件）"、"…，然而没有提及…（无关话题）"这种把多个条件杂交进一句的写法——那属于结构性错误，必须拆成各自的槽位或直接省略无关部分。菜品偏好如需评价，只可放进它对应的槽位（如列在 nonHardFilters 中），不得挂到别的软偏好 label 上。
 
 ## confidence 自检铁律
 如果你写了 status="ok" 但证据其实只是"评论赞美整体但没具体提到该条件"，confidence 必须 < 70 —— 系统会自动把它降为 unknown。**诚实评估，不要全部给 90+**。
