@@ -4,7 +4,6 @@ import { useT } from "@/lib/i18n/context";
 
 type Props = {
   onTranscript: (text: string) => void;
-  /** hero = big circular CTA button; compact = small icon-button */
   variant?: "hero" | "compact";
   disabled?: boolean;
   className?: string;
@@ -25,15 +24,67 @@ export function VoiceInput({ onTranscript, variant = "hero", disabled, className
   const [state, setState] = useState<"idle" | "recording" | "transcribing">("idle");
   const [secs, setSecs] = useState(0);
   const [err, setErr] = useState<string | null>(null);
+  const [level, setLevel] = useState(0); // 0..1 RMS smoothed
+
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const timerRef = useRef<number | null>(null);
   const autoStopRef = useRef<number | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => () => cleanup(), []);
 
+  function stopAnalyser() {
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    try { sourceRef.current?.disconnect(); } catch { /* noop */ }
+    try { analyserRef.current?.disconnect(); } catch { /* noop */ }
+    void audioCtxRef.current?.close().catch(() => { /* noop */ });
+    sourceRef.current = null;
+    analyserRef.current = null;
+    audioCtxRef.current = null;
+    setLevel(0);
+  }
+
+  function startAnalyser(stream: MediaStream) {
+    try {
+      const AC: typeof AudioContext =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AC) return;
+      const ctx = new AC();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.7;
+      source.connect(analyser);
+      audioCtxRef.current = ctx;
+      sourceRef.current = source;
+      analyserRef.current = analyser;
+      const buf = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        // amplify a bit so ordinary speech shows movement
+        const norm = Math.max(0, Math.min(1, rms * 4));
+        setLevel(norm);
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    } catch { /* analyser is optional */ }
+  }
+
   function cleanup() {
+    stopAnalyser();
     try { if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop(); } catch { /* noop */ }
     streamRef.current?.getTracks().forEach((tr) => tr.stop());
     streamRef.current = null;
@@ -49,7 +100,7 @@ export function VoiceInput({ onTranscript, variant = "hero", disabled, className
       setErr(t("err.mic.unsupported"));
       return;
     }
-    // IMPORTANT: call getUserMedia synchronously in the same tick as the user gesture (iOS Safari)
+    // call getUserMedia synchronously in the user-gesture tick (iOS Safari)
     const p = navigator.mediaDevices.getUserMedia({ audio: true });
     p.then((stream) => {
       streamRef.current = stream;
@@ -68,6 +119,7 @@ export function VoiceInput({ onTranscript, variant = "hero", disabled, className
       rec.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunksRef.current.push(e.data); };
       rec.onstop = () => void handleStop(rec.mimeType || mime || "audio/webm");
       rec.start();
+      startAnalyser(stream);
       setSecs(0);
       timerRef.current = window.setInterval(() => setSecs((s) => s + 1), 1000);
       autoStopRef.current = window.setTimeout(() => { try { rec.stop(); } catch { /* noop */ } }, 60_000);
@@ -84,6 +136,7 @@ export function VoiceInput({ onTranscript, variant = "hero", disabled, className
   }
 
   async function handleStop(mimeType: string) {
+    stopAnalyser();
     if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null; }
     if (autoStopRef.current) { window.clearTimeout(autoStopRef.current); autoStopRef.current = null; }
     streamRef.current?.getTracks().forEach((tr) => tr.stop());
@@ -129,56 +182,67 @@ export function VoiceInput({ onTranscript, variant = "hero", disabled, className
 
   if (variant === "compact") {
     return (
-      <div className={className}>
-        <button
-          type="button"
-          disabled={disabled || isTx}
-          onClick={isRec ? stop : start}
-          aria-label={isRec ? t("step3.mic.stop") : t("step3.mic.start")}
-          title={isRec ? t("step3.mic.stop") : t("step3.mic.start")}
-          className={
-            "inline-flex items-center justify-center w-10 h-10 rounded-full border transition-colors " +
-            (isRec
-              ? "bg-primary text-primary-foreground border-primary"
-              : "bg-background hover:bg-muted border-border text-foreground")
-          }
-          style={isRec ? { animation: "mic-ring 1.4s ease-out infinite" } : undefined}
-        >
-          {isTx ? <Loader2 className="w-4 h-4 animate-spin" />
-            : isRec ? <Square className="w-4 h-4" />
-            : <Mic className="w-4 h-4" />}
-        </button>
-        {(isRec || isTx || err) && (
-          <p className={"text-xs mt-1 " + (err ? "text-destructive" : "text-muted-foreground")}>
-            {isRec ? t("step3.mic.recording", { s: secs })
-              : isTx ? t("step3.mic.transcribing")
-              : err}
-          </p>
-        )}
-      </div>
-    );
-  }
-
-  // Hero variant
-  return (
-    <div className={"flex flex-col items-center gap-3 " + (className ?? "")}>
       <button
         type="button"
         disabled={disabled || isTx}
         onClick={isRec ? stop : start}
         aria-label={isRec ? t("step3.mic.stop") : t("step3.mic.start")}
         className={
-          "relative inline-flex items-center justify-center rounded-full w-24 h-24 sm:w-28 sm:h-28 transition-transform active:scale-95 disabled:opacity-60 " +
-          (isRec
-            ? "bg-primary text-primary-foreground shadow-lg"
-            : "bg-primary text-primary-foreground shadow-md hover:shadow-lg")
+          "inline-flex items-center justify-center w-10 h-10 rounded-full border transition-colors " +
+          (isRec ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted border-border text-foreground") +
+          (className ? " " + className : "")
         }
-        style={isRec ? { animation: "mic-ring 1.4s ease-out infinite" } : undefined}
       >
-        {isTx ? <Loader2 className="w-9 h-9 animate-spin" />
-          : isRec ? <Square className="w-9 h-9" />
-          : <Mic className="w-10 h-10" />}
+        {isTx ? <Loader2 className="w-4 h-4 animate-spin" />
+          : isRec ? <Square className="w-4 h-4" />
+          : <Mic className="w-4 h-4" />}
       </button>
+    );
+  }
+
+  // Hero: big mic with reactive volume ring + equalizer
+  const ringScale = isRec ? 1 + level * 0.55 : 1;
+  const ringOpacity = isRec ? 0.25 + level * 0.55 : 0;
+  const barHeights = [0, 1, 2, 1, 0].map((offset) => {
+    const base = isRec ? 4 + level * 28 : 4;
+    return Math.max(4, Math.min(32, base + offset * (isRec ? level * 6 : 0)));
+  });
+
+  return (
+    <div className={"flex flex-col items-center gap-3 " + (className ?? "")}>
+      <div className="relative">
+        <div
+          aria-hidden
+          className="absolute inset-0 rounded-full bg-primary/30 pointer-events-none transition-transform duration-100"
+          style={{ transform: `scale(${ringScale})`, opacity: ringOpacity }}
+        />
+        <button
+          type="button"
+          disabled={disabled || isTx}
+          onClick={isRec ? stop : start}
+          aria-label={isRec ? t("step3.mic.stop") : t("step3.mic.start")}
+          className={
+            "relative inline-flex items-center justify-center rounded-full w-24 h-24 sm:w-28 sm:h-28 transition-transform active:scale-95 disabled:opacity-60 " +
+            "bg-primary text-primary-foreground shadow-md hover:shadow-lg"
+          }
+        >
+          {isTx ? <Loader2 className="w-9 h-9 animate-spin" />
+            : isRec ? <Square className="w-9 h-9" />
+            : <Mic className="w-10 h-10" />}
+        </button>
+      </div>
+
+      {/* equalizer bars, only shown while recording */}
+      <div className="h-8 flex items-end justify-center gap-1" aria-hidden>
+        {isRec ? barHeights.map((h, i) => (
+          <span
+            key={i}
+            className="w-1.5 rounded-full bg-primary/70 transition-all duration-75"
+            style={{ height: `${h}px` }}
+          />
+        )) : null}
+      </div>
+
       <div className="text-center min-h-[2.5rem]">
         <p className="text-base font-medium">
           {isRec ? t("step3.voice.listening")
@@ -191,7 +255,7 @@ export function VoiceInput({ onTranscript, variant = "hero", disabled, className
         {isRec && (
           <p className="text-xs text-muted-foreground mt-1">{t("step3.mic.recording", { s: secs })}</p>
         )}
-        {err && (
+        {err && !isRec && !isTx && (
           <p className="text-xs text-destructive mt-1" role="alert">{err}</p>
         )}
       </div>
