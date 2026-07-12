@@ -53,6 +53,7 @@ export function PlannerClarifyPanel({
   const [customValue, setCustomValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const currentQuestionRef = useRef<PlannerResponse["question"]>(null);
+  const inFlightRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bootstrappedRef = useRef(false);
 
@@ -78,6 +79,8 @@ export function PlannerClarifyPanel({
     newSkipped?: PlannerField[];
     incrementTurn?: boolean;
   }) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -128,6 +131,7 @@ export function PlannerClarifyPanel({
       console.error("[planner] failed", msg);
       setError(t("planner.error"));
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
   };
@@ -141,7 +145,8 @@ export function PlannerClarifyPanel({
   }, []);
 
   const submitAnswer = (userText: string, viaSuggestion = false) => {
-    if (!userText.trim() || loading) return;
+    if (!userText.trim() || loading || inFlightRef.current || !currentQuestionRef.current) return;
+    currentQuestionRef.current = null;
     const nextHistory: UiMessage[] = [
       ...messages,
       { id: `u-${Date.now()}`, role: "user", text: userText.trim() },
@@ -157,7 +162,8 @@ export function PlannerClarifyPanel({
 
   const skipCurrent = () => {
     const q = currentQuestionRef.current;
-    if (!q || loading) return;
+    if (!q || loading || inFlightRef.current) return;
+    currentQuestionRef.current = null;
     const nextSkipped = Array.from(new Set([...skipped, q.field]));
     const nextHistory: UiMessage[] = [
       ...messages,
