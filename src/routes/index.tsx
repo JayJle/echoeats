@@ -121,7 +121,14 @@ function StepCity() {
             <span>{t("step1.notice")}</span>
           </div>
           {error ? <p id="city-error" className="text-sm text-destructive" role="alert">{error}</p> : null}
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between gap-2">
+            <MicButton
+              onTranscript={(text) => {
+                setValue(text.replace(/[。.!！?？,，\s]+$/g, "").slice(0, 80));
+                setError("");
+              }}
+              size="icon"
+            />
             <Button type="submit" disabled={!value.trim() || isChecking} size="lg">
               {isChecking ? <><Loader2 className="animate-spin" />{t("step1.checking")}</> : t("common.next")}
             </Button>
