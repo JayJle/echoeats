@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useQueryStore, type ChatMsg, type ExtractedKeyFields } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { LanguageToggle } from "@/components/LanguageToggle";
-import { MicButton } from "@/components/MicButton";
+import { VoiceInput } from "@/components/VoiceInput";
 import {
   extractKeyFields,
   parseRequirements,
@@ -98,7 +98,9 @@ function ChatPage() {
   const [searching, setSearching] = useState(false);
   const [progress, setProgress] = useState<ProgressState>({ phase: "startingUp", percent: 5, detail: "" });
   const [introText, setIntroText] = useState("");
+  const [showIntroText, setShowIntroText] = useState(false);
   const [freeInput, setFreeInput] = useState("");
+  const [showFreeText, setShowFreeText] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -151,11 +153,12 @@ function ChatPage() {
     const next = missing[0];
     const aiMsg: ChatMsg = { role: "ai", text: questionFor(next), field: next };
     setChatHistory([...history, aiMsg]);
+    setShowFreeText(false);
+    setFreeInput("");
   };
 
-  const onIntroSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    const text = introText.trim();
+  const runIntro = async (rawText: string) => {
+    const text = rawText.trim();
     if (!text || thinking) return;
     setError(null);
     setThinking(true);
@@ -172,6 +175,11 @@ function ChatPage() {
     } finally {
       setThinking(false);
     }
+  };
+
+  const onIntroSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    void runIntro(introText);
   };
 
   const submitAnswer = async (text: string, opts: { skipped?: boolean } = {}) => {
@@ -293,30 +301,51 @@ function ChatPage() {
 
       <main className="flex-1 w-full max-w-2xl mx-auto px-4 py-6 flex flex-col gap-4">
         {showIntro ? (
-          <form onSubmit={onIntroSubmit} className="mt-8 space-y-4">
-            <h1 className="text-2xl font-semibold tracking-tight">{t("chat.intro.title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("chat.intro.hint")}</p>
-            <Textarea
-              autoFocus
-              value={introText}
-              onChange={(e) => setIntroText(e.target.value)}
-              placeholder={t("chat.intro.placeholder")}
-              className="min-h-[120px] text-base resize-none"
-              maxLength={500}
-            />
-            <div className="flex items-center justify-between gap-2">
-              <MicButton
-                onTranscript={(text) =>
-                  setIntroText((prev) => (prev ? `${prev} ${text}` : text).slice(0, 500))
-                }
-                disabled={thinking}
-                size="icon"
-              />
-              <Button type="submit" size="lg" disabled={!introText.trim() || thinking}>
-                {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
-              </Button>
+          <form onSubmit={onIntroSubmit} className="mt-6 space-y-6">
+            <div className="text-center space-y-2">
+              <h1 className="text-2xl font-semibold tracking-tight">{t("chat.intro.title")}</h1>
+              <p className="text-sm text-muted-foreground">{t("chat.intro.hint")}</p>
             </div>
-            {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
+
+            <div className="py-6">
+              <VoiceInput
+                variant="hero"
+                disabled={thinking}
+                onTranscript={(text) => {
+                  setIntroText(text);
+                  void runIntro(text);
+                }}
+              />
+            </div>
+
+            {!showIntroText ? (
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={() => setShowIntroText(true)}
+                  className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                >
+                  {t("step3.voice.orType")}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <Textarea
+                  autoFocus
+                  value={introText}
+                  onChange={(e) => setIntroText(e.target.value)}
+                  placeholder={t("chat.intro.placeholder")}
+                  className="min-h-[100px] text-base resize-none"
+                  maxLength={500}
+                />
+                <div className="flex justify-end">
+                  <Button type="submit" disabled={!introText.trim() || thinking}>
+                    {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {error && <p className="text-sm text-destructive text-center" role="alert">{error}</p>}
           </form>
         ) : (
           <>
@@ -344,8 +373,8 @@ function ChatPage() {
             </div>
 
             {awaitingAnswer && lastAiField && !thinking && !searching && (
-              <div className="space-y-3 border-t border-border/60 pt-4">
-                <div className="flex flex-wrap gap-2">
+              <div className="space-y-4 border-t border-border/60 pt-5">
+                <div className="flex flex-wrap gap-2 justify-center">
                   {chipsFor(lastAiField, extracted).map((chip) => (
                     <Button
                       key={chip}
@@ -366,24 +395,42 @@ function ChatPage() {
                     {t("chat.skip")}
                   </Button>
                 </div>
-                <form onSubmit={onFreeSubmit} className="flex gap-2 items-start">
-                  <Input
-                    value={freeInput}
-                    onChange={(e) => setFreeInput(e.target.value)}
-                    placeholder={t("chat.orTypeYourOwn")}
-                    className="flex-1"
-                    maxLength={200}
+
+                <div className="py-2">
+                  <VoiceInput
+                    variant="hero"
+                    onTranscript={(text) => {
+                      setFreeInput(text);
+                      void submitAnswer(text);
+                    }}
                   />
-                  <MicButton
-                    onTranscript={(text) =>
-                      setFreeInput((prev) => (prev ? `${prev} ${text}` : text).slice(0, 200))
-                    }
-                    size="icon"
-                  />
-                  <Button type="submit" size="icon" disabled={!freeInput.trim()}>
-                    <Send className="w-4 h-4" />
-                  </Button>
-                </form>
+                </div>
+
+                {!showFreeText ? (
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowFreeText(true)}
+                      className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                    >
+                      {t("step3.voice.orType")}
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={onFreeSubmit} className="flex gap-2 items-center">
+                    <Input
+                      autoFocus
+                      value={freeInput}
+                      onChange={(e) => setFreeInput(e.target.value)}
+                      placeholder={t("chat.orTypeYourOwn")}
+                      className="flex-1"
+                      maxLength={200}
+                    />
+                    <Button type="submit" size="icon" disabled={!freeInput.trim()}>
+                      <Send className="w-4 h-4" />
+                    </Button>
+                  </form>
+                )}
               </div>
             )}
           </>
