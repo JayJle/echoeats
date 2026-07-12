@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useQueryStore, type ChatMsg, type ExtractedKeyFields } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { LanguageToggle } from "@/components/LanguageToggle";
+import { MicButton } from "@/components/MicButton";
 import {
   extractKeyFields,
   parseRequirements,
