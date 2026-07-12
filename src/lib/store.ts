@@ -79,7 +79,7 @@ export type ResultsGroup = {
 };
 
 export type SearchWarning = {
-  stage: string;          // "places" | "tabelog" | "yelp" | "cuisine-expand" | "photos" | "ai-rank"
+  stage: string;
   cuisine?: string;
   message: string;
   retryable?: boolean;
@@ -92,12 +92,23 @@ export type SearchResults = {
   warnings?: SearchWarning[];
 };
 
+export type ChatMsg = {
+  role: "ai" | "user";
+  text: string;
+  field?: string;
+};
+
 type QueryState = {
+  // 保留 city / freeText / cuisines 以兼容 parseRequirements 与 results 编辑弹窗
   city: string;
   cuisines: string[];
   autoInferCuisines: boolean;
   date: string;
   freeText: string;
+  // 新增：chat 状态
+  chatHistory: ChatMsg[];
+  askedFields: string[];
+  skippedFields: string[];
   parsed: ParsedRequirements | null;
   results: SearchResults | null;
   setCity: (v: string) => void;
@@ -105,8 +116,12 @@ type QueryState = {
   setAutoInferCuisines: (v: boolean) => void;
   setDate: (v: string) => void;
   setFreeText: (v: string) => void;
+  setChatHistory: (v: ChatMsg[]) => void;
+  setAskedFields: (v: string[]) => void;
+  setSkippedFields: (v: string[]) => void;
   setParsed: (v: ParsedRequirements | null) => void;
   setResults: (v: SearchResults | null) => void;
+  resetChat: () => void;
   reset: () => void;
 };
 
@@ -118,6 +133,9 @@ export const useQueryStore = create<QueryState>()(
       autoInferCuisines: true,
       date: "",
       freeText: "",
+      chatHistory: [],
+      askedFields: [],
+      skippedFields: [],
       parsed: null,
       results: null,
       setCity: (v) => set({ city: v }),
@@ -125,8 +143,20 @@ export const useQueryStore = create<QueryState>()(
       setAutoInferCuisines: (v) => set({ autoInferCuisines: v }),
       setDate: (v) => set({ date: v }),
       setFreeText: (v) => set({ freeText: v }),
+      setChatHistory: (v) => set({ chatHistory: v }),
+      setAskedFields: (v) => set({ askedFields: v }),
+      setSkippedFields: (v) => set({ skippedFields: v }),
       setParsed: (v) => set({ parsed: v }),
       setResults: (v) => set({ results: v }),
+      resetChat: () =>
+        set({
+          chatHistory: [],
+          askedFields: [],
+          skippedFields: [],
+          freeText: "",
+          parsed: null,
+          results: null,
+        }),
       reset: () =>
         set({
           city: "",
@@ -134,6 +164,9 @@ export const useQueryStore = create<QueryState>()(
           autoInferCuisines: true,
           date: "",
           freeText: "",
+          chatHistory: [],
+          askedFields: [],
+          skippedFields: [],
           parsed: null,
           results: null,
         }),
@@ -141,10 +174,13 @@ export const useQueryStore = create<QueryState>()(
 
     {
       name: "echo-eats-query",
-      version: 2,
+      version: 3,
       migrate: (persisted: unknown, version: number) => {
-        const state = persisted as { parsed?: ParsedRequirements | null } | undefined;
-        if (version < 2 && state?.parsed) {
+        const state = persisted as
+          | (Partial<QueryState> & { parsed?: ParsedRequirements | null })
+          | undefined;
+        if (!state) return state as QueryState;
+        if (version < 2 && state.parsed) {
           const upgrade = (arr: unknown): WeightedCondition[] => {
             if (!Array.isArray(arr)) return [];
             return arr.map((item) =>
@@ -160,6 +196,11 @@ export const useQueryStore = create<QueryState>()(
             softPreferences: upgrade(p.softPreferences),
             negativeFilters: upgrade(p.negativeFilters),
           };
+        }
+        if (version < 3) {
+          state.chatHistory = state.chatHistory ?? [];
+          state.askedFields = state.askedFields ?? [];
+          state.skippedFields = state.skippedFields ?? [];
         }
         return state as QueryState;
       },
