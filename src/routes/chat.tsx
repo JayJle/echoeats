@@ -11,6 +11,7 @@ import { LanguageToggle } from "@/components/LanguageToggle";
 import { VoiceInput } from "@/components/VoiceInput";
 import {
   extractKeyFields,
+  analyzeAndAskNext,
   parseRequirements,
   searchRestaurants,
   consumeSearchStream,
@@ -27,23 +28,13 @@ export const Route = createFileRoute("/chat")({
   component: ChatPage,
 });
 
-type KeyField = "cuisine" | "visitTime" | "budget";
-const KEY_FIELDS: KeyField[] = ["cuisine", "visitTime", "budget"];
-
-const FIXED_CHIPS_ZH: Record<Exclude<KeyField, "cuisine">, string[]> = {
-  visitTime: ["现在", "今晚", "明天午餐", "明天晚上", "周末"],
-  budget: ["100 元内", "100-200", "200-400", "400+", "不限"],
-};
-const FIXED_CHIPS_EN: Record<Exclude<KeyField, "cuisine">, string[]> = {
-  visitTime: ["Now", "Tonight", "Tomorrow lunch", "Tomorrow dinner", "Weekend"],
-  budget: ["Under $20", "$20-40", "$40-80", "$80+", "No limit"],
-};
+const MAX_CLARIFY_ROUNDS = 5;
 
 // ---- progress helpers ----
 type ProgressState = {
   phase: "startingUp" | "places" | "reviews" | "rank" | "photos" | "done";
   percent: number;
-  detail: string; // e.g. "3 / 12"
+  detail: string;
 };
 
 function chunkToProgress(chunk: SearchStreamChunk, prev: ProgressState): ProgressState {
@@ -66,7 +57,6 @@ function chunkToProgress(chunk: SearchStreamChunk, prev: ProgressState): Progres
   }
   if (chunk.type === "review-progress" || chunk.type === "tabelog-progress" || chunk.type === "yelp-progress") {
     const ratio = chunk.total ? chunk.done / chunk.total : 0;
-    // reviews phase covers 30% → 78%
     const percent = 30 + Math.round(ratio * 48);
     return { phase: "reviews", percent: Math.max(prev.percent, percent), detail: `${chunk.done} / ${chunk.total}` };
   }
@@ -78,19 +68,23 @@ function ChatPage() {
   const { lang, t } = useT();
   const city = useQueryStore((s) => s.city);
   const chatHistory = useQueryStore((s) => s.chatHistory);
-  const askedFields = useQueryStore((s) => s.askedFields);
-  const skippedFields = useQueryStore((s) => s.skippedFields);
   const extracted = useQueryStore((s) => s.extracted);
   const freeText = useQueryStore((s) => s.freeText);
+  const roundsUsed = useQueryStore((s) => s.roundsUsed);
+  const currentSuggestions = useQueryStore((s) => s.currentSuggestions);
+  const analysisSummary = useQueryStore((s) => s.analysisSummary);
   const setChatHistory = useQueryStore((s) => s.setChatHistory);
-  const setAskedFields = useQueryStore((s) => s.setAskedFields);
-  const setSkippedFields = useQueryStore((s) => s.setSkippedFields);
   const setExtracted = useQueryStore((s) => s.setExtracted);
   const setFreeText = useQueryStore((s) => s.setFreeText);
   const setParsed = useQueryStore((s) => s.setParsed);
   const setResults = useQueryStore((s) => s.setResults);
+  const setRoundsUsed = useQueryStore((s) => s.setRoundsUsed);
+  const setCurrentQuestion = useQueryStore((s) => s.setCurrentQuestion);
+  const setCurrentSuggestions = useQueryStore((s) => s.setCurrentSuggestions);
+  const setAnalysisSummary = useQueryStore((s) => s.setAnalysisSummary);
 
   const extractFn = useServerFn(extractKeyFields);
+  const analyzeFn = useServerFn(analyzeAndAskNext);
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
 
@@ -112,46 +106,45 @@ function ChatPage() {
 
   if (!city) return null;
 
-  // Which fields are still missing after all inputs so far?
-  const missingFields = (ext: ExtractedKeyFields | null, asked: string[], skipped: string[]): KeyField[] => {
-    const has: Record<KeyField, boolean> = {
-      cuisine: !!ext?.cuisine,
-      visitTime: !!ext?.visitTime,
-      budget: !!ext?.budget,
-    };
-    const askedSet = new Set(asked);
-    const skippedSet = new Set(skipped);
-    return KEY_FIELDS.filter((f) => !has[f] && !askedSet.has(f) && !skippedSet.has(f));
-  };
-
-  const questionFor = (f: KeyField): string =>
-    ({
-      cuisine: t("chat.q.cuisine"),
-      visitTime: t("chat.q.visitTime"),
-      budget: t("chat.q.budget"),
-    }[f]);
-
-  const chipsFor = (f: KeyField, ext: ExtractedKeyFields | null): string[] => {
-    if (f === "cuisine") {
-      const s = ext?.cuisineSuggestions ?? [];
-      if (s.length > 0) return s;
-      return lang === "en"
-        ? ["Japanese", "Chinese", "Western", "Southeast Asian", "Cafe"]
-        : ["日料", "中餐", "西餐", "东南亚", "咖啡简餐"];
-    }
-    return (lang === "en" ? FIXED_CHIPS_EN : FIXED_CHIPS_ZH)[f];
-  };
-
-  const advance = async (ext: ExtractedKeyFields | null, history: ChatMsg[], asked: string[], skipped: string[]) => {
-    const missing = missingFields(ext, asked, skipped);
-    if (missing.length === 0) {
-      await runSearch(ext, history);
+  const askNext = async (history: ChatMsg[], usedSoFar: number, extForSearch: ExtractedKeyFields | null) => {
+    if (usedSoFar >= MAX_CLARIFY_ROUNDS) {
+      const notice: ChatMsg = { role: "ai", text: t("chat.autoSearchNotice") };
+      const nextHistory = [...history, notice];
+      setChatHistory(nextHistory);
+      setCurrentQuestion(null);
+      setCurrentSuggestions([]);
+      await runSearch(extForSearch, nextHistory);
       return;
     }
-    const next = missing[0];
-    const aiMsg: ChatMsg = { role: "ai", text: questionFor(next), field: next };
-    setChatHistory([...history, aiMsg]);
-    setFreeInput("");
+    try {
+      const res = await analyzeFn({
+        data: {
+          city,
+          uiLanguage: lang,
+          history: history.map((m) => ({ role: m.role, text: m.text })),
+          roundsUsed: usedSoFar,
+          maxRounds: MAX_CLARIFY_ROUNDS,
+        },
+      });
+      if (res.summary) setAnalysisSummary(res.summary);
+      if (res.done || !res.question) {
+        setCurrentQuestion(null);
+        setCurrentSuggestions([]);
+        await runSearch(extForSearch, history);
+        return;
+      }
+      const aiMsg: ChatMsg = { role: "ai", text: res.question };
+      const nextHistory = [...history, aiMsg];
+      setChatHistory(nextHistory);
+      setCurrentQuestion(res.question);
+      setCurrentSuggestions(res.suggestions);
+      setRoundsUsed(usedSoFar + 1);
+      setFreeInput("");
+    } catch (err) {
+      // Fallback: just search
+      console.warn("askNext failed", err);
+      await runSearch(extForSearch, history);
+    }
   };
 
   const runIntro = async (rawText: string) => {
@@ -161,12 +154,15 @@ function ChatPage() {
     setThinking(true);
     setFreeText(text);
     try {
-      const ext = await extractFn({ data: { city, freeText: text, uiLanguage: lang } });
-      setExtracted(ext);
+      // Kick off extract (for identified strip / parseRequirements) but don't block on it.
+      const extPromise = extractFn({ data: { city, freeText: text, uiLanguage: lang } }).catch(() => null);
       const userMsg: ChatMsg = { role: "user", text };
       const history: ChatMsg[] = [userMsg];
       setChatHistory(history);
-      await advance(ext, history, askedFields, skippedFields);
+      setRoundsUsed(0);
+      const ext = await extPromise;
+      if (ext) setExtracted(ext);
+      await askNext(history, 0, ext);
     } catch (err) {
       setError(err instanceof Error ? err.message : t("err.fetchFailed"));
     } finally {
@@ -180,36 +176,36 @@ function ChatPage() {
   };
 
   const submitAnswer = async (text: string, opts: { skipped?: boolean } = {}) => {
-    // find the current asked field: last AI msg's field
-    const lastAi = [...chatHistory].reverse().find((m) => m.role === "ai");
-    const field = (lastAi?.field ?? null) as KeyField | null;
-    if (!field) return;
     const cleaned = text.trim();
     if (!cleaned && !opts.skipped) return;
+    if (thinking) return;
 
     const userMsg: ChatMsg = {
       role: "user",
       text: opts.skipped ? (lang === "en" ? "(skipped)" : "（跳过）") : cleaned,
-      field,
     };
     const nextHistory = [...chatHistory, userMsg];
-    const nextAsked = [...askedFields, field];
-    const nextSkipped = opts.skipped ? [...skippedFields, field] : skippedFields;
-    // patch extracted with the user's answer (unless skipped)
-    const nextExtracted: ExtractedKeyFields = {
-      cuisine: extracted?.cuisine ?? null,
-      visitTime: extracted?.visitTime ?? null,
-      budget: extracted?.budget ?? null,
-      cuisineSuggestions: extracted?.cuisineSuggestions ?? [],
-    };
-    if (!opts.skipped) nextExtracted[field] = cleaned;
-
     setChatHistory(nextHistory);
-    setAskedFields(nextAsked);
-    if (opts.skipped) setSkippedFields(nextSkipped);
-    setExtracted(nextExtracted);
     setFreeInput("");
-    await advance(nextExtracted, nextHistory, nextAsked, nextSkipped);
+    setCurrentQuestion(null);
+    setCurrentSuggestions([]);
+    setThinking(true);
+    setError(null);
+    try {
+      // Refresh extracted from full free-text (best-effort)
+      const combined = nextHistory
+        .filter((m) => m.role === "user")
+        .map((m) => m.text)
+        .join("；");
+      const extPromise = extractFn({ data: { city, freeText: combined, uiLanguage: lang } }).catch(() => null);
+      const ext = await extPromise;
+      if (ext) setExtracted(ext);
+      await askNext(nextHistory, roundsUsed, ext ?? extracted);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("err.fetchFailed"));
+    } finally {
+      setThinking(false);
+    }
   };
 
   const onFreeSubmit = (e: FormEvent) => {
@@ -223,12 +219,12 @@ function ChatPage() {
     setProgress({ phase: "startingUp", percent: 5, detail: "" });
     setError(null);
     try {
-      // Compose free-text for parseRequirements: original + explicit key-field lines
+      const userTurns = history.filter((m) => m.role === "user").map((m) => m.text);
       const answered: string[] = [];
       if (ext?.cuisine) answered.push(lang === "en" ? `Cuisine: ${ext.cuisine}` : `品类：${ext.cuisine}`);
       if (ext?.visitTime) answered.push(lang === "en" ? `When: ${ext.visitTime}` : `时间：${ext.visitTime}`);
       if (ext?.budget) answered.push(lang === "en" ? `Budget: ${ext.budget}` : `预算：${ext.budget}`);
-      const combined = [freeText, ...answered].filter(Boolean).join("；");
+      const combined = [freeText, ...userTurns, ...answered].filter(Boolean).join("；");
       setFreeText(combined);
 
       const parsed = await parseFn({
@@ -251,7 +247,6 @@ function ChatPage() {
       });
       setProgress({ phase: "done", percent: 100, detail: "" });
       setResults(response);
-      void history;
       navigate({ to: "/results" });
     } catch (err) {
       const msg = err instanceof Error ? err.message : t("err.fetchFailed");
@@ -260,8 +255,15 @@ function ChatPage() {
     }
   };
 
-  // Identified strip
   const identifiedRow = () => {
+    if (analysisSummary) {
+      return (
+        <div className="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+          <span>📍 {city}</span>
+          <span>💡 {t("chat.summary.label")}：<span className="text-foreground">{analysisSummary}</span></span>
+        </div>
+      );
+    }
     const val = (v: string | null | undefined) => v || t("chat.identified.pending");
     return (
       <div className="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
@@ -274,9 +276,9 @@ function ChatPage() {
   };
 
   const showIntro = chatHistory.length === 0 && !thinking && !searching;
-  const lastAi = [...chatHistory].reverse().find((m) => m.role === "ai");
-  const lastAiField = (lastAi?.field ?? null) as KeyField | null;
-  const awaitingAnswer = !!lastAi && chatHistory[chatHistory.length - 1].role === "ai";
+  const lastMsg = chatHistory[chatHistory.length - 1];
+  const awaitingAnswer = !!lastMsg && lastMsg.role === "ai" && roundsUsed > 0 && roundsUsed <= MAX_CLARIFY_ROUNDS;
+  const roundsRemaining = Math.max(0, MAX_CLARIFY_ROUNDS - roundsUsed);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -355,29 +357,46 @@ function ChatPage() {
               <div ref={bottomRef} />
             </div>
 
-            {awaitingAnswer && lastAiField && !thinking && !searching && (
+            {awaitingAnswer && !thinking && !searching && (
               <div className="space-y-4 border-t border-border/60 pt-5">
-                <div className="flex flex-wrap gap-2 justify-center">
-                  {chipsFor(lastAiField, extracted).map((chip) => (
-                    <Button
-                      key={chip}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => submitAnswer(chip)}
-                    >
-                      {chip}
-                    </Button>
-                  ))}
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => submitAnswer("", { skipped: true })}
-                  >
-                    {t("chat.skip")}
-                  </Button>
+                <div className="text-xs text-muted-foreground text-center">
+                  {t("chat.roundsHint", { n: roundsRemaining })}
                 </div>
+                {currentSuggestions.length > 0 && (
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {currentSuggestions.map((chip) => (
+                      <Button
+                        key={chip}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => submitAnswer(chip)}
+                      >
+                        {chip}
+                      </Button>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => submitAnswer("", { skipped: true })}
+                    >
+                      {t("chat.skip")}
+                    </Button>
+                  </div>
+                )}
+                {currentSuggestions.length === 0 && (
+                  <div className="flex justify-center">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => submitAnswer("", { skipped: true })}
+                    >
+                      {t("chat.skip")}
+                    </Button>
+                  </div>
+                )}
 
                 <div className="py-2">
                   <VoiceInput
@@ -454,27 +473,17 @@ function SearchProgressOverlay({
           </div>
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
             <span>{phaseLabel[progress.phase]}</span>
-            <span>
-              {progress.percent}% {progress.detail ? `· ${progress.detail}` : ""}
-            </span>
+            <span>{progress.detail}</span>
           </div>
         </div>
 
-        <div className="space-y-2 text-xs">
-          <p className="uppercase tracking-wider text-muted-foreground">{t("chat.identified")}</p>
-          <div className="flex flex-wrap gap-1.5">
-            <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">📍 {city}</span>
-            {extracted?.cuisine && (
-              <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">🍱 {extracted.cuisine}</span>
-            )}
-            {extracted?.visitTime && (
-              <span className="px-2 py-0.5 rounded-full bg-muted text-foreground border border-border">⏰ {extracted.visitTime}</span>
-            )}
-            {extracted?.budget && (
-              <span className="px-2 py-0.5 rounded-full bg-muted text-foreground border border-border">💰 {extracted.budget}</span>
-            )}
+        {extracted && (
+          <div className="text-xs text-muted-foreground space-y-1">
+            {extracted.cuisine && <div>🍱 {extracted.cuisine}</div>}
+            {extracted.visitTime && <div>⏰ {extracted.visitTime}</div>}
+            {extracted.budget && <div>💰 {extracted.budget}</div>}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
