@@ -3452,7 +3452,7 @@ ${historyLines || "（空）"}
       const parsed = ClarifyOutput.parse(output);
 
       if (parsed.action === "ask") {
-        if (!parsed.field || !remaining.includes(parsed.field)) {
+        if (!parsed.field || !(FIELD_ORDER as readonly string[]).includes(parsed.field) || !remaining.includes(parsed.field as ClarifyField)) {
           return deterministicFallback(data.askedFields, data.skippedFields, data.roundIndex, data.uiLanguage);
         }
         const suggestions = (parsed.suggestions ?? [])
