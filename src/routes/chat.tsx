@@ -566,10 +566,13 @@ function ChatPage() {
 
       {searching && (
         <SearchProgressOverlay
-          progress={progress}
+          currentStage={currentStage}
+          displayProgress={displayProgress}
           city={city}
           extracted={extracted}
+          analysisSummary={analysisSummary}
           t={t}
+          lang={lang}
         />
       )}
     </div>
@@ -577,53 +580,112 @@ function ChatPage() {
 }
 
 function SearchProgressOverlay({
-  progress,
+  currentStage,
+  displayProgress,
   city,
   extracted,
+  analysisSummary,
   t,
+  lang,
 }: {
-  progress: ProgressState;
+  currentStage: StageKey | null;
+  displayProgress: number;
   city: string;
   extracted: ExtractedKeyFields | null;
+  analysisSummary: string;
   t: (k: string, v?: Record<string, string | number>) => string;
+  lang: "zh" | "en";
 }) {
-  const phaseLabel: Record<ProgressState["phase"], string> = {
-    startingUp: t("chat.progress.startingUp"),
-    places: t("chat.progress.places", { city }),
-    reviews: t("chat.progress.reviews"),
-    rank: t("chat.progress.rank"),
-    photos: t("chat.progress.photos"),
-    done: t("chat.progress.done"),
-  };
+  const stages: { key: StageKey; label: string; hint: string }[] = [
+    { key: "parse", label: t("stage.parse.label"), hint: t("stage.parse.hint") },
+    {
+      key: "search",
+      label: t("stage.search.label", { city: city || t("stage.search.placeholder") }),
+      hint: t("stage.search.hintDeep"),
+    },
+    { key: "reviews", label: t("stage.reviews.label"), hint: t(reviewsHintKey(city)) },
+    { key: "rank", label: t("stage.rank.label"), hint: t("stage.rank.hintDeep") },
+  ];
+  const currentIndex = currentStage ? STAGE_ORDER.indexOf(currentStage) : -1;
+
+  const cuisineLabel = lang === "en" ? "Cuisine" : "品类";
+  const timeLabel = lang === "en" ? "When" : "时间";
+  const budgetLabel = lang === "en" ? "Budget" : "预算";
+  const hasIdentified = !!(extracted?.cuisine || extracted?.visitTime || extracted?.budget) || !!city;
+
   return (
     <div className="fixed inset-0 z-50 bg-background/85 backdrop-blur-sm flex items-center justify-center px-4">
-      <div className="bg-card border border-border rounded-2xl px-6 py-6 shadow-lg w-full max-w-md space-y-5">
+      <div className="bg-card border border-border rounded-2xl p-6 shadow-lg w-full max-w-md space-y-4">
         <div className="flex items-center gap-2">
           <Loader2 className="w-5 h-5 animate-spin text-primary" />
           <h2 className="text-base font-semibold">{t("chat.progress.title")}</h2>
         </div>
 
-        <div>
-          <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
-            <div
-              className="h-full bg-primary transition-all duration-500 ease-out"
-              style={{ width: `${Math.max(2, Math.min(100, progress.percent))}%` }}
-            />
-          </div>
-          <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span>{phaseLabel[progress.phase]}</span>
-            <span>{progress.detail}</span>
-          </div>
-        </div>
-
-        {extracted && (
-          <div className="text-xs text-muted-foreground space-y-1">
-            {extracted.cuisine && <div>🍱 {extracted.cuisine}</div>}
-            {extracted.visitTime && <div>⏰ {extracted.visitTime}</div>}
-            {extracted.budget && <div>💰 {extracted.budget}</div>}
+        {hasIdentified && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-1.5 text-xs">
+              {city && (
+                <span className="rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5">
+                  📍 {city}
+                </span>
+              )}
+              {extracted?.cuisine && (
+                <span className="rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5">
+                  🍱 {cuisineLabel}: {extracted.cuisine}
+                </span>
+              )}
+              {extracted?.visitTime && (
+                <span className="rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5">
+                  ⏰ {timeLabel}: {extracted.visitTime}
+                </span>
+              )}
+              {extracted?.budget && (
+                <span className="rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5">
+                  💰 {budgetLabel}: {extracted.budget}
+                </span>
+              )}
+            </div>
+            {analysisSummary && (
+              <p className="text-xs text-muted-foreground italic">
+                💡 {t("chat.summary.label")}: {analysisSummary}
+              </p>
+            )}
           </div>
         )}
+
+        <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-4">
+          <Progress value={displayProgress} className="h-1" />
+          <ul className="space-y-3">
+            {stages.map((s, i) => {
+              const state = i < currentIndex ? "done" : i === currentIndex ? "active" : "todo";
+              return (
+                <li key={s.key} className="flex items-start gap-3">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+                    {state === "done" && <Check className="h-4 w-4 text-primary" />}
+                    {state === "active" && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+                    {state === "todo" && <span className="h-3 w-3 rounded-full border border-border" />}
+                  </span>
+                  <div className="min-w-0">
+                    <p
+                      className={
+                        state === "todo"
+                          ? "text-sm text-muted-foreground"
+                          : "text-sm font-medium text-foreground"
+                      }
+                    >
+                      {s.label}
+                    </p>
+                    {state === "active" && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">{s.hint}</p>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       </div>
     </div>
   );
 }
+
