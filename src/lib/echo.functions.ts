@@ -253,6 +253,19 @@ function cuisineExplicitlyMentioned(cuisine: string, sourceText: string): boolea
   });
 }
 
+function extractExplicitCuisinesFromText(sourceText: string): string[] {
+  const normalizedSource = normalizeCuisineText(sourceText);
+  const found: string[] = [];
+  for (const group of CUISINE_ALIASES) {
+    const hit = group.find((alias) => {
+      const normalizedAlias = normalizeCuisineText(alias);
+      return normalizedAlias && normalizedSource.includes(normalizedAlias);
+    });
+    if (hit) found.push(hit);
+  }
+  return uniqueStrings(found);
+}
+
 function sanitizeParsedCuisines(
   parsed: z.infer<typeof ParsedSchema>,
   selectedCuisines: string[],
@@ -260,7 +273,10 @@ function sanitizeParsedCuisines(
 ): z.infer<typeof ParsedSchema> {
   const cuisines = selectedCuisines.length
     ? selectedCuisines
-    : parsed.cuisines.filter((c) => cuisineExplicitlyMentioned(c, freeText));
+    : uniqueStrings([
+        ...extractExplicitCuisinesFromText(freeText),
+        ...parsed.cuisines.filter((c) => cuisineExplicitlyMentioned(c, freeText)),
+      ]);
   return {
     ...parsed,
     cuisines: uniqueStrings(cuisines),
