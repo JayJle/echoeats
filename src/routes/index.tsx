@@ -50,7 +50,7 @@ function StepCity() {
   const continueWithCity = (candidate: CityValidationCandidate) => {
     setCity(candidate.displayName);
     setCandidates([]);
-    navigate({ to: "/cuisines" });
+    navigate({ to: "/requirements" });
   };
 
   const handleResult = (result: CityValidationResult) => {
