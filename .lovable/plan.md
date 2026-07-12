@@ -1,48 +1,76 @@
 ## 目标
-将 /chat 的澄清流程从"固定 3 个硬字段（品类/时间/预算）逐个问"改成"AI 实时分析、动态决定下一问"，最多 5 轮澄清；每轮用户输入后由 LLM 判断是否还需要继续追问，判断的重点放在偏好/环境/菜品/忌口这类软信号上（沿用上一轮已改的 hint 方向）。
+把 `/chat` 的搜索进度 UI 完全恢复为原 `requirements.tsx` 里那套设计（stepper 卡片 + 细长平滑进度条 + RAF 匀速动画），同时把 AI 已识别的结构化需求（品类/时间/预算 + LLM 摘要）也在进度卡片里展示出来。
 
-## 交互流程
-1. 首屏：用户语音+文字输入初始描述（不变）。
-2. 提交后调用新的 `analyzeAndAskNext`（替代当前"抽取三字段 + missingFields 顺序问"逻辑）。LLM 返回：
-   - `done: true` → 直接进入搜索
-   - `done: false, question, suggestions[], summary` → 展示这一问 + 芯片 + 语音/文本兜底
-3. 用户每次回答后再次调用 `analyzeAndAskNext`，传入整段对话历史 + 已用轮数。
-4. 已用澄清轮数达到 5 → 强制 `done`，直接搜索（即使 LLM 认为还能问）。
-5. 用户点"跳过"→ 本轮不算作有效信息，但计入轮数。
+## 之前的设计（原 `requirements.tsx`）
+- **容器**：`rounded-xl border border-border bg-muted/30 p-4 space-y-4` 卡片。
+- **顶部**：`<Progress value={displayProgress} className="h-1" />` 细进度条。
+- **底部**：竖排 stage 列表（`<ul className="space-y-3">`），每行：
+  - 状态图标：`Check`（完成，primary）/ `Loader2` spin（进行中）/ 空心小圆（待办）
+  - 主文案：done/active 加粗，todo muted
+  - active 时下方多一行 hint（`text-xs text-muted-foreground`）
+- **4 stage**：`parse` → `search` → `reviews` → `rank`（复用 dict 里已有的 `stage.*` key）
+- **RAF 匀速+抖动+软上限动画**：
+  - `STAGE_RANGES.deep = { parse:[0,12], search:[12,25], reviews:[25,80], rank:[80,99] }`
+  - `STAGE_EXPECTED_MS.deep = { parse:4000, search:8000, reviews:30000, rank:8000 }`
+  - `v = (hi-lo)/expectedMs * jitterFactor`（±20%，~500ms 换）
+  - `ceiling = min(target, hi-0.5)`；display<ceiling 正常速度，否则 1/6 速续爬，永不停
+  - `display = min(display, hi-0.1)`
+  - 收尾 target=100，expectedMs=600，RAF 等 display≥99.5 再 navigate（800ms 兜底）
 
-## 服务端改动 (`src/lib/echo.functions.ts`)
-新增 `analyzeAndAskNext` server fn：
-- 输入：`{ city, uiLanguage, history: {role, text}[], roundsUsed: number, maxRounds: 5 }`
-- 内部 prompt：给 LLM 完整对话，让它判断是否已经足够搜出好餐厅；重点关注偏好、氛围环境、想吃/忌口的菜、场合、同行人。若不够，产出下一问（≤20 字）和 3–5 个短芯片（≤6 字，本地化）。剩余轮数越少越保守（`roundsRemaining` 传给 prompt）。
-- Output schema（保持宽松，避免 Gemini/OpenAI 报错）：
-  ```
-  { done: boolean, question: string|null, suggestions: string[], summary: string }
-  ```
-- 兜底：LLM 出错或返回不合规 → `{ done: true }`，让用户少等一步就进入搜索。
-- 保留旧 `extractKeyFields`（`parseRequirements` 后段仍用得到品类/时间/预算做展示或搜索参数；也可后续清理）。
+## 后端事件 → stage 映射
+后端 chunk：`places / places-done / tabelog / yelp / rank / photos` + `review-progress / tabelog-progress / yelp-progress`。
+| 事件 | 处理 |
+|---|---|
+| runSearch 开始 | `parse` stage |
+| `stage: places` | 进入 `search`，target 推到 search 段中点 |
+| `stage: places-done` | 仍 `search`，target 推到 search 段尾 |
+| `stage: tabelog` / `yelp` | 进入 `reviews` |
+| `*-progress` | 用 `done/total` 在 reviews 段内计算真实 target |
+| `stage: rank` | 进入 `rank` |
+| `stage: photos` | 保持 `rank`，target 推到 rank 段后段 |
+| 最终响应 | target=100，等动画走完再跳转 |
+
+## 展示已识别的结构化需求
+在进度卡片顶部（Progress bar 之上）加一块「已理解」摘要区：
+- 一行 chip 列表（`flex flex-wrap gap-2 text-xs`），只在有值时显示：
+  - 📍 city（始终有）
+  - 🍱 `extracted.cuisine`
+  - ⏰ `extracted.visitTime`
+  - 💰 `extracted.budget`
+  - chip 样式：`rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5`
+- 若 `analysisSummary` 非空，独占一行 `text-xs text-muted-foreground italic`，前缀 `💡 {t("chat.summary.label")}：`。
+- 无任何识别值时整块隐藏，避免空占位。
 
 ## 前端改动 (`src/routes/chat.tsx`)
-- 移除 `KEY_FIELDS / FIXED_CHIPS / missingFields / questionFor / chipsFor` 那套硬编码，改成状态：
-  - `currentQuestion: string | null`
-  - `currentSuggestions: string[]`
-  - `roundsUsed: number`（每次 AI 追问 +1）
-  - `summary: string`（LLM 给的"已理解"一句话）
-- `advance()` 改名 `askNext()`：调用 `analyzeAndAskNextFn`，根据返回决定推入 AI 消息 or 调 `runSearch`。
-- `submitAnswer()`：不再依赖 `lastAi.field`；直接把用户回答 append 到 chat history 然后 `askNext()`。跳过的消息标 `(跳过)` 一样计入 roundsUsed。
-- 到达 5 轮强制搜索时，AI 消息里加一句"信息够啦，帮你搜~"再跳转。
-- Identified 顶栏改为显示 LLM 的 `summary`（长文本），若无则回退到旧的三字段行。
-- 芯片区、语音+文本兜底 UI 结构不变（用户强调过的"语音大头 + 文字兜底"完全保留）。
+- 删除现有 `ProgressState / chunkToProgress` 单条百分比实现和当前 `SearchProgressOverlay`。
+- 新增：
+  - `type StageKey = "parse" | "search" | "reviews" | "rank"`
+  - refs：`displayProgressRef / targetProgressRef / stageExpectedMsRef / jitterRef / rafProgressRef / lastFrameAtRef`
+  - state：`currentStage: StageKey | null`, `displayProgress: number`
+  - helpers：`STAGE_RANGES`、`STAGE_EXPECTED_MS`、`setRangeForStage`、`startProgressLoop / stopProgressLoop`、`computeReviewsTarget(done,total)`、`reviewsHintKey(city)`
+- `runSearch` 改写：
+  1. reset refs → `startProgressLoop` → `setCurrentStage("parse")` → `setRangeForStage("parse")`
+  2. 调 `parseFn` 期间保持 parse
+  3. 调 `searchFn` 拿 iterator → 在 `consumeSearchStream` 回调里按上表推进 stage/target
+  4. 完成后 target=100，RAF 等动画到位再 `navigate("/results")`（800ms 兜底）
+  5. 组件卸载 / 错误 → `stopProgressLoop`
+- `SearchProgressOverlay` 组件重写：
+  - 外层保留全屏 backdrop（`fixed inset-0 bg-background/85 backdrop-blur-sm`）
+  - 内层：`rounded-2xl border bg-card p-6 space-y-4 w-full max-w-md shadow-lg`
+  - 顶部标题：`chat.progress.title` + spinner 图标
+  - **新加"已理解"区**（见上）
+  - `<Progress value={displayProgress} className="h-1" />`
+  - stage 列表（Check / Loader2 / 空心圆 三态）
+  - 每个 active stage 显示 hint（其中 `search` 用 `stage.search.label` 里的 `{city}` 插值，`reviews` 用 `reviewsHintKey(city)` 决定 jp/other 版本）
 
-## 文案 (`src/lib/i18n/dict.ts`)
-- 新增：`chat.roundsHint`（如"最多再聊 {n} 轮"）、`chat.summary.label`（"已理解"）、`chat.autoSearchNotice`（"信息够啦，开始搜索"）中英两版。
-- `chat.q.cuisine/visitTime/budget` 保留但不再使用（可暂留避免连锁改动）。
+## i18n
+- 复用现有：`stage.parse.label/hint`、`stage.search.label/placeholder/hintDeep`、`stage.reviews.label/hint.jp/hint.other`、`stage.rank.label/hintDeep`；`chat.progress.title`；`chat.summary.label`。
+- 移除的旧 chat.progress.* 单条式文案暂留在 dict 不动。
 
-## Store (`src/lib/store.ts`)
-- 新增持久字段：`currentQuestion`, `currentSuggestions`, `roundsUsed`, `analysisSummary`；对应 setters。
-- 保留 `extracted`（仍用于后端 parseRequirements 拼装）。
-- 每次开始新会话时重置这些字段（`resetChat` 里加）。
+## 依赖
+- `import { Progress } from "@/components/ui/progress"`（已存在）
+- `import { Check, Loader2 } from "lucide-react"`
 
-## 关键取舍
-- 上限硬编码为 5：常量 `MAX_CLARIFY_ROUNDS = 5`，放在 chat.tsx 顶部方便未来调整。
-- LLM 判断错误的成本控制：任何异常都回退到"直接搜索"，避免卡住用户。
-- 不删旧的 `extractKeyFields`，避免影响 identified 展示与 parseRequirements 的兼容路径。
+## 不改动
+- 多轮澄清逻辑（`runIntro / submitAnswer / askNext / analyzeAndAskNext`）保持不变
+- store、其它路由、其它组件保持不变
