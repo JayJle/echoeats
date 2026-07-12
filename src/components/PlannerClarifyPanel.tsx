@@ -13,7 +13,9 @@ import {
   type PlannerField,
   type PlannerResponse,
   type PlannerTurn,
+  type ReaskInfo,
 } from "@/lib/planner.functions";
+
 
 type Props = {
   city: string;
