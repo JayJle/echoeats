@@ -304,7 +304,14 @@ function ChatPage() {
               className="min-h-[120px] text-base resize-none"
               maxLength={500}
             />
-            <div className="flex justify-end">
+            <div className="flex items-center justify-between gap-2">
+              <MicButton
+                onTranscript={(text) =>
+                  setIntroText((prev) => (prev ? `${prev} ${text}` : text).slice(0, 500))
+                }
+                disabled={thinking}
+                size="icon"
+              />
               <Button type="submit" size="lg" disabled={!introText.trim() || thinking}>
                 {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
               </Button>
