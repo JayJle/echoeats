@@ -3413,8 +3413,8 @@ Rules:
 2. "field" MUST be one of remaining askable fields. Never re-ask an answered or skipped field.
 3. Pick the most useful next field given prior answers (cuisine first if unknown; else biggest gap).
 4. If prior messages already give enough to search (cuisine + at least one of time/budget/vibe, or a rich free-form sentence), set action="search".
-5. Otherwise action="ask": write a short warm natural question (<= 12 words). Provide 4–6 short chip suggestions (<= 3 words each), localized to the city and prior answers. allowSkip=true.
-6. Return ONLY JSON matching the schema.`
+5. Otherwise action="ask": write a short warm natural question (<= 12 words). "suggestions" MUST be an array of 4–6 short strings (<= 3 words each), localized to the city and prior answers — never null, never empty. allowSkip=true.
+6. Return ONLY JSON. Example: {"action":"ask","field":"budget","question":"What's your budget?","suggestions":["Under $30","$30-60","$60-120","$120+"],"allowSkip":true}`
       : `你是 Echo Eats 的餐厅发现 Planner。请决定"下一步问哪一个字段"，或者直接开始搜索。
 
 城市：${data.city}
