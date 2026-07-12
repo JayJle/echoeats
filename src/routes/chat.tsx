@@ -1,10 +1,11 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState, FormEvent } from "react";
-import { Loader2, Send } from "lucide-react";
+import { Check, Loader2, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Progress } from "@/components/ui/progress";
 import { useQueryStore, type ChatMsg, type ExtractedKeyFields } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { LanguageToggle } from "@/components/LanguageToggle";
@@ -30,38 +31,32 @@ export const Route = createFileRoute("/chat")({
 
 const MAX_CLARIFY_ROUNDS = 5;
 
-// ---- progress helpers ----
-type ProgressState = {
-  phase: "startingUp" | "places" | "reviews" | "rank" | "photos" | "done";
-  percent: number;
-  detail: string;
+// ---- stepper progress ----
+type StageKey = "parse" | "search" | "reviews" | "rank";
+
+const STAGE_RANGES: Record<StageKey, [number, number]> = {
+  parse: [0, 12],
+  search: [12, 25],
+  reviews: [25, 80],
+  rank: [80, 99],
 };
 
-function chunkToProgress(chunk: SearchStreamChunk, prev: ProgressState): ProgressState {
-  if (chunk.type === "stage") {
-    switch (chunk.stage) {
-      case "places":
-        return { phase: "places", percent: 15, detail: "" };
-      case "places-done":
-        return { phase: "places", percent: 25, detail: chunk.count ? `${chunk.count}` : "" };
-      case "tabelog":
-      case "yelp":
-        return { phase: "reviews", percent: Math.max(prev.percent, 30), detail: chunk.total ? `0 / ${chunk.total}` : "" };
-      case "rank":
-        return { phase: "rank", percent: 80, detail: "" };
-      case "photos":
-        return { phase: "photos", percent: 92, detail: "" };
-      default:
-        return prev;
-    }
-  }
-  if (chunk.type === "review-progress" || chunk.type === "tabelog-progress" || chunk.type === "yelp-progress") {
-    const ratio = chunk.total ? chunk.done / chunk.total : 0;
-    const percent = 30 + Math.round(ratio * 48);
-    return { phase: "reviews", percent: Math.max(prev.percent, percent), detail: `${chunk.done} / ${chunk.total}` };
-  }
-  return prev;
+const STAGE_EXPECTED_MS: Record<StageKey, number> = {
+  parse: 4000,
+  search: 8000,
+  reviews: 30000,
+  rank: 8000,
+};
+
+const STAGE_ORDER: StageKey[] = ["parse", "search", "reviews", "rank"];
+
+const JP_CITIES = ["东京", "大阪", "京都", "名古屋", "福冈", "札幌", "横滨", "tokyo", "osaka", "kyoto", "nagoya", "fukuoka", "sapporo", "yokohama"];
+function reviewsHintKey(city: string): string {
+  const c = (city || "").toLowerCase();
+  if (JP_CITIES.some((x) => c.includes(x.toLowerCase()))) return "stage.reviews.hint.jp";
+  return "stage.reviews.hint.other";
 }
+
 
 function ChatPage() {
   const navigate = useNavigate();
@@ -90,11 +85,77 @@ function ChatPage() {
 
   const [thinking, setThinking] = useState(false);
   const [searching, setSearching] = useState(false);
-  const [progress, setProgress] = useState<ProgressState>({ phase: "startingUp", percent: 5, detail: "" });
+  const [currentStage, setCurrentStage] = useState<StageKey | null>(null);
+  const [displayProgress, setDisplayProgress] = useState(0);
   const [introText, setIntroText] = useState("");
   const [freeInput, setFreeInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // progress animation refs
+  const displayProgressRef = useRef(0);
+  const targetProgressRef = useRef(0);
+  const stageExpectedMsRef = useRef<number>(STAGE_EXPECTED_MS.parse);
+  const jitterRef = useRef({ at: 0, factor: 1 });
+  const rafProgressRef = useRef<number | null>(null);
+  const lastFrameAtRef = useRef<number>(0);
+  const currentStageRef = useRef<StageKey | null>(null);
+
+  const setRangeForStage = (stage: StageKey) => {
+    const [lo] = STAGE_RANGES[stage];
+    stageExpectedMsRef.current = STAGE_EXPECTED_MS[stage];
+    targetProgressRef.current = Math.max(targetProgressRef.current, lo);
+    currentStageRef.current = stage;
+    setCurrentStage(stage);
+  };
+
+  const bumpTarget = (v: number) => {
+    targetProgressRef.current = Math.max(targetProgressRef.current, v);
+  };
+
+  const startProgressLoop = () => {
+    if (rafProgressRef.current != null) return;
+    lastFrameAtRef.current = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.max(0, now - lastFrameAtRef.current);
+      lastFrameAtRef.current = now;
+      // refresh jitter every ~500ms
+      if (now - jitterRef.current.at > 500) {
+        jitterRef.current = { at: now, factor: 0.8 + Math.random() * 0.4 };
+      }
+      const stage = currentStageRef.current;
+      if (stage) {
+        const [lo, hi] = STAGE_RANGES[stage];
+        const expected = Math.max(500, stageExpectedMsRef.current);
+        const vBase = (hi - lo) / expected;
+        const v = vBase * jitterRef.current.factor;
+        const target = targetProgressRef.current;
+        const ceiling = Math.min(target, hi - 0.5);
+        const d = displayProgressRef.current;
+        let next = d;
+        if (d < ceiling) next = d + v * dt;
+        else next = d + (v * dt) / 6;
+        next = Math.min(next, hi - 0.1);
+        if (stage === "rank" && target >= 100) next = Math.min(d + v * dt * 3, target);
+        if (next !== d) {
+          displayProgressRef.current = next;
+          setDisplayProgress(next);
+        }
+      }
+      rafProgressRef.current = requestAnimationFrame(tick);
+    };
+    rafProgressRef.current = requestAnimationFrame(tick);
+  };
+
+  const stopProgressLoop = () => {
+    if (rafProgressRef.current != null) {
+      cancelAnimationFrame(rafProgressRef.current);
+      rafProgressRef.current = null;
+    }
+  };
+
+  useEffect(() => () => stopProgressLoop(), []);
+
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -216,15 +277,23 @@ function ChatPage() {
 
   const runSearch = async (ext: ExtractedKeyFields | null, history: ChatMsg[]) => {
     setSearching(true);
-    setProgress({ phase: "startingUp", percent: 5, detail: "" });
     setError(null);
+    // reset progress
+    displayProgressRef.current = 0;
+    targetProgressRef.current = 0;
+    setDisplayProgress(0);
+    currentStageRef.current = null;
+    startProgressLoop();
+    setRangeForStage("parse");
+    bumpTarget(STAGE_RANGES.parse[0] + (STAGE_RANGES.parse[1] - STAGE_RANGES.parse[0]) * 0.5);
+
     try {
       const userTurns = history.filter((m) => m.role === "user").map((m) => m.text);
       const answered: string[] = [];
-      if (ext?.cuisine) answered.push(lang === "en" ? `Cuisine: ${ext.cuisine}` : `品类：${ext.cuisine}`);
-      if (ext?.visitTime) answered.push(lang === "en" ? `When: ${ext.visitTime}` : `时间：${ext.visitTime}`);
-      if (ext?.budget) answered.push(lang === "en" ? `Budget: ${ext.budget}` : `预算：${ext.budget}`);
-      const combined = [freeText, ...userTurns, ...answered].filter(Boolean).join("；");
+      if (ext?.cuisine) answered.push(lang === "en" ? `Cuisine: ${ext.cuisine}` : `品类:${ext.cuisine}`);
+      if (ext?.visitTime) answered.push(lang === "en" ? `When: ${ext.visitTime}` : `时间:${ext.visitTime}`);
+      if (ext?.budget) answered.push(lang === "en" ? `Budget: ${ext.budget}` : `预算:${ext.budget}`);
+      const combined = [freeText, ...userTurns, ...answered].filter(Boolean).join(";");
       setFreeText(combined);
 
       const parsed = await parseFn({
@@ -238,22 +307,92 @@ function ChatPage() {
         },
       });
       setParsed(parsed);
+      bumpTarget(STAGE_RANGES.parse[1] - 0.5);
 
       const iter = await searchFn({
         data: { ...parsed, uiLanguage: lang },
       } as Parameters<typeof searchFn>[0]);
-      const response = await consumeSearchStream(iter, (chunk) => {
-        setProgress((prev) => chunkToProgress(chunk, prev));
+      const response = await consumeSearchStream(iter, (chunk: SearchStreamChunk) => {
+        handleSearchChunk(chunk);
       });
-      setProgress({ phase: "done", percent: 100, detail: "" });
+
+      // finalize
+      setRangeForStage("rank");
+      stageExpectedMsRef.current = 600;
+      targetProgressRef.current = 100;
+
+      // wait for animation to reach ~99.5 before navigating
+      const start = performance.now();
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (displayProgressRef.current >= 99.5 || performance.now() - start > 800) {
+            resolve();
+          } else {
+            requestAnimationFrame(check);
+          }
+        };
+        check();
+      });
+      stopProgressLoop();
       setResults(response);
       navigate({ to: "/results" });
     } catch (err) {
+      stopProgressLoop();
       const msg = err instanceof Error ? err.message : t("err.fetchFailed");
       setError(msg.includes("429") ? t("err.rateLimited") : msg);
       setSearching(false);
     }
   };
+
+  const handleSearchChunk = (chunk: SearchStreamChunk) => {
+    if (chunk.type === "stage") {
+      switch (chunk.stage) {
+        case "places": {
+          setRangeForStage("search");
+          const [lo, hi] = STAGE_RANGES.search;
+          bumpTarget(lo + (hi - lo) * 0.5);
+          return;
+        }
+        case "places-done": {
+          setRangeForStage("search");
+          bumpTarget(STAGE_RANGES.search[1] - 0.5);
+          return;
+        }
+        case "tabelog":
+        case "yelp": {
+          setRangeForStage("reviews");
+          const [lo] = STAGE_RANGES.reviews;
+          bumpTarget(lo + 2);
+          return;
+        }
+        case "rank": {
+          setRangeForStage("rank");
+          const [lo, hi] = STAGE_RANGES.rank;
+          bumpTarget(lo + (hi - lo) * 0.4);
+          return;
+        }
+        case "photos": {
+          setRangeForStage("rank");
+          const [lo, hi] = STAGE_RANGES.rank;
+          bumpTarget(lo + (hi - lo) * 0.8);
+          return;
+        }
+        default:
+          return;
+      }
+    }
+    if (
+      chunk.type === "review-progress" ||
+      chunk.type === "tabelog-progress" ||
+      chunk.type === "yelp-progress"
+    ) {
+      setRangeForStage("reviews");
+      const [lo, hi] = STAGE_RANGES.reviews;
+      const ratio = chunk.total ? chunk.done / chunk.total : 0;
+      bumpTarget(lo + Math.min(1, ratio) * (hi - lo));
+    }
+  };
+
 
   const identifiedRow = () => {
     if (analysisSummary) {
@@ -427,10 +566,13 @@ function ChatPage() {
 
       {searching && (
         <SearchProgressOverlay
-          progress={progress}
+          currentStage={currentStage}
+          displayProgress={displayProgress}
           city={city}
           extracted={extracted}
+          analysisSummary={analysisSummary}
           t={t}
+          lang={lang}
         />
       )}
     </div>
@@ -438,53 +580,112 @@ function ChatPage() {
 }
 
 function SearchProgressOverlay({
-  progress,
+  currentStage,
+  displayProgress,
   city,
   extracted,
+  analysisSummary,
   t,
+  lang,
 }: {
-  progress: ProgressState;
+  currentStage: StageKey | null;
+  displayProgress: number;
   city: string;
   extracted: ExtractedKeyFields | null;
+  analysisSummary: string;
   t: (k: string, v?: Record<string, string | number>) => string;
+  lang: "zh" | "en";
 }) {
-  const phaseLabel: Record<ProgressState["phase"], string> = {
-    startingUp: t("chat.progress.startingUp"),
-    places: t("chat.progress.places", { city }),
-    reviews: t("chat.progress.reviews"),
-    rank: t("chat.progress.rank"),
-    photos: t("chat.progress.photos"),
-    done: t("chat.progress.done"),
-  };
+  const stages: { key: StageKey; label: string; hint: string }[] = [
+    { key: "parse", label: t("stage.parse.label"), hint: t("stage.parse.hint") },
+    {
+      key: "search",
+      label: t("stage.search.label", { city: city || t("stage.search.placeholder") }),
+      hint: t("stage.search.hintDeep"),
+    },
+    { key: "reviews", label: t("stage.reviews.label"), hint: t(reviewsHintKey(city)) },
+    { key: "rank", label: t("stage.rank.label"), hint: t("stage.rank.hintDeep") },
+  ];
+  const currentIndex = currentStage ? STAGE_ORDER.indexOf(currentStage) : -1;
+
+  const cuisineLabel = lang === "en" ? "Cuisine" : "品类";
+  const timeLabel = lang === "en" ? "When" : "时间";
+  const budgetLabel = lang === "en" ? "Budget" : "预算";
+  const hasIdentified = !!(extracted?.cuisine || extracted?.visitTime || extracted?.budget) || !!city;
+
   return (
     <div className="fixed inset-0 z-50 bg-background/85 backdrop-blur-sm flex items-center justify-center px-4">
-      <div className="bg-card border border-border rounded-2xl px-6 py-6 shadow-lg w-full max-w-md space-y-5">
+      <div className="bg-card border border-border rounded-2xl p-6 shadow-lg w-full max-w-md space-y-4">
         <div className="flex items-center gap-2">
           <Loader2 className="w-5 h-5 animate-spin text-primary" />
           <h2 className="text-base font-semibold">{t("chat.progress.title")}</h2>
         </div>
 
-        <div>
-          <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
-            <div
-              className="h-full bg-primary transition-all duration-500 ease-out"
-              style={{ width: `${Math.max(2, Math.min(100, progress.percent))}%` }}
-            />
-          </div>
-          <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span>{phaseLabel[progress.phase]}</span>
-            <span>{progress.detail}</span>
-          </div>
-        </div>
-
-        {extracted && (
-          <div className="text-xs text-muted-foreground space-y-1">
-            {extracted.cuisine && <div>🍱 {extracted.cuisine}</div>}
-            {extracted.visitTime && <div>⏰ {extracted.visitTime}</div>}
-            {extracted.budget && <div>💰 {extracted.budget}</div>}
+        {hasIdentified && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-1.5 text-xs">
+              {city && (
+                <span className="rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5">
+                  📍 {city}
+                </span>
+              )}
+              {extracted?.cuisine && (
+                <span className="rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5">
+                  🍱 {cuisineLabel}: {extracted.cuisine}
+                </span>
+              )}
+              {extracted?.visitTime && (
+                <span className="rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5">
+                  ⏰ {timeLabel}: {extracted.visitTime}
+                </span>
+              )}
+              {extracted?.budget && (
+                <span className="rounded-full border border-border/60 bg-background/60 px-2.5 py-0.5">
+                  💰 {budgetLabel}: {extracted.budget}
+                </span>
+              )}
+            </div>
+            {analysisSummary && (
+              <p className="text-xs text-muted-foreground italic">
+                💡 {t("chat.summary.label")}: {analysisSummary}
+              </p>
+            )}
           </div>
         )}
+
+        <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-4">
+          <Progress value={displayProgress} className="h-1" />
+          <ul className="space-y-3">
+            {stages.map((s, i) => {
+              const state = i < currentIndex ? "done" : i === currentIndex ? "active" : "todo";
+              return (
+                <li key={s.key} className="flex items-start gap-3">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+                    {state === "done" && <Check className="h-4 w-4 text-primary" />}
+                    {state === "active" && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+                    {state === "todo" && <span className="h-3 w-3 rounded-full border border-border" />}
+                  </span>
+                  <div className="min-w-0">
+                    <p
+                      className={
+                        state === "todo"
+                          ? "text-sm text-muted-foreground"
+                          : "text-sm font-medium text-foreground"
+                      }
+                    >
+                      {s.label}
+                    </p>
+                    {state === "active" && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">{s.hint}</p>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       </div>
     </div>
   );
 }
+
