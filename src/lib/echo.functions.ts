@@ -3413,3 +3413,111 @@ export const clarifyNextStep = createServerFn({ method: "POST" })
 
 
 
+
+// ---- Dynamic clarify: analyze full conversation, decide next question ----
+const AnalyzeInput = z.object({
+  city: z.string().min(1),
+  uiLanguage: z.enum(["zh", "en"]).default("zh"),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["ai", "user"]),
+        text: z.string(),
+      }),
+    )
+    .default([]),
+  roundsUsed: z.number().int().min(0).default(0),
+  maxRounds: z.number().int().min(1).max(10).default(5),
+});
+
+const AnalyzeSchema = z.object({
+  done: z.boolean(),
+  question: z.string().nullish(),
+  suggestions: z.array(z.string()).nullish(),
+  summary: z.string().nullish(),
+});
+
+export type AnalyzeAndAskNextResult = {
+  done: boolean;
+  question: string | null;
+  suggestions: string[];
+  summary: string;
+};
+
+export const analyzeAndAskNext = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => AnalyzeInput.parse(input))
+  .handler(async ({ data }): Promise<AnalyzeAndAskNextResult> => {
+    const isEn = data.uiLanguage === "en";
+    const remaining = Math.max(0, data.maxRounds - data.roundsUsed);
+    const doneFallback: AnalyzeAndAskNextResult = {
+      done: true,
+      question: null,
+      suggestions: [],
+      summary: "",
+    };
+    if (remaining <= 0) return doneFallback;
+
+    const key = process.env.QWEN_API_KEY;
+    if (!key) return doneFallback;
+
+    const convo = data.history
+      .map((m) => `${m.role === "ai" ? "AI" : "USER"}: ${m.text}`)
+      .join("\n");
+
+    const prompt = isEn
+      ? `You help pick restaurants in ${data.city}. Read the conversation and decide if one more short question would meaningfully improve the search. Focus on soft signals: preferences, vibe/atmosphere, dishes they want or want to avoid, occasion, companions, dietary needs. Hard fields (cuisine/time/budget) matter less — do NOT ask about them unless truly critical.
+
+Rounds remaining after this one: ${remaining - 1}. Be conservative — only ask if it clearly helps. If already good enough, set done=true.
+
+Conversation:
+${convo || "(empty)"}
+
+Return STRICT JSON:
+{"done": boolean,
+ "question": string|null,   // <=20 words, one focused question, null if done
+ "suggestions": string[],   // 3-5 short chips, each <=4 words, [] if done
+ "summary": string}         // one short line summarizing what you understand`
+      : `你在帮用户挑选 ${data.city} 的餐厅。读完对话，判断再多问一个问题是否真的能明显提升推荐质量。重点关注软信号：偏好、氛围环境、想吃/忌口的菜、场合、同行人、饮食需求。硬字段（品类/时间/预算）不重要，除非非常关键，否则不要问。
+
+本轮之后还剩 ${remaining - 1} 轮可问。保守一些——只有明显有帮助才问。信息已够就 done=true。
+
+对话：
+${convo || "（空）"}
+
+只输出严格 JSON：
+{"done": 布尔,
+ "question": "≤20字的一个聚焦问题，done 时为 null",
+ "suggestions": ["3-5个短芯片，每个≤6字，done 时为 []"],
+ "summary": "一句话总结你已理解的偏好"}`;
+
+    try {
+      const gateway = createQwenProvider(key);
+      const { output } = await generateText({
+        model: gateway("qwen-plus"),
+        prompt,
+        maxOutputTokens: 500,
+        output: Output.object({
+          schema: AnalyzeSchema,
+          name: "analyze_and_ask_next",
+          description: "Decide whether to ask one more clarifying question",
+        }),
+      });
+      const parsed = AnalyzeSchema.parse(output);
+      const question = (parsed.question ?? "").trim();
+      const suggestions = (parsed.suggestions ?? [])
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .slice(0, 5);
+      const summary = (parsed.summary ?? "").trim();
+      const done = parsed.done || !question;
+      return {
+        done,
+        question: done ? null : question,
+        suggestions: done ? [] : suggestions,
+        summary,
+      };
+    } catch (e) {
+      console.warn("[analyzeAndAskNext] 失败：", e instanceof Error ? e.message : e);
+      return doneFallback;
+    }
+  });
