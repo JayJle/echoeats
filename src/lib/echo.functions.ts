@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
-import { createLovableAiGatewayProvider } from "./ai-gateway";
+import { createQwenProvider } from "./ai-gateway";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
