@@ -277,15 +277,23 @@ function ChatPage() {
 
   const runSearch = async (ext: ExtractedKeyFields | null, history: ChatMsg[]) => {
     setSearching(true);
-    setProgress({ phase: "startingUp", percent: 5, detail: "" });
     setError(null);
+    // reset progress
+    displayProgressRef.current = 0;
+    targetProgressRef.current = 0;
+    setDisplayProgress(0);
+    currentStageRef.current = null;
+    startProgressLoop();
+    setRangeForStage("parse");
+    bumpTarget(STAGE_RANGES.parse[0] + (STAGE_RANGES.parse[1] - STAGE_RANGES.parse[0]) * 0.5);
+
     try {
       const userTurns = history.filter((m) => m.role === "user").map((m) => m.text);
       const answered: string[] = [];
-      if (ext?.cuisine) answered.push(lang === "en" ? `Cuisine: ${ext.cuisine}` : `品类：${ext.cuisine}`);
-      if (ext?.visitTime) answered.push(lang === "en" ? `When: ${ext.visitTime}` : `时间：${ext.visitTime}`);
-      if (ext?.budget) answered.push(lang === "en" ? `Budget: ${ext.budget}` : `预算：${ext.budget}`);
-      const combined = [freeText, ...userTurns, ...answered].filter(Boolean).join("；");
+      if (ext?.cuisine) answered.push(lang === "en" ? `Cuisine: ${ext.cuisine}` : `品类:${ext.cuisine}`);
+      if (ext?.visitTime) answered.push(lang === "en" ? `When: ${ext.visitTime}` : `时间:${ext.visitTime}`);
+      if (ext?.budget) answered.push(lang === "en" ? `Budget: ${ext.budget}` : `预算:${ext.budget}`);
+      const combined = [freeText, ...userTurns, ...answered].filter(Boolean).join(";");
       setFreeText(combined);
 
       const parsed = await parseFn({
@@ -299,22 +307,92 @@ function ChatPage() {
         },
       });
       setParsed(parsed);
+      bumpTarget(STAGE_RANGES.parse[1] - 0.5);
 
       const iter = await searchFn({
         data: { ...parsed, uiLanguage: lang },
       } as Parameters<typeof searchFn>[0]);
-      const response = await consumeSearchStream(iter, (chunk) => {
-        setProgress((prev) => chunkToProgress(chunk, prev));
+      const response = await consumeSearchStream(iter, (chunk: SearchStreamChunk) => {
+        handleSearchChunk(chunk);
       });
-      setProgress({ phase: "done", percent: 100, detail: "" });
+
+      // finalize
+      setRangeForStage("rank");
+      stageExpectedMsRef.current = 600;
+      targetProgressRef.current = 100;
+
+      // wait for animation to reach ~99.5 before navigating
+      const start = performance.now();
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (displayProgressRef.current >= 99.5 || performance.now() - start > 800) {
+            resolve();
+          } else {
+            requestAnimationFrame(check);
+          }
+        };
+        check();
+      });
+      stopProgressLoop();
       setResults(response);
       navigate({ to: "/results" });
     } catch (err) {
+      stopProgressLoop();
       const msg = err instanceof Error ? err.message : t("err.fetchFailed");
       setError(msg.includes("429") ? t("err.rateLimited") : msg);
       setSearching(false);
     }
   };
+
+  const handleSearchChunk = (chunk: SearchStreamChunk) => {
+    if (chunk.type === "stage") {
+      switch (chunk.stage) {
+        case "places": {
+          setRangeForStage("search");
+          const [lo, hi] = STAGE_RANGES.search;
+          bumpTarget(lo + (hi - lo) * 0.5);
+          return;
+        }
+        case "places-done": {
+          setRangeForStage("search");
+          bumpTarget(STAGE_RANGES.search[1] - 0.5);
+          return;
+        }
+        case "tabelog":
+        case "yelp": {
+          setRangeForStage("reviews");
+          const [lo] = STAGE_RANGES.reviews;
+          bumpTarget(lo + 2);
+          return;
+        }
+        case "rank": {
+          setRangeForStage("rank");
+          const [lo, hi] = STAGE_RANGES.rank;
+          bumpTarget(lo + (hi - lo) * 0.4);
+          return;
+        }
+        case "photos": {
+          setRangeForStage("rank");
+          const [lo, hi] = STAGE_RANGES.rank;
+          bumpTarget(lo + (hi - lo) * 0.8);
+          return;
+        }
+        default:
+          return;
+      }
+    }
+    if (
+      chunk.type === "review-progress" ||
+      chunk.type === "tabelog-progress" ||
+      chunk.type === "yelp-progress"
+    ) {
+      setRangeForStage("reviews");
+      const [lo, hi] = STAGE_RANGES.reviews;
+      const ratio = chunk.total ? chunk.done / chunk.total : 0;
+      bumpTarget(lo + Math.min(1, ratio) * (hi - lo));
+    }
+  };
+
 
   const identifiedRow = () => {
     if (analysisSummary) {
