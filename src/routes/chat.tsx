@@ -386,37 +386,23 @@ function ChatPage() {
                   <VoiceInput
                     variant="hero"
                     onTranscript={(text) => {
-                      setFreeInput(text);
-                      void submitAnswer(text);
+                      setFreeInput((prev) => (prev ? `${prev}${prev.endsWith(" ") ? "" : " "}${text}` : text).slice(0, 200));
                     }}
                   />
                 </div>
 
-                {!showFreeText ? (
-                  <div className="text-center">
-                    <button
-                      type="button"
-                      onClick={() => setShowFreeText(true)}
-                      className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                    >
-                      {t("step3.voice.orType")}
-                    </button>
-                  </div>
-                ) : (
-                  <form onSubmit={onFreeSubmit} className="flex gap-2 items-center">
-                    <Input
-                      autoFocus
-                      value={freeInput}
-                      onChange={(e) => setFreeInput(e.target.value)}
-                      placeholder={t("chat.orTypeYourOwn")}
-                      className="flex-1"
-                      maxLength={200}
-                    />
-                    <Button type="submit" size="icon" disabled={!freeInput.trim()}>
-                      <Send className="w-4 h-4" />
-                    </Button>
-                  </form>
-                )}
+                <form onSubmit={onFreeSubmit} className="flex gap-2 items-center">
+                  <Input
+                    value={freeInput}
+                    onChange={(e) => setFreeInput(e.target.value)}
+                    placeholder={t("chat.orTypeYourOwn")}
+                    className="flex-1"
+                    maxLength={200}
+                  />
+                  <Button type="submit" size="icon" disabled={!freeInput.trim()}>
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </form>
               </div>
             )}
           </>
