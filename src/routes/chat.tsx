@@ -299,30 +299,51 @@ function ChatPage() {
 
       <main className="flex-1 w-full max-w-2xl mx-auto px-4 py-6 flex flex-col gap-4">
         {showIntro ? (
-          <form onSubmit={onIntroSubmit} className="mt-8 space-y-4">
-            <h1 className="text-2xl font-semibold tracking-tight">{t("chat.intro.title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("chat.intro.hint")}</p>
-            <Textarea
-              autoFocus
-              value={introText}
-              onChange={(e) => setIntroText(e.target.value)}
-              placeholder={t("chat.intro.placeholder")}
-              className="min-h-[120px] text-base resize-none"
-              maxLength={500}
-            />
-            <div className="flex items-center justify-between gap-2">
-              <MicButton
-                onTranscript={(text) =>
-                  setIntroText((prev) => (prev ? `${prev} ${text}` : text).slice(0, 500))
-                }
-                disabled={thinking}
-                size="icon"
-              />
-              <Button type="submit" size="lg" disabled={!introText.trim() || thinking}>
-                {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
-              </Button>
+          <form onSubmit={onIntroSubmit} className="mt-6 space-y-6">
+            <div className="text-center space-y-2">
+              <h1 className="text-2xl font-semibold tracking-tight">{t("chat.intro.title")}</h1>
+              <p className="text-sm text-muted-foreground">{t("chat.intro.hint")}</p>
             </div>
-            {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
+
+            <div className="py-6">
+              <VoiceInput
+                variant="hero"
+                disabled={thinking}
+                onTranscript={(text) => {
+                  setIntroText(text);
+                  void runIntro(text);
+                }}
+              />
+            </div>
+
+            {!showIntroText ? (
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={() => setShowIntroText(true)}
+                  className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                >
+                  {t("step3.voice.orType")}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <Textarea
+                  autoFocus
+                  value={introText}
+                  onChange={(e) => setIntroText(e.target.value)}
+                  placeholder={t("chat.intro.placeholder")}
+                  className="min-h-[100px] text-base resize-none"
+                  maxLength={500}
+                />
+                <div className="flex justify-end">
+                  <Button type="submit" disabled={!introText.trim() || thinking}>
+                    {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {error && <p className="text-sm text-destructive text-center" role="alert">{error}</p>}
           </form>
         ) : (
           <>
