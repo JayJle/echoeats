@@ -1606,8 +1606,8 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       "";
 
     // 搜索兜底：用户未提供品类时只用通用餐厅查询，不把它写回结构化 cuisines。
-    const cuisinesAutoFilled = data.cuisines.length === 0;
-    if (cuisinesAutoFilled) {
+    const usedGenericCuisineQuery = data.cuisines.length === 0;
+    if (usedGenericCuisineQuery) {
       const lang = (data.language || guessLanguageCode(data.city)).toLowerCase();
       const fallback =
         lang === "ja"
@@ -3163,7 +3163,7 @@ Schema：
       console.log(`[score] cuisine="${cuisine}" pool=${pool.length} admitted=${builtList.filter((b) => b.admitted).length} top5-avg=${avgFinal}`);
 
       return {
-        cuisine: cuisinesAutoFilled ? (isEn ? "Recommended for you" : "为你推荐") : cuisine,
+        cuisine: usedGenericCuisineQuery ? (isEn ? "Recommended for you" : "为你推荐") : cuisine,
         restaurants,
         ...(partialRestaurants.length ? { partialRestaurants } : {}),
         ...(failedRestaurants.length ? { failedRestaurants } : {}),
