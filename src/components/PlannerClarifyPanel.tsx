@@ -104,6 +104,8 @@ export function PlannerClarifyPanel({
           history,
           parsed,
           skippedFields: nextSkipped,
+          askedFields: asked,
+          reaskField: reask,
           turnCount: nextTurn,
         },
       });
@@ -112,8 +114,11 @@ export function PlannerClarifyPanel({
       setParsed(res.parsed as ParsedRequirements);
       setHighlight(diff);
       setSkipped(nextSkipped);
+      setAsked(res.askedFields ?? asked);
+      setReask(res.reaskField ?? null);
       setTurnCount(nextTurn);
       currentQuestionRef.current = res.question;
+
 
       if (res.done || !res.question || nextTurn >= MAX_TURNS) {
         onDone(res.parsed as ParsedRequirements);
