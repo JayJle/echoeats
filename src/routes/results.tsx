@@ -124,9 +124,6 @@ function ResultsPage() {
             <Link to="/" className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
               {t("results.empty.home")}
             </Link>
-            <Link to="/requirements" className="inline-flex items-center justify-center rounded-md border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
-              {t("results.empty.requirements")}
-            </Link>
           </div>
         </div>
       </div>
@@ -223,12 +220,11 @@ function ResultsPage() {
       const parseLikelyEmpty = newTotal === 0 && oldTotal > 0;
 
       const merged = parseLikelyEmpty
-        ? { ...parsed, mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep", uiLanguage: lang }
+        ? { ...parsed, uiLanguage: lang }
         : {
             ...newParsed,
             city: newParsed.city || parsed.city,
             cuisines: newParsed.cuisines?.length ? newParsed.cuisines : parsed.cuisines,
-            mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep",
             uiLanguage: lang,
           };
       setFreeText(text);

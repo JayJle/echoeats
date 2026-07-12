@@ -236,6 +236,11 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "需求灵感",
+
+    "chat.thinking": "思考中…",
+    "chat.searching": "正在为你搜索餐厅…",
+    "chat.skip": "跳过",
+    "chat.orTypeYourOwn": "或者自己输入…",
   },
   en: {
     "brand.tagline": "AI Restaurant Discovery Agent",
@@ -465,6 +470,11 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "Need inspiration",
+
+    "chat.thinking": "Thinking…",
+    "chat.searching": "Searching restaurants for you…",
+    "chat.skip": "Skip",
+    "chat.orTypeYourOwn": "Or type your own…",
   },
 };
 
