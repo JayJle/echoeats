@@ -1,123 +1,119 @@
-# Echo Eats：Planner + Workflow 架构升级方案
+# Echo Eats 交互重构方案
 
-## 1. 目标
+## 一、关键字段定义
 
-把现在「城市 → 品类页 → 需求页 → 结果页」的固定 3 步流程，升级成一个由 **Planner（决策脑）** 驱动的对话式 Agent：
+只有这三个是"关键字段"（缺则问、齐则直接搜）：
 
-- 用户只输入城市
-- AI 每轮只问 **一个** 需求字段，给候选按钮 + 跳过 + 自由输入
-- 搜索结果不理想时，Planner 自动决定要不要扩大范围重搜
-- 只保留 deep 搜索，quick 完全删除
+1. **餐饮品类** cuisine（例：日料、川菜、拉面）
+2. **就餐时间** visitTime（例：今晚、明天午餐、周末）
+3. **人均预算** budget（例：¥100 以内、¥200-400、不限）
 
-## 2. 用户能看到的所有变化
-
-**流程层面**
-- 首页只留城市输入框（其他都删）
-- 品类选择页消失
-- 需求输入页消失
-- 中间出现一个新的「对话页」，AI 一句一句提问
-- 结果页保持原样
-
-**对话体验**
-- 每轮 AI 只问一件事，例如"想吃什么？"，下面给 4–6 个候选按钮 + 「跳过」按钮 + 「自己写一个」输入框
-- 提问顺序固定：品类 → 时间 → 预算 → 氛围 → 想吃的菜 → 避雷
-- 最多 4 轮，之后强制开始搜索
-- 用户点「跳过」的字段不会再问第二次
-- 用户如果在某一轮里一次说完好几件事（"今晚 9 点 300 块想吃安静拉面"），AI 会识别出来并跳过已回答的字段
-
-**搜索体验**
-- 「快速搜索 / 深度搜索」的选项彻底消失
-- 结果偏少时，页面会短暂显示"正在扩大搜索…"，然后给出补搜后的新结果（最多补 1 次）
-
-**收藏 / 反馈 / 历史 / 管理页**：不变
-
-## 3. 是优化还是变差
-
-**优化面**
-- 用户心智负担更低：单次一问一答比一次填一大页表单轻松
-- 品类不再是硬门槛：不知道吃什么也能开始
-- 结果不足会自动补搜，不用用户手动重来
-- 架构可扩展：以后加新数据源、新问题都不用改主流程
-
-**代价面**
-- 对话轮数从 1 次自由输入变成 3–4 轮（但每轮更轻）
-- 每次搜索多一次 AI 调用做决策：延迟 +2–3 秒、成本 +8–15%
-- 触发自动补搜时：额外 +8–15 秒、成本约翻倍
-- 老用户需要适应新流程
-
-**结论：产品体验是明确优化，工程成本和延迟是要付出的代价。**
+其他信息（氛围、忌口、具体菜品等）**不再主动追问**，用户在首页自由文本里写了就用，不写就算了。
 
 ---
 
-## 4. 技术改动清单（供实施参考）
-
-### 4.1 新增
-- `src/routes/chat.tsx`：单页对话 UI
-- `src/lib/echo.functions.ts` 里新增 `clarifyNextStep` serverFn
-  - 入参：`{ city, chatHistory, currentIntent, skippedFields, roundIndex }`
-  - 出参：`{ action: "ask" | "search", field?, question?, suggestions?, allowSkip }`
-  - 用 Qwen `qwen-plus` + 确定性优先级栈兜底
-  - 停止条件：字段全填 / 全跳过 / `roundIndex >= 4`
-- `src/lib/echo.functions.ts` 里新增 `reflectAndRetry` 内部函数
-  - Pass-1 后若 `perfect + high < 5` 且未重试过 → 判 `expand_radius` / `add_synonym` / `relax_hard_filter`
-  - 最多 retry 1 次，只重跑 recall + Pass-1
-
-### 4.2 修改
-- `src/routes/index.tsx`：只保留城市输入 + 候选，提交后 `navigate('/chat')`
-- `src/lib/store.ts`：
-  - 新增：`chatHistory`, `intentDraft`, `skippedFields`, `reflectStage`
-  - 删除：`cuisines`, `autoInferCuisines`, `freeText`, `mode`
-- `src/lib/echo.functions.ts`：
-  - `ParsedSchema` 删掉 `mode` 字段（第 108 行）
-  - `parseRequirements` 改累积模式：`chatHistory` 拼成 `freeText` 重跑，`currentIntent` 作为已知字段传入 prompt，跳过字段标 `SKIPPED`
-  - `searchRestaurants`：删除所有 `mode === "quick"` 分支（1652 / 1705 / 1902 / 1953 行），只留 deep 路径
-  - `searchRestaurants` SSE 流末尾接入 Reflection：推 `{stage:"reflect", strategy}` 让前端显示
-- `src/routes/results.tsx`：
-  - 删除 URL 里的 `mode` 参数解析（226 / 231 行）
-  - 监听 `stage:"reflect"` 显示状态行
-- `src/lib/i18n/dict.ts`：
-  - 新增：`chat.cuisineQ / visitTimeQ / budgetQ / vibeQ / dishQ / avoidQ / skip / orTypeYourOwn / reflectExpanding`
-  - 删除：`step2.*` / `step3.*` / `mode.*`
-
-### 4.3 删除
-- `src/routes/cuisines.tsx`
-- `src/routes/requirements.tsx`
-- `src/components/NeedBubbles.tsx`
-- `src/components/StepShell.tsx`（仅服务 step2/3）
-
-### 4.4 数据流
+## 二、新的整体流程
 
 ```text
-index (city)
- → chat
-    loop:
-      clarifyNextStep(...)
-        → ask    → 用户点 chip/跳过/输入 → 更新 chatHistory + intentDraft
-        → search → parseRequirements(累积模式) → navigate('/results')
- → results
-    searchRestaurants SSE:
-      recall → Pass-1
-        → 若 perfect+high < 5 → reflectAndRetry
-             → 可能重跑 recall + Pass-1（≤1 次）
-        → 输出
+首页
+ ↓ 用户输入城市 + 自由文本需求（"今晚朋友聚餐想吃日料，人均300左右"）
+ ↓
+[新增] 一次性字段抽取（LLM 一次调用）
+ ├─ 三个关键字段全齐 → 直接跳到「搜索页」
+ └─ 有缺失         → 进入「澄清页」
+      ↓
+   一次只问一个缺失字段（按 品类 → 时间 → 预算 顺序）
+     · 品类：LLM 根据自由文本预测 4–6 个候选 chips
+     · 时间：固定 chips（今晚 / 明天午餐 / 周末 / 本周内 …）
+     · 预算：固定 chips（¥100 内 / ¥100–200 / ¥200–400 / ¥400+ / 不限）
+     · 每一步都可以：点 chip / 手动输入 / 跳过
+      ↓
+   补齐后 → 搜索页
 ```
 
-### 4.5 Planner 优先级栈（确定性 fallback）
+> 与当前方案的最大差异：**不再每轮都调 LLM 决定下一步**；抽取只调一次，之后按固定顺序只问缺的那几个字段。品类候选是唯一需要 LLM 生成的部分。
 
-`cuisine → visitTime → budget → vibe → dishPreferences → negativeFilters`
+---
 
-LLM 只负责生成 `question` 文案 + 3–6 个 `suggestions`；字段选择由确定性栈决定（更稳、Qwen 挂了也能跑）。
+## 三、澄清页 UI
 
-### 4.6 不改的部分
+- 保留现有对话式外观（气泡 + chips + 输入框 + 跳过）。
+- 顶部新增一行"已识别"标签，实时显示已确定的字段值，例如：
+  `📍 上海 · 🍱 日料 · ⏰ 今晚 · 💰 待补充`
+- 关键字段一旦补齐立即自动进入搜索页，不再多问。
 
-城市输入 / `city.functions.ts` / Google Places 8 路召回 / Tabelog / Yelp（Perplexity）/ Pass-1 打分主体 / 结果卡片渲染 / 反馈 / 账号历史 / admin 页
+---
 
-### 4.7 验证清单
+## 四、搜索页（恢复原样）
 
-- 输入城市 → chat 页第一轮问品类，有 chips + 跳过 + 输入
-- 一句话说多字段 → planner 直接进 search
-- 4 轮之后强制 search
-- 跳过品类后不再重复问
-- 结果 < 5 时前端出现"正在扩大搜索…"
-- `mode` 在 URL / store / 类型里都搜不到
-- typecheck 干净、旧路由无 Link 引用
+完全回到用户熟悉的旧版进度界面：
+
+- 顶部：整体进度条 + 百分比
+- 中部：当前阶段文案（"正在检索候选餐厅…" / "正在读取评论…" / "正在综合排序…"）
+- 下方"检索依据"卡片，展示：
+  - 城市
+  - 最终使用的**餐饮品类**（chips 形式，多个并列）
+  - 就餐时间
+  - 预算
+  - 自由文本原文（折叠可展开）
+- 完成后跳转结果页（保持不变）
+
+---
+
+## 五、技术要点（给工程视角）
+
+1. `src/lib/echo.functions.ts`
+   - 新增 `extractKeyFields`：一次 LLM 调用，输入 `{ city, freeText, uiLanguage }`，输出 `{ cuisine?: string[], visitTime?: string, budget?: string, cuisineSuggestions?: string[] }`。
+   - 保留 `parseRequirements` / `searchRestaurants` / `consumeSearchStream`。
+   - `clarifyNextStep` 大幅简化为纯确定性：按 `[cuisine, visitTime, budget]` 顺序找第一个未填字段，返回问题 + chips；品类的 chips 来自第 1 步抽取结果。**移除多轮 LLM planner 与相关 fallback 分支**。
+2. `src/routes/index.tsx`
+   - 提交时先调 `extractKeyFields`；三项齐全 → `navigate('/results')` 并触发搜索；否则 `navigate('/chat')` 并把抽取结果塞进 store。
+3. `src/routes/chat.tsx`
+   - 只处理"补缺"，最多 3 轮；顶部渲染"已识别"标签行。
+4. `src/routes/results.tsx`
+   - 恢复旧版进度条 + 阶段文案 + "检索依据"卡片（含 cuisine chips）。若旧组件已删，按当前进度事件重建同版式。
+5. `src/lib/store.ts`
+   - 增加 `extracted: { cuisine, visitTime, budget, cuisineSuggestions }` 字段，替代当前 `askedFields / skippedFields / chatHistory` 的复杂状态（可保留 chatHistory 仅作展示）。
+
+---
+
+## 六、非技术版：所有变化清单
+
+对比"上一版（多轮 LLM planner）"，这次改动如下：
+
+**新增 / 恢复**
+1. 首页提交后，会先自动读一遍你写的需求，把「品类 / 时间 / 预算」尽量抽出来。
+2. 如果这三项**都已在你输入里**，**完全跳过澄清**，直接进搜索。
+3. 澄清时**一次只问一个字段**，顺序固定：先品类 → 再时间 → 再预算。
+4. 品类没写时，会根据你输入的上下文**预测 4–6 个候选**（例："想吃点日式的东西" → 寿司 / 拉面 / 居酒屋 / 天妇罗 / 日式烧肉 / 其他）。
+5. 时间和预算用**固定选项**，不再让 AI 现编。
+6. 澄清页顶部会显示一条**"已识别"**标签，你随时能看到目前 AI 认为你要什么。
+7. 搜索页**完全恢复原来的样子**：进度条 + 百分比 + 当前阶段文字 + "检索依据"卡片（含最终使用的餐厅品类 chips）。
+
+**移除**
+8. 移除"AI 每轮现场决定下一个问题"的机制。
+9. 移除氛围 / 忌口 / 具体菜品等非关键字段的追问。
+10. 移除最多 4 轮、跳过历史、planner fallback 等复杂状态。
+11. 搜索页那个只有一个转圈 loading 的极简界面**被删除**。
+
+**保持不变**
+12. 城市选择、语言切换、结果页、反馈面板照旧。
+13. 后端搜索 / 排序 / 评论抓取逻辑不动。
+
+---
+
+## 七、这次是优化还是变差？
+
+**总体：优化。** 理由：
+
+- **更快**：三项齐全时 0 次澄清直接搜，比当前"至少要点 1–2 轮 chips"快。
+- **更省**：从"每轮一次 LLM"降到"最多一次抽取 + 一次品类候选"，成本和延迟都下来了。
+- **更可预期**：固定顺序、固定 chips，不会再出现 AI 忽然问奇怪问题或漏 chips 的情况。
+- **信息更清晰**：搜索页重新有进度和"检索依据"，用户知道 AI 在做什么、用了哪些条件。
+
+**代价（诚实告知）：**
+
+- 灵活性下降：AI 不再根据上下文动态挑最有价值的问题问，只按固定三项顺序补缺。
+- 非关键字段（氛围、忌口等）只能靠用户主动在首页写进自由文本，系统不会再追问。
+
+如果你以后想让某个非关键字段（比如"忌口"）也变成必问，只要把它加进关键字段清单即可，结构不用再动。

@@ -98,17 +98,23 @@ export type ChatMsg = {
   field?: string;
 };
 
+export type ExtractedKeyFields = {
+  cuisine: string | null;
+  visitTime: string | null;
+  budget: string | null;
+  cuisineSuggestions: string[];
+};
+
 type QueryState = {
-  // 保留 city / freeText / cuisines 以兼容 parseRequirements 与 results 编辑弹窗
   city: string;
   cuisines: string[];
   autoInferCuisines: boolean;
   date: string;
   freeText: string;
-  // 新增：chat 状态
   chatHistory: ChatMsg[];
   askedFields: string[];
   skippedFields: string[];
+  extracted: ExtractedKeyFields | null;
   parsed: ParsedRequirements | null;
   results: SearchResults | null;
   setCity: (v: string) => void;
@@ -119,6 +125,7 @@ type QueryState = {
   setChatHistory: (v: ChatMsg[]) => void;
   setAskedFields: (v: string[]) => void;
   setSkippedFields: (v: string[]) => void;
+  setExtracted: (v: ExtractedKeyFields | null) => void;
   setParsed: (v: ParsedRequirements | null) => void;
   setResults: (v: SearchResults | null) => void;
   resetChat: () => void;
@@ -136,6 +143,7 @@ export const useQueryStore = create<QueryState>()(
       chatHistory: [],
       askedFields: [],
       skippedFields: [],
+      extracted: null,
       parsed: null,
       results: null,
       setCity: (v) => set({ city: v }),
@@ -146,6 +154,7 @@ export const useQueryStore = create<QueryState>()(
       setChatHistory: (v) => set({ chatHistory: v }),
       setAskedFields: (v) => set({ askedFields: v }),
       setSkippedFields: (v) => set({ skippedFields: v }),
+      setExtracted: (v) => set({ extracted: v }),
       setParsed: (v) => set({ parsed: v }),
       setResults: (v) => set({ results: v }),
       resetChat: () =>
@@ -153,6 +162,7 @@ export const useQueryStore = create<QueryState>()(
           chatHistory: [],
           askedFields: [],
           skippedFields: [],
+          extracted: null,
           freeText: "",
           parsed: null,
           results: null,
@@ -167,14 +177,16 @@ export const useQueryStore = create<QueryState>()(
           chatHistory: [],
           askedFields: [],
           skippedFields: [],
+          extracted: null,
           parsed: null,
           results: null,
         }),
     }),
 
+
     {
       name: "echo-eats-query",
-      version: 3,
+      version: 4,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as
           | (Partial<QueryState> & { parsed?: ParsedRequirements | null })
@@ -202,8 +214,16 @@ export const useQueryStore = create<QueryState>()(
           state.askedFields = state.askedFields ?? [];
           state.skippedFields = state.skippedFields ?? [];
         }
+        if (version < 4) {
+          state.extracted = null;
+          state.chatHistory = [];
+          state.askedFields = [];
+          state.skippedFields = [];
+        }
         return state as unknown as QueryState;
       },
+
+
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),
       ),
