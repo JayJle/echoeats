@@ -98,9 +98,7 @@ function ChatPage() {
   const [searching, setSearching] = useState(false);
   const [progress, setProgress] = useState<ProgressState>({ phase: "startingUp", percent: 5, detail: "" });
   const [introText, setIntroText] = useState("");
-  const [showIntroText, setShowIntroText] = useState(false);
   const [freeInput, setFreeInput] = useState("");
-  const [showFreeText, setShowFreeText] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -153,7 +151,6 @@ function ChatPage() {
     const next = missing[0];
     const aiMsg: ChatMsg = { role: "ai", text: questionFor(next), field: next };
     setChatHistory([...history, aiMsg]);
-    setShowFreeText(false);
     setFreeInput("");
   };
 
@@ -307,44 +304,30 @@ function ChatPage() {
               <p className="text-sm text-muted-foreground">{t("chat.intro.hint")}</p>
             </div>
 
-            <div className="py-6">
+            <div className="py-4">
               <VoiceInput
                 variant="hero"
                 disabled={thinking}
                 onTranscript={(text) => {
-                  setIntroText(text);
-                  void runIntro(text);
+                  setIntroText((prev) => (prev ? `${prev}${prev.endsWith(" ") ? "" : " "}${text}` : text).slice(0, 500));
                 }}
               />
             </div>
 
-            {!showIntroText ? (
-              <div className="text-center">
-                <button
-                  type="button"
-                  onClick={() => setShowIntroText(true)}
-                  className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                >
-                  {t("step3.voice.orType")}
-                </button>
+            <div className="space-y-3">
+              <Textarea
+                value={introText}
+                onChange={(e) => setIntroText(e.target.value)}
+                placeholder={t("chat.intro.placeholder")}
+                className="min-h-[100px] text-base resize-none"
+                maxLength={500}
+              />
+              <div className="flex justify-end">
+                <Button type="submit" size="lg" disabled={!introText.trim() || thinking}>
+                  {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
+                </Button>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <Textarea
-                  autoFocus
-                  value={introText}
-                  onChange={(e) => setIntroText(e.target.value)}
-                  placeholder={t("chat.intro.placeholder")}
-                  className="min-h-[100px] text-base resize-none"
-                  maxLength={500}
-                />
-                <div className="flex justify-end">
-                  <Button type="submit" disabled={!introText.trim() || thinking}>
-                    {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
-                  </Button>
-                </div>
-              </div>
-            )}
+            </div>
             {error && <p className="text-sm text-destructive text-center" role="alert">{error}</p>}
           </form>
         ) : (
@@ -400,37 +383,23 @@ function ChatPage() {
                   <VoiceInput
                     variant="hero"
                     onTranscript={(text) => {
-                      setFreeInput(text);
-                      void submitAnswer(text);
+                      setFreeInput((prev) => (prev ? `${prev}${prev.endsWith(" ") ? "" : " "}${text}` : text).slice(0, 200));
                     }}
                   />
                 </div>
 
-                {!showFreeText ? (
-                  <div className="text-center">
-                    <button
-                      type="button"
-                      onClick={() => setShowFreeText(true)}
-                      className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                    >
-                      {t("step3.voice.orType")}
-                    </button>
-                  </div>
-                ) : (
-                  <form onSubmit={onFreeSubmit} className="flex gap-2 items-center">
-                    <Input
-                      autoFocus
-                      value={freeInput}
-                      onChange={(e) => setFreeInput(e.target.value)}
-                      placeholder={t("chat.orTypeYourOwn")}
-                      className="flex-1"
-                      maxLength={200}
-                    />
-                    <Button type="submit" size="icon" disabled={!freeInput.trim()}>
-                      <Send className="w-4 h-4" />
-                    </Button>
-                  </form>
-                )}
+                <form onSubmit={onFreeSubmit} className="flex gap-2 items-center">
+                  <Input
+                    value={freeInput}
+                    onChange={(e) => setFreeInput(e.target.value)}
+                    placeholder={t("chat.orTypeYourOwn")}
+                    className="flex-1"
+                    maxLength={200}
+                  />
+                  <Button type="submit" size="icon" disabled={!freeInput.trim()}>
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </form>
               </div>
             )}
           </>
