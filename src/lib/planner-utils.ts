@@ -197,6 +197,7 @@ function normalizeParsed(parsed: PlannerResponse["parsed"], city: string): Plann
     ...parsed,
     city: parsed?.city || city,
     cuisines: Array.isArray(parsed?.cuisines) ? parsed.cuisines.filter(Boolean) : [],
+    cuisinesInferred: false,
     hardFilters: Array.isArray(parsed?.hardFilters) ? parsed.hardFilters : [],
     softPreferences: Array.isArray(parsed?.softPreferences) ? parsed.softPreferences : [],
     negativeFilters: Array.isArray(parsed?.negativeFilters) ? parsed.negativeFilters : [],
