@@ -341,63 +341,125 @@ function parseMealTimeAnswer(answer: string): {
   return { weekday, hhmm };
 }
 
-function enforceAnsweredField(
+function classifyAndMergeAnswer(
   out: PlannerResponse,
-  history: PlannerTurn[],
-  city: string,
-): PlannerField | null {
-  const last = getLastAssistantQuestion(history);
-  if (!last || !isUsefulAnswer(last.field, last.answer)) return last?.field ?? null;
+  data: PlannerInputData,
+): AnswerStatus {
+  const last = getLastAssistantQuestion(data.history);
+  if (!last) return { kind: "none" };
 
-  const p = (out.parsed ??= emptyParsed(city));
+  const answer = last.answer;
+  const field = last.field;
+
+  if (!answer || SKIP_RE.test(answer) || VAGUE_RE.test(answer)) {
+    return { kind: "skip", field };
+  }
+  if (!isUsefulAnswer(field, answer)) {
+    return { kind: "unparseable", field };
+  }
+
+  const p = (out.parsed ??= emptyParsed(data.city));
   const touched = (name: string) => {
     if (!out.newlyFilled.includes(name)) out.newlyFilled.push(name);
   };
-  const answer = last.answer;
 
-  if (last.field === "mealTime") {
-    if (!p.visitTime || !p.visitTime.mentioned) {
-      const mealTime = parseMealTimeAnswer(answer);
-      p.visitTime = {
-        mentioned: true,
-        evidence: answer,
-        weekday: mealTime.weekday,
-        hhmm: mealTime.hhmm,
-        raw: answer,
-      };
-      touched("visitTime");
+  if (field === "mealTime") {
+    const mealTime = parseMealTimeAnswer(answer);
+    if (mealTime.weekday == null && mealTime.hhmm == null) {
+      return { kind: "unparseable", field };
     }
-  } else if (last.field === "cuisine") {
+    const prior = p.visitTime;
+    if (prior?.mentioned) {
+      const priorHhmm = prior.hhmm;
+      const priorWd = prior.weekday;
+      const conflicts =
+        (mealTime.hhmm && priorHhmm && mealTime.hhmm !== priorHhmm) ||
+        (mealTime.weekday != null && priorWd != null && mealTime.weekday !== priorWd);
+      if (conflicts) {
+        return { kind: "conflict", field, prev: prior.raw || prior.evidence || "" };
+      }
+    }
+    p.visitTime = {
+      mentioned: true,
+      evidence: answer,
+      weekday: mealTime.weekday,
+      hhmm: mealTime.hhmm,
+      raw: answer,
+    };
+    touched("visitTime");
+    return { kind: "merged", field };
+  }
+
+  if (field === "cuisine") {
     const cuisines = splitCuisineAnswer(answer);
+    if (cuisines.length === 0) return { kind: "unparseable", field };
+    const negatives = (p.negativeFilters ?? []).map((n) => n.text.toLowerCase());
+    const clash = cuisines.find((c) =>
+      negatives.some((n) => n.includes(c.toLowerCase()) || c.toLowerCase().includes(n)),
+    );
+    if (clash) {
+      return { kind: "conflict", field, prev: clash };
+    }
     const next = [...p.cuisines];
-    for (const cuisine of cuisines) {
-      if (!next.some((c) => c.trim() === cuisine)) next.push(cuisine);
+    for (const c of cuisines) {
+      if (!next.some((x) => x.trim() === c)) next.push(c);
     }
     if (next.length !== p.cuisines.length) {
       p.cuisines = next;
       p.cuisinesInferred = false;
       touched("cuisines");
     }
-  } else if (last.field === "budget") {
+    return { kind: "merged", field };
+  }
+
+  if (field === "budget") {
     const has = (p.softPreferences ?? []).some((s) => s.text === answer) ||
       (p.hardFilters ?? []).some((s) => s.text === answer);
     if (!has) {
       p.softPreferences = [...(p.softPreferences ?? []), { text: answer, weight: 0.7 }];
       touched("budget");
     }
-  } else if (last.field === "hardFilter" || last.field === "softPreference") {
+    return { kind: "merged", field };
+  }
+
+  if (field === "hardFilter" || field === "softPreference") {
     const has = (p.hardFilters ?? []).some((s) => s.text === answer) ||
       (p.softPreferences ?? []).some((s) => s.text === answer);
     if (!has) {
-      if (last.field === "hardFilter") {
+      if (field === "hardFilter") {
         p.hardFilters = [...(p.hardFilters ?? []), { text: answer, weight: 0.8 }];
       } else {
         p.softPreferences = [...(p.softPreferences ?? []), { text: answer, weight: 0.7 }];
       }
-      touched(last.field === "hardFilter" ? "hardFilters" : "softPreferences");
+      touched(field === "hardFilter" ? "hardFilters" : "softPreferences");
     }
+    return { kind: "merged", field };
   }
-  return last.field;
+
+  return { kind: "merged", field };
+}
+
+function prependReaskReason(
+  prompt: string,
+  reask: NonNullable<ReaskInfo>,
+  isEn: boolean,
+): string {
+  if (reask.reason === "unparseable") {
+    const prefix = isEn
+      ? "Sorry, I couldn't quite understand that. Could you rephrase? "
+      : "刚才的回答我没太读懂，可以换种说法再告诉我一次吗？";
+    return `${prefix}${isEn ? prompt : "\n" + prompt}`;
+  }
+  const prev = reask.prev?.trim();
+  if (reask.reason === "conflict") {
+    const prefix = isEn
+      ? `That conflicts with the earlier "${prev || "info"}" — which one should I use? `
+      : `和之前的「${prev || "已填内容"}」有冲突，想以哪个为准？`;
+    return `${prefix}${isEn ? prompt : "\n" + prompt}`;
+  }
+  return prompt;
+}
+
 }
 
 function fallbackQuestion(
