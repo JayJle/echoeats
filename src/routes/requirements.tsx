@@ -412,15 +412,30 @@ function StepRequirements() {
   const bars = [0.45, 0.75, 1, 0.75, 0.45];
 
   return (
-    <StepShell step={3} total={3} title={t("step3.title")}>
+    <StepShell step={2} total={2} title={t("step3.title")}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void runSearch(value, "deep");
+          void handleSubmitClick("deep");
         }}
         className="space-y-5"
       >
-        <NeedBubbles onPick={appendBubble} />
+        {plannerOpen && plannerSeed && (
+          <PlannerClarifyPanel
+            city={city}
+            freeText={value}
+            initialParsed={plannerSeed}
+            onDone={(finalParsed) => {
+              setPlannerOpen(false);
+              void runSearch(value, pendingModeRef.current, finalParsed);
+            }}
+            onCancel={() => {
+              setPlannerOpen(false);
+              setPlannerSeed(null);
+            }}
+          />
+        )}
+
 
         {/* Prominent voice input card */}
         <div
