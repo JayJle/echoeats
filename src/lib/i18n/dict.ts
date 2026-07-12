@@ -479,6 +479,20 @@ export const dict: Record<Lang, Dict> = {
     "errpage.home": "Go home",
 
     "needs.aria": "Need inspiration",
+
+    "planner.title": "Planner is filling in your needs",
+    "planner.subtitle": "Multi-turn clarify · {progress}",
+    "planner.parsedTitle": "Fields understood so far",
+    "planner.thinking": "Planner is thinking…",
+    "planner.startingSoon": "Preparing the first question…",
+    "planner.voiceHint": "Tap the mic to answer by voice, or pick a suggestion / skip",
+    "planner.skipOne": "Skip this",
+    "planner.skipAll": "Skip all",
+    "planner.custom": "Custom answer",
+    "planner.customPlaceholder": "Type your answer…",
+    "planner.send": "Send",
+    "planner.skipMark": "(skip)",
+    "planner.error": "Clarification service unavailable. Tap \"Skip all\" to search now.",
   },
 };
 
