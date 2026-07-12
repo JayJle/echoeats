@@ -138,6 +138,13 @@ export function detectMissingFields(
   return missing;
 }
 
+type AnswerStatus =
+  | { kind: "none" }
+  | { kind: "skip"; field: PlannerField }
+  | { kind: "merged"; field: PlannerField }
+  | { kind: "unparseable"; field: PlannerField }
+  | { kind: "conflict"; field: PlannerField; prev: string };
+
 export function postProcessPlannerOutput(args: {
   out: PlannerResponse;
   data: PlannerInputData;
@@ -145,23 +152,41 @@ export function postProcessPlannerOutput(args: {
 }): PlannerResponse {
   const { out, data, isEn } = args;
   const skipSet = new Set<PlannerField>(data.skippedFields);
-  // Planner suggestions are allowed to be inferred, but structured facts are not.
-  // Start from the already-confirmed parsed state and merge only the user's latest answer deterministically.
-  out.parsed = normalizeParsed(data.parsed ?? emptyParsed(data.city), data.city);
-  const answeredField = enforceAnsweredField(out, data.history, data.city);
-  const stillMissing = detectMissingFields(out.parsed as ParsedRequirements | null, skipSet);
+  const askedSet = new Set<PlannerField>(data.askedFields);
 
-  if (stillMissing.length === 0 || data.turnCount >= MAX_PLANNER_TURNS) {
+  // Structured facts come from the confirmed parsed state; model output is ignored for parsed.
+  out.parsed = normalizeParsed(data.parsed ?? emptyParsed(data.city), data.city);
+  const status = classifyAndMergeAnswer(out, data);
+
+  // Bookkeeping: mark asked unless we need to re-ask this field.
+  let reask: ReaskInfo = null;
+  if (status.kind === "merged" || status.kind === "skip") {
+    askedSet.add(status.field);
+  } else if (status.kind === "unparseable") {
+    reask = { field: status.field, reason: "unparseable" };
+  } else if (status.kind === "conflict") {
+    reask = { field: status.field, reason: "conflict", prev: status.prev };
+  }
+  if (status.kind === "skip") skipSet.add(status.field);
+
+  // Filter missing: never re-surface an already-asked field unless it is the reask target.
+  const rawMissing = detectMissingFields(out.parsed as ParsedRequirements | null, skipSet);
+  const stillMissing = rawMissing.filter((f) => !askedSet.has(f) || reask?.field === f);
+
+  out.askedFields = Array.from(askedSet);
+  out.reaskField = reask;
+
+  if (!reask && (stillMissing.length === 0 || data.turnCount >= MAX_PLANNER_TURNS)) {
     out.done = true;
     out.needsClarification = false;
     out.question = null;
     return out;
   }
 
-  const nextField = pickNextField(stillMissing, answeredField);
+  const nextField = reask?.field ?? pickNextField(stillMissing, null);
   const questionIsUsable =
     !!out.question &&
-    stillMissing.includes(out.question.field) &&
+    out.question.field === nextField &&
     !skipSet.has(out.question.field);
 
   if (!questionIsUsable) {
@@ -173,6 +198,10 @@ export function postProcessPlannerOutput(args: {
       data.city,
       isEn,
     );
+  }
+  if (reask && out.question) {
+    out.question.reason = reask.reason;
+    out.question.prompt = prependReaskReason(out.question.prompt, reask, isEn);
   }
   out.done = false;
   out.needsClarification = true;
@@ -191,17 +220,12 @@ export function localFallbackResponse(args: {
     needsClarification: true,
     done: false,
     question: null,
+    askedFields: [...data.askedFields],
+    reaskField: null,
   };
-  enforceAnsweredField(out, data.history, data.city);
-  const missing = detectMissingFields(out.parsed as ParsedRequirements | null, new Set(data.skippedFields));
-  if (missing.length === 0 || data.turnCount >= MAX_PLANNER_TURNS) {
-    return { ...out, needsClarification: false, done: true, question: null };
-  }
-  return {
-    ...out,
-    question: fallbackQuestion(missing[0] ?? "hardFilter", data.city, isEn),
-  };
+  return postProcessPlannerOutput({ out, data, isEn });
 }
+
 
 function normalizeParsed(parsed: PlannerResponse["parsed"], city: string): PlannerResponse["parsed"] {
   return {
