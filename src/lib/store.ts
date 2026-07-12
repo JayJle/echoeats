@@ -215,10 +215,14 @@ export const useQueryStore = create<QueryState>()(
           state.skippedFields = state.skippedFields ?? [];
         }
         if (version < 4) {
-          state.extracted = state.extracted ?? null;
+          state.extracted = null;
+          state.chatHistory = [];
+          state.askedFields = [];
+          state.skippedFields = [];
         }
         return state as unknown as QueryState;
       },
+
 
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),
