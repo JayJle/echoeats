@@ -1,8 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Check, HelpCircle, Loader2, Mic, Sparkles, Square } from "lucide-react";
-import { toast } from "sonner";
-import { NeedBubbles } from "@/components/NeedBubbles";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +11,8 @@ import { useQueryStore, type ParsedRequirements } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { useServerFn } from "@tanstack/react-start";
 import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
+import { useVoiceInput } from "@/hooks/use-voice-input";
+import { PlannerClarifyPanel } from "@/components/PlannerClarifyPanel";
 
 export const Route = createFileRoute("/requirements")({
   head: () => ({
@@ -72,8 +72,59 @@ function StepRequirements() {
   // —— 提前展示解析出的需求 ——
   const [parsedPreview, setParsedPreview] = useState<ParsedRequirements | null>(null);
 
+  // —— Planner 澄清面板 ——
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [plannerSeed, setPlannerSeed] = useState<ParsedRequirements | null>(null);
+  const [prechecking, setPrechecking] = useState(false);
+  const pendingModeRef = useRef<"quick" | "deep">("deep");
+
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
+
+  const detectMissing = (p: ParsedRequirements): string[] => {
+    const missing: string[] = [];
+    const hasCuisine =
+      p.cuisines.length > 0 &&
+      !p.cuisines.every((c) => c === "餐厅" || c.toLowerCase() === "restaurants");
+    if (!hasCuisine) missing.push("cuisine");
+    const prefs = [...(p.hardFilters ?? []), ...(p.softPreferences ?? [])];
+    if (prefs.length === 0) missing.push("hardFilter");
+    if (!p.visitTime?.mentioned) missing.push("mealTime");
+    const budgetRe = /(预算|人均|¥|￥|\$|€|£|jpy|usd|cny|rmb|元|块|budget|per person|price)/i;
+    if (!prefs.some((f) => budgetRe.test(f.text))) missing.push("budget");
+    return missing;
+  };
+
+  const handleSubmitClick = async (mode: "quick" | "deep") => {
+    if (loading || prechecking) return;
+    const text = value.trim();
+    if (!text) {
+      void runSearch(value, mode);
+      return;
+    }
+    setError(null);
+    setPrechecking(true);
+    pendingModeRef.current = mode;
+    try {
+      const parsed = await parseFn({
+        data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
+      });
+      const missing = detectMissing(parsed);
+      if (missing.length === 0) {
+        setPrechecking(false);
+        void runSearch(text, mode, parsed);
+        return;
+      }
+      setPlannerSeed(parsed);
+      setPlannerOpen(true);
+      setPrechecking(false);
+    } catch (e) {
+      console.warn("[precheck] parse failed, fallback to direct search", e);
+      setPrechecking(false);
+      void runSearch(text, mode);
+    }
+  };
+
 
   useEffect(() => () => {
     timersRef.current.forEach(clearTimeout);
@@ -182,7 +233,11 @@ function StepRequirements() {
 
   useEffect(() => () => stopProgressLoop(), []);
 
-  const runSearch = async (text: string, mode: "quick" | "deep" = "deep") => {
+  const runSearch = async (
+    text: string,
+    mode: "quick" | "deep" = "deep",
+    preParsed?: ParsedRequirements,
+  ) => {
     setError(null);
     setLoading(true);
     setSearchMode(mode);
@@ -207,15 +262,16 @@ function StepRequirements() {
     try {
       setCurrentStage("parse");
       setRangeForStage(mode, "parse");
-      // parse 是单次 LLM，没有子事件 → 把 target 抬到该阶段末，让动画匀速跑完
       targetProgressRef.current = Math.max(
         targetProgressRef.current,
         STAGE_RANGES[mode].parse[1],
       );
-      const parsed = await parseFn({
-        data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
-        signal: ac.signal,
-      } as Parameters<typeof parseFn>[0]);
+      const parsed = preParsed
+        ? preParsed
+        : await parseFn({
+            data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
+            signal: ac.signal,
+          } as Parameters<typeof parseFn>[0]);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode, uiLanguage: lang };
       setParsed(parsedWithMode);
@@ -223,6 +279,7 @@ function StepRequirements() {
       if (parsed.cuisinesInferred && parsed.cuisines.length > 0) {
         setInferredCuisines(parsed.cuisines);
       }
+
 
       setCurrentStage("search");
       setRangeForStage(mode, "search");
@@ -338,284 +395,16 @@ function StepRequirements() {
 
 
 
-  const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
-  const [level, setLevel] = useState(0);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-
-  const stopAnalyser = () => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    try { sourceRef.current?.disconnect(); } catch { /* noop */ }
-    try { analyserRef.current?.disconnect(); } catch { /* noop */ }
-    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-      audioCtxRef.current.close().catch(() => { /* noop */ });
-    }
-    sourceRef.current = null;
-    analyserRef.current = null;
-    audioCtxRef.current = null;
-    setLevel(0);
-  };
-
-  const startAnalyser = (stream: MediaStream) => {
-    try {
-      const Ctx: typeof AudioContext =
-        (window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.7;
-      source.connect(analyser);
-      audioCtxRef.current = ctx;
-      sourceRef.current = source;
-      analyserRef.current = analyser;
-      const buf = new Uint8Array(analyser.fftSize);
-      let lastTs = 0;
-      const loop = (ts: number) => {
-        rafRef.current = requestAnimationFrame(loop);
-        if (ts - lastTs < 33) return;
-        lastTs = ts;
-        analyser.getByteTimeDomainData(buf);
-        let sum = 0;
-        for (let i = 0; i < buf.length; i++) {
-          const v = (buf[i] - 128) / 128;
-          sum += v * v;
-        }
-        const rms = Math.sqrt(sum / buf.length);
-        // amplify and clamp to 0..1
-        setLevel(Math.min(1, rms * 3));
-      };
-      rafRef.current = requestAnimationFrame(loop);
-    } catch (err) {
-      console.warn("[mic] analyser init failed", err);
-    }
-  };
-
   const appendText = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     setValue((v) => (v.trim() ? `${v.replace(/[、，,。.\s]+$/, "")}、${trimmed}` : trimmed));
   };
 
-  const appendBubble = (text: string) => {
-    setValue((v) => (v.trim() ? `${v.replace(/[、，,]\s*$/, "")}、${text}` : text));
-  };
+  const voice = useVoiceInput({ onText: appendText, disabled: loading });
+  const { recording, transcribing, elapsed, level } = voice;
+  const toggleRecording = voice.toggle;
 
-  const isIOS = () => {
-    if (typeof navigator === "undefined") return false;
-    const ua = navigator.userAgent || "";
-    return /iPad|iPhone|iPod/.test(ua) ||
-      (ua.includes("Mac") && typeof document !== "undefined" && "ontouchend" in document);
-  };
-
-  const pickMimeType = (): string | null => {
-    if (typeof MediaRecorder === "undefined") return null;
-    const candidates = isIOS()
-      ? ["audio/mp4", "audio/aac", "audio/webm"]
-      : ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
-    for (const t of candidates) {
-      try {
-        if (MediaRecorder.isTypeSupported(t)) return t;
-      } catch {
-        /* ignore */
-      }
-    }
-    return null;
-  };
-
-  const stopRecordingInternal = () => {
-    if (elapsedTimerRef.current) {
-      clearInterval(elapsedTimerRef.current);
-      elapsedTimerRef.current = null;
-    }
-    if (autoStopTimerRef.current) {
-      clearTimeout(autoStopTimerRef.current);
-      autoStopTimerRef.current = null;
-    }
-    const mr = mediaRecorderRef.current;
-    if (mr && mr.state !== "inactive") {
-      mr.stop();
-    }
-  };
-
-  const toggleRecording = async () => {
-    if (recording) {
-      stopRecordingInternal();
-      return;
-    }
-    if (transcribing) return;
-
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      toast.error(t("err.mic.unsupported"));
-      return;
-    }
-
-    const ios = isIOS();
-    const inIframe = typeof window !== "undefined" && window.self !== window.top;
-
-    if (inIframe && !ios) {
-      toast.error(t("err.mic.iframe"), {
-        action: {
-          label: t("err.mic.iframeAction"),
-          onClick: () => window.open(window.location.href, "_blank", "noopener,noreferrer"),
-        },
-        duration: 8000,
-      });
-      return;
-    }
-
-    const constraints: MediaStreamConstraints = ios
-      ? { audio: true }
-      : { audio: { echoCancellation: true, noiseSuppression: true } };
-    const streamPromise = navigator.mediaDevices.getUserMedia(constraints);
-
-    let stream: MediaStream;
-    try {
-      stream = await streamPromise;
-    } catch (err) {
-      const name = (err as { name?: string })?.name || "";
-      const msg = (err as { message?: string })?.message || "";
-      console.error("getUserMedia failed:", name, msg, err);
-      if (name === "NotAllowedError" || name === "SecurityError") {
-        toast.error(
-          inIframe
-            ? t("err.mic.denied.iframe")
-            : ios
-              ? t("err.mic.denied.ios")
-              : t("err.mic.denied"),
-        );
-      } else if (name === "NotFoundError") {
-        toast.error(t("err.mic.notFound"));
-      } else if (name === "NotReadableError") {
-        toast.error(t("err.mic.busy"));
-      } else {
-        toast.error(t("err.mic.unknown", { detail: name || msg || "?" }));
-      }
-      return;
-    }
-
-    const mimeType = pickMimeType();
-    chunksRef.current = [];
-    let recorder: MediaRecorder;
-    try {
-      recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
-    } catch (err) {
-      console.error("MediaRecorder init failed:", err);
-      stream.getTracks().forEach((t) => t.stop());
-      toast.error(t("err.mic.initFail"));
-      return;
-    }
-    const usedMime = recorder.mimeType || mimeType || "audio/webm";
-    mediaRecorderRef.current = recorder;
-
-    recorder.ondataavailable = (e) => {
-      console.log("[mic] dataavailable size=", e.data?.size ?? 0);
-      if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-    };
-
-    recorder.onstop = async () => {
-      console.log("[mic] onstop chunks=", chunksRef.current.length, "mime=", usedMime);
-      stopAnalyser();
-      stream.getTracks().forEach((tr) => tr.stop());
-      setRecording(false);
-      setElapsed(0);
-
-      const blob = new Blob(chunksRef.current, { type: usedMime });
-      chunksRef.current = [];
-      if (blob.size === 0) {
-        console.warn("[mic] empty blob after stop");
-        toast.error(t("err.mic.empty"));
-        return;
-      }
-
-      setTranscribing(true);
-      try {
-        const fd = new FormData();
-        const ext = usedMime.includes("mp4") || usedMime.includes("aac")
-          ? "mp4"
-          : usedMime.includes("ogg")
-            ? "ogg"
-            : "webm";
-        fd.append("audio", blob, `audio.${ext}`);
-        console.log("[mic] uploading", blob.size, "bytes as audio." + ext, "mime=", usedMime);
-        const res = await fetch("/api/transcribe", { method: "POST", body: fd });
-        const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
-        console.log("[mic] response", res.status, data);
-        if (!res.ok) {
-          if (res.status === 429) toast.error(t("err.transcribe.busy"));
-          else if (res.status === 402) toast.error(t("err.transcribe.elevenQuota"));
-          else toast.error(data.error || t("err.transcribe.fail"));
-          return;
-        }
-        if (data.text) {
-          appendText(data.text);
-        } else {
-          toast.error(t("err.transcribe.noContent"));
-        }
-      } catch (err) {
-        console.error("[mic] transcribe failed", err);
-        toast.error(t("err.transcribe.network"));
-      } finally {
-        setTranscribing(false);
-      }
-    };
-
-    try {
-      recorder.start(500);
-    } catch (err) {
-      console.error("[mic] recorder.start failed", err);
-      stream.getTracks().forEach((tr) => tr.stop());
-      toast.error(t("err.mic.initFail"));
-      return;
-    }
-    console.log("[mic] recording started mime=", usedMime);
-    startAnalyser(stream);
-    setRecording(true);
-    setElapsed(0);
-    const startedAt = Date.now();
-    elapsedTimerRef.current = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-    }, 250);
-    autoStopTimerRef.current = setTimeout(() => stopRecordingInternal(), 60_000);
-  };
-
-  // First-visit nudge to highlight voice input
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      if (!localStorage.getItem("ee_voice_tip_seen")) {
-        const id = setTimeout(() => {
-          toast(t("step3.voice.firstTip"), { duration: 5000 });
-          localStorage.setItem("ee_voice_tip_seen", "1");
-        }, 600);
-        return () => clearTimeout(id);
-      }
-    } catch { /* noop */ }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => () => {
-    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
-    if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
-    const mr = mediaRecorderRef.current;
-    if (mr && mr.state !== "inactive") mr.stop();
-    stopAnalyser();
-  }, []);
 
   const micBusy = transcribing || loading;
   const ringScale = 1 + level * 0.7;
@@ -623,15 +412,30 @@ function StepRequirements() {
   const bars = [0.45, 0.75, 1, 0.75, 0.45];
 
   return (
-    <StepShell step={3} total={3} title={t("step3.title")}>
+    <StepShell step={2} total={2} title={t("step3.title")}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void runSearch(value, "deep");
+          void handleSubmitClick("deep");
         }}
         className="space-y-5"
       >
-        <NeedBubbles onPick={appendBubble} />
+        {plannerOpen && plannerSeed && (
+          <PlannerClarifyPanel
+            city={city}
+            freeText={value}
+            initialParsed={plannerSeed}
+            onDone={(finalParsed) => {
+              setPlannerOpen(false);
+              void runSearch(value, pendingModeRef.current, finalParsed);
+            }}
+            onCancel={() => {
+              setPlannerOpen(false);
+              setPlannerSeed(null);
+            }}
+          />
+        )}
+
 
         {/* Prominent voice input card */}
         <div
@@ -868,7 +672,7 @@ function StepRequirements() {
         )}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <Link
-            to="/cuisines"
+            to="/"
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             {t("common.back")}
@@ -878,8 +682,8 @@ function StepRequirements() {
               type="button"
               variant="secondary"
               size="lg"
-              disabled={loading}
-              onClick={() => void runSearch(value, "quick")}
+              disabled={loading || prechecking || plannerOpen}
+              onClick={() => void handleSubmitClick("quick")}
               className="w-full sm:w-auto"
             >
               {loading && searchMode === "quick" ? t("step3.quickLoading") : t("step3.quickBtn")}
@@ -887,12 +691,13 @@ function StepRequirements() {
             <div className="relative w-full sm:w-auto">
               <Button
                 type="submit"
-                disabled={loading}
+                disabled={loading || prechecking || plannerOpen}
                 size="lg"
                 className="w-full sm:w-auto"
               >
-                {loading && searchMode === "deep" ? t("step3.deepLoading") : t("step3.deepBtn")}
+                {prechecking ? t("common.loading") : loading && searchMode === "deep" ? t("step3.deepLoading") : t("step3.deepBtn")}
               </Button>
+
               <Popover>
                 <PopoverTrigger asChild>
                   <button

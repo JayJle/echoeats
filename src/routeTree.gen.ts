@@ -12,7 +12,6 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as Char91indexChar93RouteImport } from './routes/[index]'
 import { Route as ResultsRouteImport } from './routes/results'
 import { Route as RequirementsRouteImport } from './routes/requirements'
-import { Route as CuisinesRouteImport } from './routes/cuisines'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
 import { Route as AdminFeedbackRouteImport } from './routes/admin.feedback'
@@ -30,11 +29,6 @@ const ResultsRoute = ResultsRouteImport.update({
 const RequirementsRoute = RequirementsRouteImport.update({
   id: '/requirements',
   path: '/requirements',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const CuisinesRoute = CuisinesRouteImport.update({
-  id: '/cuisines',
-  path: '/cuisines',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -55,7 +49,6 @@ const AdminFeedbackRoute = AdminFeedbackRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
@@ -64,7 +57,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
@@ -74,7 +66,6 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
@@ -85,7 +76,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/cuisines'
     | '/index'
     | '/requirements'
     | '/results'
@@ -94,7 +84,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/cuisines'
     | '/index'
     | '/requirements'
     | '/results'
@@ -103,7 +92,6 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
-    | '/cuisines'
     | '/index'
     | '/requirements'
     | '/results'
@@ -113,7 +101,6 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  CuisinesRoute: typeof CuisinesRoute
   Char91indexChar93Route: typeof Char91indexChar93Route
   RequirementsRoute: typeof RequirementsRoute
   ResultsRoute: typeof ResultsRoute
@@ -144,13 +131,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RequirementsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/cuisines': {
-      id: '/cuisines'
-      path: '/cuisines'
-      fullPath: '/cuisines'
-      preLoaderRoute: typeof CuisinesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -177,7 +157,6 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  CuisinesRoute: CuisinesRoute,
   Char91indexChar93Route: Char91indexChar93Route,
   RequirementsRoute: RequirementsRoute,
   ResultsRoute: ResultsRoute,
