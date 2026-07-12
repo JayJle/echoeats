@@ -13,7 +13,9 @@ import {
   type PlannerField,
   type PlannerResponse,
   type PlannerTurn,
+  type ReaskInfo,
 } from "@/lib/planner.functions";
+
 
 type Props = {
   city: string;
@@ -47,10 +49,13 @@ export function PlannerClarifyPanel({
   const [highlight, setHighlight] = useState<string[]>([]);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [skipped, setSkipped] = useState<PlannerField[]>([]);
+  const [asked, setAsked] = useState<PlannerField[]>([]);
+  const [reask, setReask] = useState<ReaskInfo>(null);
   const [turnCount, setTurnCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [customValue, setCustomValue] = useState("");
+
   const [error, setError] = useState<string | null>(null);
   const currentQuestionRef = useRef<PlannerResponse["question"]>(null);
   const inFlightRef = useRef(false);
@@ -99,6 +104,8 @@ export function PlannerClarifyPanel({
           history,
           parsed,
           skippedFields: nextSkipped,
+          askedFields: asked,
+          reaskField: reask,
           turnCount: nextTurn,
         },
       });
@@ -107,8 +114,11 @@ export function PlannerClarifyPanel({
       setParsed(res.parsed as ParsedRequirements);
       setHighlight(diff);
       setSkipped(nextSkipped);
+      setAsked(res.askedFields ?? asked);
+      setReask(res.reaskField ?? null);
       setTurnCount(nextTurn);
       currentQuestionRef.current = res.question;
+
 
       if (res.done || !res.question || nextTurn >= MAX_TURNS) {
         onDone(res.parsed as ParsedRequirements);

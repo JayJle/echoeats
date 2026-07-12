@@ -45,6 +45,13 @@ export const ParsedIn = z.object({
   visitTime: VisitTimeIn.optional(),
 });
 
+const ReaskFieldSchema = z.object({
+  field: PlannerFieldEnum,
+  reason: z.enum(["unparseable", "conflict"]),
+  prev: z.string().optional(),
+}).nullable();
+export type ReaskInfo = z.infer<typeof ReaskFieldSchema>;
+
 export const PlannerInput = z.object({
   city: z.string().default(""),
   uiLanguage: z.enum(["zh", "en"]).default("zh"),
@@ -52,6 +59,8 @@ export const PlannerInput = z.object({
   history: z.array(TurnSchema).default([]),
   parsed: ParsedIn.nullable().default(null),
   skippedFields: z.array(PlannerFieldEnum).default([]),
+  askedFields: z.array(PlannerFieldEnum).default([]),
+  reaskField: ReaskFieldSchema.default(null),
   turnCount: z.number().int().default(0),
 });
 export type PlannerInputData = z.infer<typeof PlannerInput>;
@@ -74,14 +83,18 @@ export const PlannerOutput = z.object({
   needsClarification: z.boolean().default(false),
   done: z.boolean().default(false),
   question: QuestionSchema.nullable().default(null),
+  askedFields: z.array(PlannerFieldEnum).default([]),
+  reaskField: ReaskFieldSchema.default(null),
 });
 export type PlannerResponse = z.infer<typeof PlannerOutput>;
+
 
 export const MAX_PLANNER_TURNS = 5;
 
 const BUDGET_RE = /(预算|人均|¥|￥|\$|€|£|jpy|usd|cny|rmb|日元|円|元|块|budget|per person|price|便宜|实惠|性价比|中等|适中|高端|奢侈|贵|affordable|cheap|moderate|mid\s*range|splurge|expensive)/i;
-const SKIP_RE = /^(skip|跳过|不用了|不了|不需要|no thanks|—)$/i;
+const SKIP_RE = /^[（(\[]?\s*(skip|跳过|不用了|不了|不需要|no thanks|—)\s*[)）\]]?$/i;
 const VAGUE_RE = /^(随便|都行|不限|无所谓|不知道|anything|any|whatever|no preference)$/i;
+
 
 export function emptyParsed(city: string): PlannerResponse["parsed"] {
   return {
@@ -126,6 +139,13 @@ export function detectMissingFields(
   return missing;
 }
 
+type AnswerStatus =
+  | { kind: "none" }
+  | { kind: "skip"; field: PlannerField }
+  | { kind: "merged"; field: PlannerField }
+  | { kind: "unparseable"; field: PlannerField }
+  | { kind: "conflict"; field: PlannerField; prev: string };
+
 export function postProcessPlannerOutput(args: {
   out: PlannerResponse;
   data: PlannerInputData;
@@ -133,23 +153,41 @@ export function postProcessPlannerOutput(args: {
 }): PlannerResponse {
   const { out, data, isEn } = args;
   const skipSet = new Set<PlannerField>(data.skippedFields);
-  // Planner suggestions are allowed to be inferred, but structured facts are not.
-  // Start from the already-confirmed parsed state and merge only the user's latest answer deterministically.
-  out.parsed = normalizeParsed(data.parsed ?? emptyParsed(data.city), data.city);
-  const answeredField = enforceAnsweredField(out, data.history, data.city);
-  const stillMissing = detectMissingFields(out.parsed as ParsedRequirements | null, skipSet);
+  const askedSet = new Set<PlannerField>(data.askedFields);
 
-  if (stillMissing.length === 0 || data.turnCount >= MAX_PLANNER_TURNS) {
+  // Structured facts come from the confirmed parsed state; model output is ignored for parsed.
+  out.parsed = normalizeParsed(data.parsed ?? emptyParsed(data.city), data.city);
+  const status = classifyAndMergeAnswer(out, data);
+
+  // Bookkeeping: mark asked unless we need to re-ask this field.
+  let reask: ReaskInfo = null;
+  if (status.kind === "merged" || status.kind === "skip") {
+    askedSet.add(status.field);
+  } else if (status.kind === "unparseable") {
+    reask = { field: status.field, reason: "unparseable" };
+  } else if (status.kind === "conflict") {
+    reask = { field: status.field, reason: "conflict", prev: status.prev };
+  }
+  if (status.kind === "skip") skipSet.add(status.field);
+
+  // Filter missing: never re-surface an already-asked field unless it is the reask target.
+  const rawMissing = detectMissingFields(out.parsed as ParsedRequirements | null, skipSet);
+  const stillMissing = rawMissing.filter((f) => !askedSet.has(f) || reask?.field === f);
+
+  out.askedFields = Array.from(askedSet);
+  out.reaskField = reask;
+
+  if (!reask && (stillMissing.length === 0 || data.turnCount >= MAX_PLANNER_TURNS)) {
     out.done = true;
     out.needsClarification = false;
     out.question = null;
     return out;
   }
 
-  const nextField = pickNextField(stillMissing, answeredField);
+  const nextField = reask?.field ?? pickNextField(stillMissing, null);
   const questionIsUsable =
     !!out.question &&
-    stillMissing.includes(out.question.field) &&
+    out.question.field === nextField &&
     !skipSet.has(out.question.field);
 
   if (!questionIsUsable) {
@@ -161,6 +199,10 @@ export function postProcessPlannerOutput(args: {
       data.city,
       isEn,
     );
+  }
+  if (reask && out.question) {
+    out.question.reason = reask.reason;
+    out.question.prompt = prependReaskReason(out.question.prompt, reask, isEn);
   }
   out.done = false;
   out.needsClarification = true;
@@ -179,17 +221,12 @@ export function localFallbackResponse(args: {
     needsClarification: true,
     done: false,
     question: null,
+    askedFields: [...data.askedFields],
+    reaskField: null,
   };
-  enforceAnsweredField(out, data.history, data.city);
-  const missing = detectMissingFields(out.parsed as ParsedRequirements | null, new Set(data.skippedFields));
-  if (missing.length === 0 || data.turnCount >= MAX_PLANNER_TURNS) {
-    return { ...out, needsClarification: false, done: true, question: null };
-  }
-  return {
-    ...out,
-    question: fallbackQuestion(missing[0] ?? "hardFilter", data.city, isEn),
-  };
+  return postProcessPlannerOutput({ out, data, isEn });
 }
+
 
 function normalizeParsed(parsed: PlannerResponse["parsed"], city: string): PlannerResponse["parsed"] {
   return {
@@ -305,64 +342,126 @@ function parseMealTimeAnswer(answer: string): {
   return { weekday, hhmm };
 }
 
-function enforceAnsweredField(
+function classifyAndMergeAnswer(
   out: PlannerResponse,
-  history: PlannerTurn[],
-  city: string,
-): PlannerField | null {
-  const last = getLastAssistantQuestion(history);
-  if (!last || !isUsefulAnswer(last.field, last.answer)) return last?.field ?? null;
+  data: PlannerInputData,
+): AnswerStatus {
+  const last = getLastAssistantQuestion(data.history);
+  if (!last) return { kind: "none" };
 
-  const p = (out.parsed ??= emptyParsed(city));
+  const answer = last.answer;
+  const field = last.field;
+
+  if (!answer || SKIP_RE.test(answer) || VAGUE_RE.test(answer)) {
+    return { kind: "skip", field };
+  }
+  if (!isUsefulAnswer(field, answer)) {
+    return { kind: "unparseable", field };
+  }
+
+  const p = (out.parsed ??= emptyParsed(data.city));
   const touched = (name: string) => {
     if (!out.newlyFilled.includes(name)) out.newlyFilled.push(name);
   };
-  const answer = last.answer;
 
-  if (last.field === "mealTime") {
-    if (!p.visitTime || !p.visitTime.mentioned) {
-      const mealTime = parseMealTimeAnswer(answer);
-      p.visitTime = {
-        mentioned: true,
-        evidence: answer,
-        weekday: mealTime.weekday,
-        hhmm: mealTime.hhmm,
-        raw: answer,
-      };
-      touched("visitTime");
+  if (field === "mealTime") {
+    const mealTime = parseMealTimeAnswer(answer);
+    if (mealTime.weekday == null && mealTime.hhmm == null) {
+      return { kind: "unparseable", field };
     }
-  } else if (last.field === "cuisine") {
+    const prior = p.visitTime;
+    if (prior?.mentioned) {
+      const priorHhmm = prior.hhmm;
+      const priorWd = prior.weekday;
+      const conflicts =
+        (mealTime.hhmm && priorHhmm && mealTime.hhmm !== priorHhmm) ||
+        (mealTime.weekday != null && priorWd != null && mealTime.weekday !== priorWd);
+      if (conflicts) {
+        return { kind: "conflict", field, prev: prior.raw || prior.evidence || "" };
+      }
+    }
+    p.visitTime = {
+      mentioned: true,
+      evidence: answer,
+      weekday: mealTime.weekday,
+      hhmm: mealTime.hhmm,
+      raw: answer,
+    };
+    touched("visitTime");
+    return { kind: "merged", field };
+  }
+
+  if (field === "cuisine") {
     const cuisines = splitCuisineAnswer(answer);
+    if (cuisines.length === 0) return { kind: "unparseable", field };
+    const negatives = (p.negativeFilters ?? []).map((n) => n.text.toLowerCase());
+    const clash = cuisines.find((c) =>
+      negatives.some((n) => n.includes(c.toLowerCase()) || c.toLowerCase().includes(n)),
+    );
+    if (clash) {
+      return { kind: "conflict", field, prev: clash };
+    }
     const next = [...p.cuisines];
-    for (const cuisine of cuisines) {
-      if (!next.some((c) => c.trim() === cuisine)) next.push(cuisine);
+    for (const c of cuisines) {
+      if (!next.some((x) => x.trim() === c)) next.push(c);
     }
     if (next.length !== p.cuisines.length) {
       p.cuisines = next;
       p.cuisinesInferred = false;
       touched("cuisines");
     }
-  } else if (last.field === "budget") {
+    return { kind: "merged", field };
+  }
+
+  if (field === "budget") {
     const has = (p.softPreferences ?? []).some((s) => s.text === answer) ||
       (p.hardFilters ?? []).some((s) => s.text === answer);
     if (!has) {
       p.softPreferences = [...(p.softPreferences ?? []), { text: answer, weight: 0.7 }];
       touched("budget");
     }
-  } else if (last.field === "hardFilter" || last.field === "softPreference") {
+    return { kind: "merged", field };
+  }
+
+  if (field === "hardFilter" || field === "softPreference") {
     const has = (p.hardFilters ?? []).some((s) => s.text === answer) ||
       (p.softPreferences ?? []).some((s) => s.text === answer);
     if (!has) {
-      if (last.field === "hardFilter") {
+      if (field === "hardFilter") {
         p.hardFilters = [...(p.hardFilters ?? []), { text: answer, weight: 0.8 }];
       } else {
         p.softPreferences = [...(p.softPreferences ?? []), { text: answer, weight: 0.7 }];
       }
-      touched(last.field === "hardFilter" ? "hardFilters" : "softPreferences");
+      touched(field === "hardFilter" ? "hardFilters" : "softPreferences");
     }
+    return { kind: "merged", field };
   }
-  return last.field;
+
+  return { kind: "merged", field };
 }
+
+function prependReaskReason(
+  prompt: string,
+  reask: NonNullable<ReaskInfo>,
+  isEn: boolean,
+): string {
+  if (reask.reason === "unparseable") {
+    const prefix = isEn
+      ? "Sorry, I couldn't quite understand that. Could you rephrase? "
+      : "刚才的回答我没太读懂，可以换种说法再告诉我一次吗？";
+    return `${prefix}${isEn ? prompt : "\n" + prompt}`;
+  }
+  const prev = reask.prev?.trim();
+  if (reask.reason === "conflict") {
+    const prefix = isEn
+      ? `That conflicts with the earlier "${prev || "info"}" — which one should I use? `
+      : `和之前的「${prev || "已填内容"}」有冲突，想以哪个为准？`;
+    return `${prefix}${isEn ? prompt : "\n" + prompt}`;
+  }
+  return prompt;
+}
+
+
 
 function fallbackQuestion(
   field: PlannerField,

@@ -3,7 +3,6 @@ import { generateText } from "ai";
 import { createQwenProvider } from "./ai-gateway";
 import {
   detectMissingFields,
-  emptyParsed,
   localFallbackResponse,
   MAX_PLANNER_TURNS,
   PlannerInput,
@@ -12,7 +11,8 @@ import {
   type PlannerResponse,
 } from "./planner-utils";
 
-export type { PlannerField, PlannerResponse, PlannerTurn } from "./planner-utils";
+export type { PlannerField, PlannerResponse, PlannerTurn, ReaskInfo } from "./planner-utils";
+
 
 /** Planner Agent: merges answers, asks one needed clarification, max 5 turns. */
 export const plannerTurn = createServerFn({ method: "POST" })
@@ -20,18 +20,16 @@ export const plannerTurn = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<PlannerResponse> => {
     const isEn = data.uiLanguage === "en";
     const skipSet = new Set(data.skippedFields);
-    const missing = detectMissingFields(data.parsed, skipSet);
+    const askedSet = new Set(data.askedFields);
+    const missing = detectMissingFields(data.parsed, skipSet).filter(
+      (f) => !askedSet.has(f) || data.reaskField?.field === f,
+    );
     const reachedLimit = data.turnCount >= MAX_PLANNER_TURNS;
 
-    if (missing.length === 0 || reachedLimit) {
-      return {
-        parsed: data.parsed ?? emptyParsed(data.city),
-        newlyFilled: [],
-        needsClarification: false,
-        done: true,
-        question: null,
-      };
+    if ((missing.length === 0 && !data.reaskField) || reachedLimit) {
+      return localFallbackResponse({ data, isEn });
     }
+
 
     const key = process.env.QWEN_API_KEY;
     if (!key) return localFallbackResponse({ data, isEn });
@@ -53,7 +51,9 @@ Reply in ${isEn ? "English" : "Simplified Chinese"} inside question.prompt and s
 - User's original free-text request: ${data.freeText || "(none)"}
 - Current parsed structure (JSON): ${JSON.stringify(data.parsed ?? {})}
 - Fields explicitly SKIPPED (never ask again): ${JSON.stringify(data.skippedFields)}
-- Missing key fields detected locally BEFORE merging latest answer: ${JSON.stringify(missing)}
+- Fields already ASKED once (never ask again unless listed as reask): ${JSON.stringify(data.askedFields)}
+- Server-flagged reask (must re-ask this field with the stated reason): ${JSON.stringify(data.reaskField)}
+- Fields the server considers still missing after applying asked/skipped filters: ${JSON.stringify(missing)}
 - Turn count so far: ${data.turnCount} / ${MAX_PLANNER_TURNS}
 - Conversation so far:
 ${historyBlock}
@@ -61,11 +61,12 @@ ${historyBlock}
 ## Rules
 1. Structured parsed fields must contain only facts the user explicitly typed, spoke, or selected. Never write inferred guesses into parsed.
 2. If the latest assistant question targeted a field, treat the following user reply as an answer for that field unless it is clearly skip/vague/contradictory.
-3. After merging, ask only ONE field that is still missing, priority: cuisine > mealTime > budget > hardFilter. Never ask skipped fields.
-4. If the answer is unparseable or contradictory, re-ask that same field with reason "unparseable" or "conflict".
+3. Ask AT MOST ONE field per turn. Never ask any field in askedFields or skippedFields unless the server-flagged reaskField says otherwise. Priority for a new field: cuisine > mealTime > budget > hardFilter.
+4. If reaskField is set, ask exactly that field, set question.reason to reaskField.reason, and state the reason clearly in question.prompt (e.g. "I couldn't understand your last answer" or "That conflicts with X"). Otherwise use reason="missing".
 5. Generate 2-3 concrete suggestions for the selected question. Cuisine suggestions may be inferred from context, but they are UI options only. Do not put them in parsed.cuisines unless the user selected/typed them in the conversation history.
-6. If fields are complete, max turns reached, or remaining missing fields were skipped, set done=true, needsClarification=false, question=null.
+6. If fields are complete, max turns reached, or remaining missing fields were skipped/already asked, set done=true, needsClarification=false, question=null.
 7. Never invent constraints the user did not state. Only suggestions may be inferred. If original free-text did not explicitly mention a cuisine, parsed.cuisines must remain [] until the user answers the cuisine clarification.
+
 8. Output STRICT JSON only, matching:
 {
   "parsed": { "city": string, "cuisines": string[], "cuisinesInferred"?: boolean, "cuisineLevelConstraints"?: [{"text": string, "weight": number}], "dateTime": string, "hardFilters": [{"text": string, "weight": number}], "softPreferences": [{"text": string, "weight": number}], "negativeFilters": [{"text": string, "weight": number}], "dishPreferences": string[], "searchStrategy": string[], "visitTime"?: null | {"mentioned": boolean, "evidence": string, "weekday": number | null, "hhmm": string | null, "raw": string} },
