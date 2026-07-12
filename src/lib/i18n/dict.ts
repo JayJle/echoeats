@@ -517,6 +517,9 @@ export const dict: Record<Lang, Dict> = {
     "chat.progress.photos": "Organizing photos and details…",
     "chat.progress.done": "Done, opening results…",
     "chat.progress.startingUp": "Starting up…",
+    "chat.roundsHint": "Up to {n} more turn(s)",
+    "chat.summary.label": "Understood",
+    "chat.autoSearchNotice": "Got enough — searching now~",
 
   },
 };
