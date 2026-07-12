@@ -3292,12 +3292,14 @@ const ClarifyInput = z.object({
 const FIELD_ORDER = ["cuisine", "visitTime", "budget", "vibe", "dish", "avoid"] as const;
 type ClarifyField = (typeof FIELD_ORDER)[number];
 
+// Loose schema so Qwen JSON passes even if it omits optional-ish keys.
+// Enum/nullable/boolean constraints are enforced in code after parse.
 const ClarifyOutput = z.object({
-  action: z.enum(["ask", "search"]),
-  field: z.enum(FIELD_ORDER).nullable(),
-  question: z.string().nullable(),
-  suggestions: z.array(z.string()).nullable(),
-  allowSkip: z.boolean().nullable(),
+  action: z.string(),
+  field: z.string().nullish(),
+  question: z.string().nullish(),
+  suggestions: z.array(z.string()).nullish(),
+  allowSkip: z.boolean().nullish(),
 });
 
 type FieldFallback = { q: string; s: string[] };
