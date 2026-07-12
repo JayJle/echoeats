@@ -366,13 +366,19 @@ function ChatPage() {
                     {t("chat.skip")}
                   </Button>
                 </div>
-                <form onSubmit={onFreeSubmit} className="flex gap-2">
+                <form onSubmit={onFreeSubmit} className="flex gap-2 items-start">
                   <Input
                     value={freeInput}
                     onChange={(e) => setFreeInput(e.target.value)}
                     placeholder={t("chat.orTypeYourOwn")}
                     className="flex-1"
                     maxLength={200}
+                  />
+                  <MicButton
+                    onTranscript={(text) =>
+                      setFreeInput((prev) => (prev ? `${prev} ${text}` : text).slice(0, 200))
+                    }
+                    size="icon"
                   />
                   <Button type="submit" size="icon" disabled={!freeInput.trim()}>
                     <Send className="w-4 h-4" />
