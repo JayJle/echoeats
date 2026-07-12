@@ -307,44 +307,30 @@ function ChatPage() {
               <p className="text-sm text-muted-foreground">{t("chat.intro.hint")}</p>
             </div>
 
-            <div className="py-6">
+            <div className="py-4">
               <VoiceInput
                 variant="hero"
                 disabled={thinking}
                 onTranscript={(text) => {
-                  setIntroText(text);
-                  void runIntro(text);
+                  setIntroText((prev) => (prev ? `${prev}${prev.endsWith(" ") ? "" : " "}${text}` : text).slice(0, 500));
                 }}
               />
             </div>
 
-            {!showIntroText ? (
-              <div className="text-center">
-                <button
-                  type="button"
-                  onClick={() => setShowIntroText(true)}
-                  className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                >
-                  {t("step3.voice.orType")}
-                </button>
+            <div className="space-y-3">
+              <Textarea
+                value={introText}
+                onChange={(e) => setIntroText(e.target.value)}
+                placeholder={t("chat.intro.placeholder")}
+                className="min-h-[100px] text-base resize-none"
+                maxLength={500}
+              />
+              <div className="flex justify-end">
+                <Button type="submit" size="lg" disabled={!introText.trim() || thinking}>
+                  {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
+                </Button>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <Textarea
-                  autoFocus
-                  value={introText}
-                  onChange={(e) => setIntroText(e.target.value)}
-                  placeholder={t("chat.intro.placeholder")}
-                  className="min-h-[100px] text-base resize-none"
-                  maxLength={500}
-                />
-                <div className="flex justify-end">
-                  <Button type="submit" disabled={!introText.trim() || thinking}>
-                    {thinking ? <><Loader2 className="animate-spin mr-2 w-4 h-4" />{t("chat.thinking")}</> : t("chat.intro.submit")}
-                  </Button>
-                </div>
-              </div>
-            )}
+            </div>
             {error && <p className="text-sm text-destructive text-center" role="alert">{error}</p>}
           </form>
         ) : (
