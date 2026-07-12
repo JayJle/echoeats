@@ -142,8 +142,8 @@ function ChatPage() {
       });
       setParsed(parsed);
       const iter = await searchFn({
-        data: { ...parsed, uiLanguage: lang } as Parameters<typeof searchFn>[0]["data"],
-      });
+        data: { ...parsed, uiLanguage: lang },
+      } as Parameters<typeof searchFn>[0]);
       const response = await consumeSearchStream(iter);
       setResults(response);
       navigate({ to: "/results" });

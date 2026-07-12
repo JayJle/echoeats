@@ -202,7 +202,7 @@ export const useQueryStore = create<QueryState>()(
           state.askedFields = state.askedFields ?? [];
           state.skippedFields = state.skippedFields ?? [];
         }
-        return state as QueryState;
+        return state as unknown as QueryState;
       },
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),

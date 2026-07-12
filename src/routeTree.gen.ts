@@ -13,6 +13,7 @@ import { Route as Char91indexChar93RouteImport } from './routes/[index]'
 import { Route as ResultsRouteImport } from './routes/results'
 import { Route as RequirementsRouteImport } from './routes/requirements'
 import { Route as CuisinesRouteImport } from './routes/cuisines'
+import { Route as ChatRouteImport } from './routes/chat'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
 import { Route as AdminFeedbackRouteImport } from './routes/admin.feedback'
@@ -37,6 +38,11 @@ const CuisinesRoute = CuisinesRouteImport.update({
   path: '/cuisines',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ChatRoute = ChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -55,6 +61,7 @@ const AdminFeedbackRoute = AdminFeedbackRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/chat': typeof ChatRoute
   '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
@@ -64,6 +71,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/chat': typeof ChatRoute
   '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
@@ -74,6 +82,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/chat': typeof ChatRoute
   '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
   '/requirements': typeof RequirementsRoute
@@ -85,6 +94,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/chat'
     | '/cuisines'
     | '/index'
     | '/requirements'
@@ -94,6 +104,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/chat'
     | '/cuisines'
     | '/index'
     | '/requirements'
@@ -103,6 +114,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/chat'
     | '/cuisines'
     | '/index'
     | '/requirements'
@@ -113,6 +125,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ChatRoute: typeof ChatRoute
   CuisinesRoute: typeof CuisinesRoute
   Char91indexChar93Route: typeof Char91indexChar93Route
   RequirementsRoute: typeof RequirementsRoute
@@ -151,6 +164,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CuisinesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/chat': {
+      id: '/chat'
+      path: '/chat'
+      fullPath: '/chat'
+      preLoaderRoute: typeof ChatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -177,6 +197,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ChatRoute: ChatRoute,
   CuisinesRoute: CuisinesRoute,
   Char91indexChar93Route: Char91indexChar93Route,
   RequirementsRoute: RequirementsRoute,
