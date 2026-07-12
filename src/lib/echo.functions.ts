@@ -40,7 +40,6 @@ const echoLog = {
 const ParseInput = z.object({
   city: z.string().min(1),
   cuisines: z.array(z.string()).default([]),
-  autoInferCuisines: z.boolean().default(true),
   date: z.string().default(""),
   freeText: z.string().default(""),
   uiLanguage: z.enum(["zh", "en"]).default("zh"),
@@ -189,6 +188,83 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
     softPreferences: exactDedupe(parsed.softPreferences),
     negativeFilters: negFixed,
     dishPreferences: dishDedupe(parsed.dishPreferences),
+  };
+}
+
+const GENERIC_CUISINE_WORDS = new Set([
+  "餐厅",
+  "餐廳",
+  "restaurants",
+  "restaurant",
+  "レストラン",
+  "음식점",
+  "食堂",
+]);
+
+const CUISINE_ALIASES: string[][] = [
+  ["寿司", "壽司", "sushi", "すし", "鮨"],
+  ["拉面", "拉麵", "ramen", "ラーメン"],
+  ["居酒屋", "izakaya"],
+  ["日料", "日本料理", "日本菜", "japanese"],
+  ["韩餐", "韩国菜", "韓餐", "韓國菜", "korean"],
+  ["中餐", "中国菜", "中國菜", "chinese"],
+  ["川菜", "四川菜", "sichuan", "szechuan"],
+  ["粤菜", "粵菜", "广府菜", "廣府菜", "cantonese"],
+  ["点心", "點心", "dim sum"],
+  ["泰国菜", "泰國菜", "thai"],
+  ["越南菜", "vietnamese"],
+  ["印度菜", "indian"],
+  ["意大利菜", "義大利菜", "italian"],
+  ["法餐", "法国菜", "法國菜", "french"],
+  ["西班牙菜", "spanish"],
+  ["墨西哥菜", "mexican"],
+  ["披萨", "披薩", "pizza"],
+  ["汉堡", "漢堡", "burger", "hamburger"],
+  ["牛排", "steak", "steakhouse"],
+  ["烧烤", "燒烤", "烤肉", "bbq", "barbecue", "yakiniku", "焼肉"],
+  ["火锅", "火鍋", "hotpot", "hot pot", "しゃぶしゃぶ"],
+  ["串烧", "串燒", "yakitori", "焼き鳥"],
+  ["天妇罗", "天婦羅", "tempura", "天ぷら"],
+  ["荞麦面", "蕎麦麵", "soba", "そば"],
+  ["乌冬", "烏冬", "udon", "うどん"],
+  ["怀石", "懐石", "会席", "kaiseki"],
+  ["咖喱", "curry"],
+  ["海鲜", "海鮮", "seafood"],
+  ["素食", "vegetarian", "vegan"],
+  ["咖啡", "咖啡馆", "咖啡館", "cafe", "coffee"],
+  ["甜品", "甜点", "甜點", "dessert"],
+];
+
+function normalizeCuisineText(text: string): string {
+  return text.normalize("NFKC").toLocaleLowerCase().replace(/[\s\-_/・·.。．,，、'’]/g, "");
+}
+
+function cuisineExplicitlyMentioned(cuisine: string, sourceText: string): boolean {
+  const c = cuisine.trim();
+  if (!c) return false;
+  const normalizedCuisine = normalizeCuisineText(c);
+  if (GENERIC_CUISINE_WORDS.has(normalizedCuisine)) return false;
+  const normalizedSource = normalizeCuisineText(sourceText);
+  if (normalizedCuisine && normalizedSource.includes(normalizedCuisine)) return true;
+  return CUISINE_ALIASES.some((group) => {
+    const normalizedGroup = group.map(normalizeCuisineText);
+    if (!normalizedGroup.includes(normalizedCuisine)) return false;
+    return normalizedGroup.some((alias) => alias && normalizedSource.includes(alias));
+  });
+}
+
+function sanitizeParsedCuisines(
+  parsed: z.infer<typeof ParsedSchema>,
+  selectedCuisines: string[],
+  freeText: string,
+): z.infer<typeof ParsedSchema> {
+  const cuisines = selectedCuisines.length
+    ? selectedCuisines
+    : parsed.cuisines.filter((c) => cuisineExplicitlyMentioned(c, freeText));
+  return {
+    ...parsed,
+    cuisines: uniqueStrings(cuisines),
+    cuisinesInferred: false,
   };
 }
 
