@@ -176,6 +176,12 @@ export function PlannerClarifyPanel({
   };
 
   const progress = useMemo(() => `${Math.min(turnCount, MAX_TURNS)} / ${MAX_TURNS}`, [turnCount]);
+  const activeAssistantMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return messages[i].id;
+    }
+    return null;
+  }, [messages]);
 
   return (
     <div className="rounded-2xl border border-primary/30 bg-card shadow-sm overflow-hidden">
@@ -223,9 +229,11 @@ export function PlannerClarifyPanel({
                     <button
                       key={i}
                       type="button"
-                      disabled={loading}
-                      onClick={() => submitAnswer(s.value, true)}
-                      className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-50 transition-colors"
+                      disabled={loading || m.id !== activeAssistantMessageId}
+                      onClick={() => {
+                        if (m.id === activeAssistantMessageId) submitAnswer(s.value, true);
+                      }}
+                      className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40 disabled:pointer-events-none transition-colors"
                     >
                       {s.label}
                     </button>
