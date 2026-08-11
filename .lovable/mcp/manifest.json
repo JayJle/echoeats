@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "sdk_version": "0.26.2",
+  "path": "/mcp",
+  "auth": {
+    "type": "oauth",
+    "issuer": "https://wzomihhyazliibqsbesp.supabase.co/auth/v1",
+    "accepted_audiences": [
+      "authenticated"
+    ]
+  },
+  "mcp": {
+    "server": {
+      "name": "echo-eats-your-food-concierge",
+      "version": "0.1.0",
+      "title": "Echo Eats: Your Food Concierge"
+    },
+    "tools": [
+      {
+        "name": "suggest_cities",
+        "title": "Suggest cities",
+        "description": "Resolve a partial or ambiguous city name into real city candidates (formatted name, country) before calling find_restaurants.",
+        "annotations": {
+          "readOnlyHint": true,
+          "idempotentHint": true,
+          "openWorldHint": true
+        },
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string",
+              "description": "Partial city name typed by the user, e.g. 'toky', '新宿'."
+            }
+          },
+          "required": [
+            "input"
+          ],
+          "additionalProperties": false,
+          "$schema": "http://json-schema.org/draft-07/schema#"
+        },
+        "outputSchema": null
+      },
+      {
+        "name": "find_restaurants",
+        "title": "Find restaurants",
+        "description": "Search real restaurants in a city with Google Maps data (name, address, rating, price level, opening hours, website, sample reviews). Use a short natural-language query such as 'ramen near Shinjuku' or 'brunch with outdoor seating'.",
+        "annotations": {
+          "readOnlyHint": true,
+          "idempotentHint": true,
+          "openWorldHint": true
+        },
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string",
+              "description": "City name, e.g. 'Tokyo', '东京', 'St. Louis, MO, USA'."
+            },
+            "query": {
+              "type": "string",
+              "description": "What to look for: cuisine, dish, neighborhood or vibe. Keep it short."
+            },
+            "maxResults": {
+              "type": "integer",
+              "description": "How many restaurants to return (1-15). Defaults to 8."
+            }
+          },
+          "required": [
+            "city",
+            "query"
+          ],
+          "additionalProperties": false,
+          "$schema": "http://json-schema.org/draft-07/schema#"
+        },
+        "outputSchema": null
+      }
+    ]
+  }
+}
