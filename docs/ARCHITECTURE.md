@@ -81,18 +81,31 @@ createOpenAICompatible({
 });
 ```
 
-| 节点 | 模型 | 输出方式 | maxOutputTokens |
-| --- | --- | --- | --- |
-| 需求结构化 `parseRequirements` | `qwen-plus`（失败重试 `qwen-max`） | `Output.object`（宽松 schema） | 默认 |
-| 语义聚类去重 `semanticClusterMerge` | `qwen-plus` | `Output.object` | 2000 |
-| 品类扩展 `expandCuisineQueries` | `qwen-turbo` | `Output.object` | 400 |
-| Pass 1 核验 `rankVerifyGroup` | `qwen-plus` | **纯文本 raw JSON + 手工 Zod 解析** | 10000 |
-| Pass 2 打分 `rankScoreGroup` | `qwen-plus` | `Output.object`（失败降 raw） | 2000 / 重试 1000 / raw 3000 |
-| Pass 3 文案 `rankCopyGroup` | `qwen-plus` | `Output.object`（失败降 raw） | 4000 / raw 6000 |
-| Tabelog / Yelp 抓取 | Perplexity `sonar` → `sonar-pro` | `json_schema` | 400 / 700 |
-| 语音转写 | ElevenLabs `scribe_v2` | multipart | — |
+全部 LLM 调用只有两个供应商：**阿里云 DashScope（通义千问）** 走 AI SDK（`@ai-sdk/openai-compatible` + `generateText`），**Perplexity** 走裸 `fetch`。项目里没有使用 Lovable AI Gateway / OpenAI / Gemini（`ai-gateway.ts` 里的 `createLovableAiGatewayProvider` 只是指向 `createQwenProvider` 的历史别名）。
 
-**为什么 Pass 1 不用 `Output.object`**：Pass 1 的 schema 最复杂（嵌套 `hardFilterChecks` + `matchDetails`），受约束解码时模型会偶发返回空响应（"No output generated"），触发 25–40s 的 raw fallback。改为直接 `generateText` + `extractJson` + `Zod.parse`，并对解析失败做一次"严格 JSON"重试，稳定性最好。
+密钥：`QWEN_API_KEY`（`echo.functions.ts:423`、`1549` 读取后透传给 server 模块）、`PERPLEXITY_API_KEY`、`GOOGLE_PLACES_API_KEY`、`ELEVENLABS_API_KEY`，均只在 server 端 `process.env` 读取。
+
+| 节点 | 文件 / 行 | 模型 | 输出方式 | maxOutputTokens |
+| --- | --- | --- | --- | --- |
+| 需求结构化 `parseRequirements` | `echo.functions.ts:624` | `qwen-plus`；两类重试都换 `qwen-max`（首轮抛错重试 `:800`；品类只返回兜底词时 forceInfer 重试 `:674`） | `Output.object`（`LooseParsedSchema`，之后再 `ParsedSchema.parse`） | 8000 |
+| 语义聚类去重 `semanticClusterMerge` | `echo.functions.ts:270` | `qwen-plus`（无重试，失败直接返回原 parsed） | `Output.object`（`SemanticClusterOutput`） | 2000 |
+| 品类本地化扩展 `expandCuisineQueries` | `cuisine-expand.server.ts:42` | `qwen-turbo`（无重试，失败回落 `primary=原文`、同义词/反例为空） | `Output.object` | 400 |
+| Pass 1 核验 `rankVerifyGroup` | `echo.functions.ts:2431` | `qwen-plus` | **纯文本 raw JSON + `extractJson` + `AiVerifyGroupSchema.parse`**；解析失败追加"严格 JSON"提示重试 1 次 | 10000 |
+| Pass 2 打分 `rankScoreGroup` | `echo.functions.ts:2532/2555/2577` | `qwen-plus` | `Output.object` → miss-only 定向重试 → raw JSON 兜底 → 全量回落 60 | 2000 / 重试 1000 / raw 3000 |
+| Pass 3 文案 `rankCopyGroup` | `echo.functions.ts:2729/2746` | `qwen-plus` | `Output.object` → raw JSON 兜底 → 该批返回空 picks | 4000 / raw 6000 |
+| Tabelog 抓取 | `tabelog.server.ts:329` | Perplexity `sonar` → 失败/字段空升级 `sonar-pro` | `response_format: json_schema` | `max_tokens` 400 / 700 |
+| Yelp 抓取 | `yelp.server.ts:306` | 同上，且按 URL 置信度决定起始档（high→`sonar`，low→直接 `sonar-pro` 且强制核验） | `response_format: json_schema` | `max_tokens` 400 / 700 |
+| 语音转写 | `routes/api/transcribe.ts:67` | ElevenLabs `scribe_v2`（非 LLM） | multipart form | — |
+
+三个 Pass 共用同一个 provider 实例与同一模型 `qwen-plus`（`echo.functions.ts:2145-2146`），拆分的是 prompt 与 schema，不是模型。所有调用都不设 `temperature`/`topP`，用 DashScope 默认值。
+
+**选型理由（与代码一致）**
+- `qwen-plus`：主力。中文需求理解 + 长 prompt（Pass 1 每批含全部候选证据）性价比最好，是解析、聚类、三段 Pass 的默认模型。
+- `qwen-max`：只作为 `parseRequirements` 的跨模型重试，避免同模型以同样方式再次失败或再次返回兜底品类。
+- `qwen-turbo`：只用于 `expandCuisineQueries` 这种短输入短输出、可失败可降级的辅助调用，最快最省。
+- Perplexity `sonar` / `sonar-pro`：需要联网检索 Tabelog / Yelp 页面并给出 URL，Qwen 无联网能力，所以这一层保留 Perplexity；先便宜的 `sonar`，只在结果不可用时升级 `sonar-pro`。
+
+**为什么 Pass 1 不用 `Output.object`**：Pass 1 的 schema 最复杂（嵌套 `hardFilterChecks` + `matchDetails`），受约束解码时模型会偶发返回空响应（"No output generated"），触发 25–40s 的 raw fallback。改为直接 `generateText` + `extractJson` + `Zod.parse`，并对解析失败做一次"严格 JSON"重试，稳定性最好。Pass 2 / Pass 3 的 schema 足够扁平，保留 `Output.object` 并各自带 raw 兜底。
 
 ---
 
