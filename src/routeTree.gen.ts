@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as Char91indexChar93RouteImport } from './routes/[index]'
 import { Route as ResultsRouteImport } from './routes/results'
 import { Route as RequirementsRouteImport } from './routes/requirements'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as CuisinesRouteImport } from './routes/cuisines'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
@@ -31,6 +32,11 @@ const ResultsRoute = ResultsRouteImport.update({
 const RequirementsRoute = RequirementsRouteImport.update({
   id: '/requirements',
   path: '/requirements',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CuisinesRoute = CuisinesRouteImport.update({
@@ -63,6 +69,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
+  '/login': typeof LoginRoute
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
   '/admin/feedback': typeof AdminFeedbackRoute
@@ -73,6 +80,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
+  '/login': typeof LoginRoute
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
   '/admin/feedback': typeof AdminFeedbackRoute
@@ -84,6 +92,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/cuisines': typeof CuisinesRoute
   '/index': typeof Char91indexChar93Route
+  '/login': typeof LoginRoute
   '/requirements': typeof RequirementsRoute
   '/results': typeof ResultsRoute
   '/admin/feedback': typeof AdminFeedbackRoute
@@ -96,6 +105,7 @@ export interface FileRouteTypes {
     | '/'
     | '/cuisines'
     | '/index'
+    | '/login'
     | '/requirements'
     | '/results'
     | '/admin/feedback'
@@ -106,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/cuisines'
     | '/index'
+    | '/login'
     | '/requirements'
     | '/results'
     | '/admin/feedback'
@@ -116,6 +127,7 @@ export interface FileRouteTypes {
     | '/'
     | '/cuisines'
     | '/index'
+    | '/login'
     | '/requirements'
     | '/results'
     | '/admin/feedback'
@@ -127,6 +139,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CuisinesRoute: typeof CuisinesRoute
   Char91indexChar93Route: typeof Char91indexChar93Route
+  LoginRoute: typeof LoginRoute
   RequirementsRoute: typeof RequirementsRoute
   ResultsRoute: typeof ResultsRoute
   AdminFeedbackRoute: typeof AdminFeedbackRoute
@@ -155,6 +168,13 @@ declare module '@tanstack/react-router' {
       path: '/requirements'
       fullPath: '/requirements'
       preLoaderRoute: typeof RequirementsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/cuisines': {
@@ -199,6 +219,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CuisinesRoute: CuisinesRoute,
   Char91indexChar93Route: Char91indexChar93Route,
+  LoginRoute: LoginRoute,
   RequirementsRoute: RequirementsRoute,
   ResultsRoute: ResultsRoute,
   AdminFeedbackRoute: AdminFeedbackRoute,
