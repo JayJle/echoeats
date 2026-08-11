@@ -2,20 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-
-type OAuthDetails = {
-  client?: { name?: string | null } | null;
-  redirect_url?: string | null;
-  redirect_to?: string | null;
-};
-
-type OAuthApi = {
-  getAuthorizationDetails: (id: string) => Promise<{ data: OAuthDetails | null; error: { message: string } | null }>;
-  approveAuthorization: (id: string) => Promise<{ data: OAuthDetails | null; error: { message: string } | null }>;
-  denyAuthorization: (id: string) => Promise<{ data: OAuthDetails | null; error: { message: string } | null }>;
-};
-
-const oauth = () => (supabase.auth as unknown as { oauth: OAuthApi }).oauth;
+import { supabaseOAuth } from "@/lib/supabase-oauth";
 
 export const Route = createFileRoute("/.lovable/oauth/consent")({
   ssr: false,
@@ -30,7 +17,7 @@ export const Route = createFileRoute("/.lovable/oauth/consent")({
   },
   loader: async ({ location }) => {
     const authorizationId = new URLSearchParams(location.search).get("authorization_id")!;
-    const { data, error } = await oauth().getAuthorizationDetails(authorizationId);
+    const { data, error } = await supabaseOAuth().getAuthorizationDetails(authorizationId);
     if (error) throw error;
     const immediate = data?.redirect_url ?? data?.redirect_to;
     if (immediate && !data?.client) throw redirect({ href: immediate });
@@ -67,8 +54,8 @@ function Consent() {
     setBusy(true);
     setError(null);
     const { data, error: err } = approve
-      ? await oauth().approveAuthorization(authorization_id)
-      : await oauth().denyAuthorization(authorization_id);
+      ? await supabaseOAuth().approveAuthorization(authorization_id)
+      : await supabaseOAuth().denyAuthorization(authorization_id);
     if (err) {
       setBusy(false);
       setError(err.message);
