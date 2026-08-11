@@ -1644,7 +1644,6 @@ export const searchRestaurants = createServerFn({ method: "POST" })
             routes.push({ tag, query });
           };
           pushRoute("primary", `${expansion.primary} ${data.city}`);
-          pushRoute("recommend", `${expansion.primary} ${data.city} ${semanticSuffix}`);
           for (const syn of expansion.synonyms.slice(0, 2)) {
             pushRoute(`synonym:${syn}`, `${syn} ${data.city}`);
           }
