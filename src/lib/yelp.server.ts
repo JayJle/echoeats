@@ -1,3 +1,4 @@
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, type PlatformReview } from "./evidence.server";
 // Yelp 信息抓取层（US / CA / 西欧分支用）
 // 策略：
 //   Stage 0: 多变体并发 /search → /biz/<slug> 候选 + 打分 → top1 + confidence
@@ -15,7 +16,6 @@ export type YelpInfo = {
   reviews: PlatformReview[]; // raw review text, not summarized
   confidence: YelpConfidence;
 };
-import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, type PlatformReview } from "./evidence.server";
 
 type CacheEntry = { info: YelpInfo | null; expireAt: number };
 const cache = new Map<string, CacheEntry>();
@@ -250,9 +250,6 @@ async function callPerplexity(opts: {
   const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const isFirst = stage === "sonar";
-    const summaryRule = isEn
-      ? "1-2 sentences in English summarizing Yelp reviews (specific dishes/service/atmosphere), <= 80 chars. Unreadable -> null."
-      : "1-2 句简体中文，归纳 Yelp 评论口碑（具体菜品/服务/氛围），≤ 60 字。读不到 → null。";
 
     const hintLine = preUrl
       ? `\n候选 Yelp 详情页 URL：${preUrl}\n${verifyMode
