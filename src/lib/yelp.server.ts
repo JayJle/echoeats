@@ -332,7 +332,8 @@ ${hintLine}
         },
       },
     };
-    if (isFirst) body.search_domain_filter = YELP_DOMAINS;
+    // 有候选 URL 时不加域名过滤（过滤会让模型读不到评论原文）
+    if (isFirst && !preUrl) body.search_domain_filter = YELP_DOMAINS;
 
     const res = await (await import("./retry.server")).withRetry(
       (sig) =>

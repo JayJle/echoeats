@@ -255,7 +255,9 @@ async function preSearchTabelog(opts: {
   console.log(
     `[Tabelog/search] ${name}: top=${top.url} score=${top.score} appearances=${top.appearances} (${scored.length} candidates, ${queries.length} variants)`,
   );
-  return top.url;
+  // 归一到店铺根页（搜索结果常命中 /dtlrvwlst/... 或 /dtlmenu/... 子页）
+  const base = top.url.match(TABELOG_SHOP_URL_RE)?.[0] ?? top.url;
+  return base.endsWith("/") ? base : `${base}/`;
 }
 
 // =========================================================================
@@ -286,7 +288,7 @@ async function callPerplexity(opts: {
 3. **priceRange（夜の予算/ランチ予算）**：读到就给。`;
 
     const hintLine = preUrl
-      ? `\n候选 Tabelog 店铺页 URL：${preUrl}\n请优先打开该页面核验店名+地址是否吻合，吻合则原样返回 url 并读取字段。\n`
+      ? `\n候选 Tabelog 店铺页 URL：${preUrl}\n口コミ列表页：${preUrl}dtlrvwlst/\n请优先打开店铺页核验店名+地址是否吻合，吻合则原样返回店铺页 url 并读取字段；口コミ原文请从口コミ列表页摘录。\n`
       : "";
 
     const cuisineLine = cuisine ? `- 料理类型：${cuisine}\n` : "";
@@ -358,7 +360,8 @@ ${priorityBlock}
         },
       },
     };
-    if (isFirst) {
+    // 有候选 URL 时不加域名过滤：实测过滤会让模型只拿到搜索摘要、读不到口コミ原文。
+    if (isFirst && !preUrl) {
       body.search_domain_filter = ["tabelog.com"];
     }
 
