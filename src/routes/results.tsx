@@ -865,6 +865,33 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
         </div>
       )}
 
+      {r.officialSite && (r.officialSite.signatureDishes.length > 0 || r.officialSite.menu.length > 0) && (
+        <div className="px-6 py-4 border-t border-border">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+            {t("results.official.title")}
+          </h4>
+          {r.officialSite.signatureDishes.length > 0 && (
+            <p className="text-sm mb-2">
+              <span className="text-muted-foreground">{t("results.official.signature")}：</span>
+              {r.officialSite.signatureDishes.join(" · ")}
+            </p>
+          )}
+          {r.officialSite.menu.length > 0 && (
+            <ul className="text-sm space-y-0.5 mb-2">
+              {r.officialSite.menu.slice(0, 6).map((m, i) => (
+                <li key={i} className="flex justify-between gap-3">
+                  <span>{m.name}</span>
+                  {m.price && <span className="text-muted-foreground shrink-0">{m.price}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+          <a href={r.officialSite.url} target="_blank" rel="noreferrer" className="inline-block text-xs text-primary hover:underline">
+            {t("results.official.view")}
+          </a>
+        </div>
+      )}
+
       <div className="px-6 py-4 border-t border-border bg-muted/30">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
           {t("results.aiSummary")}
