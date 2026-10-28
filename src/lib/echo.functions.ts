@@ -1,3 +1,4 @@
+import { MODELS } from "./models";
 import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
@@ -268,7 +269,7 @@ ${dishLines || "(空)"}`;
   let clustersOut: z.infer<typeof SemanticClusterOutput>;
   try {
     const { output } = await generateText({
-      model: gateway("qwen-plus"),
+      model: gateway(MODELS.cluster),
       prompt: clusterPrompt,
       maxOutputTokens: 2000,
       output: Output.object({
@@ -671,7 +672,7 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         "[parseRequirements] 用户要求 AI 识别但首轮返回兜底词，跨模型重试 forceInfer",
       );
       try {
-        const retry = await runOnce("qwen-max", { forceInfer: true });
+        const retry = await runOnce(MODELS.parseRetry, { forceInfer: true });
         if (!isAllFallback(retry.cuisines)) return retry;
         console.warn("[parseRequirements] forceInfer 重试仍为兜底，沿用首轮结果");
       } catch (e) {
@@ -792,12 +793,12 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
     try {
       let parsed: z.infer<typeof ParsedSchema>;
       try {
-        const first = await runOnce("qwen-plus");
+        const first = await runOnce(MODELS.parse);
         parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(first)));
       } catch (e1) {
         console.warn("[parseRequirements] 第一次解析失败：", e1 instanceof Error ? e1.message : e1);
         // 跨模型重试，避免同模型以同样方式再次失败
-        const second = await runOnce("qwen-max");
+        const second = await runOnce(MODELS.parseRetry);
         parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(second)));
       }
       const beforeCluster = {
@@ -2142,7 +2143,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     );
 
     const gateway = createQwenProvider(aiKey);
-    const model = gateway("qwen-plus");
+    const model = gateway(MODELS.rank);
 
 
     const hardFiltersList = data.hardFilters.map((h) => h.text);
