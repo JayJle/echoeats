@@ -2,7 +2,6 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, HelpCircle, Loader2, Mic, SlidersHorizontal, Sparkles, Square } from "lucide-react";
 import { toast } from "sonner";
-import { NeedBubbles } from "@/components/NeedBubbles";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StepShell } from "@/components/StepShell";
 import { Textarea } from "@/components/ui/textarea";
@@ -435,9 +434,6 @@ function StepRequirements() {
     setValue((v) => (v.trim() ? `${v.replace(/[、，,。.\s]+$/, "")}、${trimmed}` : trimmed));
   };
 
-  const appendBubble = (text: string) => {
-    setValue((v) => (v.trim() ? `${v.replace(/[、，,]\s*$/, "")}、${text}` : text));
-  };
 
   const isIOS = () => {
     if (typeof navigator === "undefined") return false;
@@ -656,7 +652,6 @@ function StepRequirements() {
         }}
         className="space-y-5"
       >
-        <NeedBubbles onPick={appendBubble} />
 
         {/* Prominent voice input card */}
         <div

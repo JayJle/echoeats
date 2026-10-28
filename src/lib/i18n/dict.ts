@@ -246,7 +246,6 @@ export const dict: Record<Lang, Dict> = {
     "errpage.retry": "Try again",
     "errpage.home": "Go home",
 
-    "needs.aria": "需求灵感",
   },
   en: {
     "brand.tagline": "AI Restaurant Discovery Agent",
@@ -486,7 +485,6 @@ export const dict: Record<Lang, Dict> = {
     "errpage.retry": "Try again",
     "errpage.home": "Go home",
 
-    "needs.aria": "Need inspiration",
   },
 };
 
