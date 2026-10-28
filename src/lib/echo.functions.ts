@@ -985,6 +985,15 @@ const RestaurantSchema = z.object({
     .nullable()
     .optional()
     .default(null),
+  officialSite: z
+    .object({
+      url: z.string(),
+      signatureDishes: z.array(z.string()),
+      menu: z.array(z.object({ name: z.string(), price: z.string().nullable() })),
+    })
+    .nullable()
+    .optional()
+    .default(null),
   weekdayDescriptions: z.array(z.string()).nullable().optional().default(null),
   visitTimeMatch: z.enum(["open", "unknown"]).nullable().optional().default(null),
   scoreBreakdown: z.array(z.object({ label: z.string(), delta: z.number() })).optional().default([]),
@@ -3157,6 +3166,10 @@ Schema：
           photoUrls: [],
           tabelog: tabelogInfo,
           yelp: yelpInfo,
+          officialSite: (() => {
+            const o = officialById.get(p.placeId);
+            return o ? { url: o.url, signatureDishes: o.signatureDishes, menu: o.menu.slice(0, 8) } : null;
+          })(),
           weekdayDescriptions: p.weekdayDescriptions ?? null,
           visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
           scoreBreakdown: breakdown,
