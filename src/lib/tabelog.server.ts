@@ -17,7 +17,7 @@ export type TabelogInfo = {
   reviews: PlatformReview[]; // 原文评论（不翻译、不总结）
 };
 
-import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, type PlatformReview } from "./evidence.server";
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, type PlatformReview } from "./evidence.server";
 
 const cache = new Map<string, TabelogInfo | null>();
 
@@ -364,7 +364,7 @@ ${priorityBlock}
 
     const res = await (await import("./retry.server")).withRetry(
       (sig) =>
-        (async () => (await import("./evidence.server")).withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
+        withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -373,7 +373,7 @@ ${priorityBlock}
           // 内层用 retry signal；外层 controller 仍保留 20s 兜底总超时
           signal: sig ?? controller.signal,
           body: JSON.stringify(body),
-        })))()).then((r) => {
+        })).then((r) => {
           if (!r.ok && (r.status >= 500 || r.status === 429)) {
             throw new Error(`Tabelog upstream ${r.status}`);
           }

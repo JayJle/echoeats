@@ -1,4 +1,4 @@
-import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, type PlatformReview } from "./evidence.server";
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, type PlatformReview } from "./evidence.server";
 // Yelp 信息抓取层（US / CA / 西欧分支用）
 // 策略：
 //   Stage 0: 多变体并发 /search → /biz/<slug> 候选 + 打分 → top1 + confidence
@@ -336,12 +336,12 @@ ${hintLine}
 
     const res = await (await import("./retry.server")).withRetry(
       (sig) =>
-        (async () => (await import("./evidence.server")).withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
+        withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
           method: "POST",
           headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
           signal: sig ?? controller.signal,
           body: JSON.stringify(body),
-        })))()).then((r) => {
+        })).then((r) => {
           if (!r.ok && (r.status >= 500 || r.status === 429)) {
             throw new Error(`Yelp upstream ${r.status}`);
           }
