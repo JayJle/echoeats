@@ -87,9 +87,9 @@ createOpenAICompatible({
 
 | 节点 | 文件 / 行 | 模型 | 输出方式 | maxOutputTokens |
 | --- | --- | --- | --- | --- |
-| 需求结构化 `parseRequirements` | `echo.functions.ts:624` | `qwen-plus`；两类重试都换 `qwen-max`（首轮抛错重试 `:800`；品类只返回兜底词时 forceInfer 重试 `:674`） | `Output.object`（`LooseParsedSchema`，之后再 `ParsedSchema.parse`） | 8000 |
+| 需求结构化 `parseRequirements` | `echo.functions.ts:624` | `qwen-plus`；两类重试都换 `qwen3.8-max`（首轮抛错重试 `:800`；品类只返回兜底词时 forceInfer 重试 `:674`） | `Output.object`（`LooseParsedSchema`，之后再 `ParsedSchema.parse`） | 8000 |
 | 语义聚类去重 `semanticClusterMerge` | `echo.functions.ts:270` | `qwen-plus`（无重试，失败直接返回原 parsed） | `Output.object`（`SemanticClusterOutput`） | 2000 |
-| 品类本地化扩展 `expandCuisineQueries` | `cuisine-expand.server.ts:42` | `qwen-turbo`（无重试，失败回落 `primary=原文`、同义词/反例为空） | `Output.object` | 400 |
+| 品类本地化扩展 `expandCuisineQueries` | `cuisine-expand.server.ts:42` | `qwen3.8-flash`（无重试，失败回落 `primary=原文`、同义词/反例为空） | `Output.object` | 400 |
 | Pass 1 核验 `rankVerifyGroup` | `echo.functions.ts:2431` | `qwen-plus` | **纯文本 raw JSON + `extractJson` + `AiVerifyGroupSchema.parse`**；解析失败追加"严格 JSON"提示重试 1 次 | 10000 |
 | Pass 2 打分 `rankScoreGroup` | `echo.functions.ts:2532/2555/2577` | `qwen-plus` | `Output.object` → miss-only 定向重试 → raw JSON 兜底 → 全量回落 60 | 2000 / 重试 1000 / raw 3000 |
 | Pass 3 文案 `rankCopyGroup` | `echo.functions.ts:2729/2746` | `qwen-plus` | `Output.object` → raw JSON 兜底 → 该批返回空 picks | 4000 / raw 6000 |
@@ -101,8 +101,8 @@ createOpenAICompatible({
 
 **选型理由（与代码一致）**
 - `qwen-plus`：主力。中文需求理解 + 长 prompt（Pass 1 每批含全部候选证据）性价比最好，是解析、聚类、三段 Pass 的默认模型。
-- `qwen-max`：只作为 `parseRequirements` 的跨模型重试，避免同模型以同样方式再次失败或再次返回兜底品类。
-- `qwen-turbo`：只用于 `expandCuisineQueries` 这种短输入短输出、可失败可降级的辅助调用，最快最省。
+- `qwen3.8-max`：只作为 `parseRequirements` 的跨模型重试，避免同模型以同样方式再次失败或再次返回兜底品类。
+- `qwen3.8-flash`：只用于 `expandCuisineQueries` 这种短输入短输出、可失败可降级的辅助调用，最快最省。
 - Perplexity `sonar` / `sonar-pro`：需要联网检索 Tabelog / Yelp 页面并给出 URL，Qwen 无联网能力，所以这一层保留 Perplexity；先便宜的 `sonar`，只在结果不可用时升级 `sonar-pro`。
 
 **为什么 Pass 1 不用 `Output.object`**：Pass 1 的 schema 最复杂（嵌套 `hardFilterChecks` + `matchDetails`），受约束解码时模型会偶发返回空响应（"No output generated"），触发 25–40s 的 raw fallback。改为直接 `generateText` + `extractJson` + `Zod.parse`，并对解析失败做一次"严格 JSON"重试，稳定性最好。Pass 2 / Pass 3 的 schema 足够扁平，保留 `Output.object` 并各自带 raw 兜底。
@@ -190,7 +190,7 @@ Places 请求参数：`includedType: "restaurant"`，`maxResultCount ≤ 20`，`
   - **否定保留**：`negativeFilters[].text` 必须以否定词开头，且 `→` 右侧标准化结论也必须保留否定语气。代码侧 `ensureNegationPrefix()` 再兜一层并打 `[neg-prefix]` 日志。
   - **禁止本步去重**：同一诉求的多次表达必须各自单条输出（"环境稍好"/"环境好"/"环境一定要好" → 三条），交由 §6.3 聚类合并；否则更强的那次表达会丢失。
 - **时间修正**：`inferWeekdayFromText` / `inferMealPeriod` / `inferExplicitClock` + 半日制修正（"6:30 PM" 不会被解析成 06:30）。
-- **兜底链**：`qwen-plus` 失败 → `qwen-max`（`forceInfer`）→ 仍失败则返回带默认值的 `ParsedSchema`（空数组 + `mode:"deep"`）。
+- **兜底链**：`qwen-plus` 失败 → `qwen3.8-max`（`forceInfer`）→ 仍失败则返回带默认值的 `ParsedSchema`（空数组 + `mode:"deep"`）。
 
 ### 6.3 语义聚类去重 `semanticClusterMerge`
 
@@ -446,7 +446,7 @@ AiCopyPickSchema   = { placeId, aiSummary, pros[], cons[] }
 | 节点 | 失败表现 | 降级动作 |
 | --- | --- | --- |
 | 城市校验 | Places 异常 | `unavailable`，前端可重试 |
-| parseRequirements | qwen-plus 失败 | 换 `qwen-max`；再失败用 schema 默认值 |
+| parseRequirements | qwen-plus 失败 | 换 `qwen3.8-max`；再失败用 schema 默认值 |
 | 语义聚类 | 调用/解析失败 | 退化为严格字符串去重 |
 | 品类扩展 | 调用失败 | `primary=原词`，不做保真过滤 |
 | 某一路召回 | 该 query 失败 | 其余路照常；该 cuisine 全空才 warning |
