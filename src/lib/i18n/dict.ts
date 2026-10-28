@@ -75,6 +75,16 @@ export const dict: Record<Lang, Dict> = {
     "step3.voice.orType": "或者手动输入",
     "step3.voice.firstTip": "试试语音输入，比打字快很多 🎤",
     "step3.parsedPreview": "AI 已理解的需求",
+    "weights.adjust": "调整权重",
+    "weights.apply": "应用并重新搜索",
+    "weights.cancel": "取消",
+    "weights.must": "必须满足",
+    "weights.nice": "加分项",
+    "weights.avoid": "避免",
+    "weights.remove": "删除",
+    "weights.toNice": "改为加分项",
+    "weights.toMust": "改为必须满足",
+    "weights.promoteHint": "权重 ≥ 0.8 会按必须满足处理",
 
 
 
@@ -306,6 +316,16 @@ export const dict: Record<Lang, Dict> = {
     "step3.voice.orType": "Or type it instead",
     "step3.voice.firstTip": "Try voice input — it's much faster 🎤",
     "step3.parsedPreview": "What we understood",
+    "weights.adjust": "Adjust weights",
+    "weights.apply": "Apply & re-search",
+    "weights.cancel": "Cancel",
+    "weights.must": "Must-haves",
+    "weights.nice": "Nice-to-haves",
+    "weights.avoid": "Avoid",
+    "weights.remove": "Remove",
+    "weights.toNice": "Make nice-to-have",
+    "weights.toMust": "Make must-have",
+    "weights.promoteHint": "At 0.8 or more this counts as a must-have",
 
 
 
