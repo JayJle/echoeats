@@ -488,7 +488,6 @@ export const dict: Record<Lang, Dict> = {
   },
 };
 
-
 // Cuisine suggestion chips on step 2 — bilingual.
 export const CUISINE_SUGGESTIONS: Array<{ zh: string; en: string }> = [
   { zh: "寿司", en: "Sushi" },
