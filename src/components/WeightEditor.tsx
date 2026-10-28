@@ -37,17 +37,38 @@ export function WeightEditor({
     { b: "negativeFilters", label: t("weights.avoid") },
   ];
 
+  // Row colour mirrors the tag bubbles: must-have strength (0.8+) shows in the
+  // primary accent, softer weights in the secondary tone, and avoids in red.
+  const toneFor = (b: Bucket, w: number): "primary" | "secondary" | "destructive" => {
+    if (b === "negativeFilters") return "destructive";
+    return w >= PROMOTE_AT || b === "hardFilters" ? "primary" : "secondary";
+  };
+
   return (
     <div className="space-y-3">
       {groups.map(({ b, label }) =>
         draft[b].length === 0 ? null : (
           <div key={b} className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">{label}</p>
-            {draft[b].map((c, i) => (
-              <div key={`${b}-${i}`} className="rounded-md border border-border/60 p-2 space-y-1.5">
+            {draft[b].map((c, i) => {
+              const tone = toneFor(b, c.weight);
+              const rowCls =
+                tone === "primary"
+                  ? "border-primary/30 bg-primary/10"
+                  : tone === "secondary"
+                    ? "border-secondary bg-secondary/40"
+                    : "border-destructive/30 bg-destructive/10";
+              const numCls =
+                tone === "primary"
+                  ? "text-primary"
+                  : tone === "secondary"
+                    ? "text-secondary-foreground"
+                    : "text-destructive";
+              return (
+              <div key={`${b}-${i}`} className={`rounded-md border p-2 space-y-1.5 transition-colors duration-200 ${rowCls}`}>
                 <div className="flex items-start gap-2">
                   <span className="flex-1 text-xs">{c.text}</span>
-                  <span className="text-xs tabular-nums font-medium">{c.weight.toFixed(1)}</span>
+                  <span className={`text-xs tabular-nums font-medium transition-colors duration-200 ${numCls}`}>{c.weight.toFixed(1)}</span>
                   <button type="button" aria-label={t("weights.remove")} onClick={() => update(b, i, null)} className="text-muted-foreground hover:text-destructive">
                     <X className="w-3.5 h-3.5" />
                   </button>
