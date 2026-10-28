@@ -407,15 +407,18 @@ function inferMealPeriod(text: string): { evidence: string; hhmm: string } | nul
 }
 
 function inferExplicitClock(text: string): string | null {
+  // 先认 12 小时制（"6:30 PM"），否则 24 小时正则会把它当成 06:30。
+  const clock12 = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])/i);
+  if (clock12) {
+    const isPm = clock12[3].toLowerCase().startsWith("p");
+    const hour = (Number(clock12[1]) % 12) + (isPm ? 12 : 0);
+    return `${String(hour).padStart(2, "0")}:${clock12[2] ?? "00"}`;
+  }
   const clock24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
   if (clock24) {
     return `${clock24[1].padStart(2, "0")}:${clock24[2]}`;
   }
-  const clock12 = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/i);
-  if (!clock12) return null;
-  const period = clock12[3].toLowerCase();
-  const hour = (Number(clock12[1]) % 12) + (period === "pm" ? 12 : 0);
-  return `${String(hour).padStart(2, "0")}:${clock12[2] ?? "00"}`;
+  return null;
 }
 
 export const parseRequirements = createServerFn({ method: "POST" })
