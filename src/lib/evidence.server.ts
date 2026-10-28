@@ -339,3 +339,28 @@ ${topics.map((t, i) => `${i + 1}. ${t}`).join("\n")}
   console.log(`[WebSupplement] ${opts.name}: snippets=${out.length} topics=${topics.length}`);
   return out;
 }
+
+// Dedicated reviews-only read: used when the platform reader found the shop page but returned no review text.
+// A short, single-purpose prompt reads review text far more reliably than the combined field prompt.
+export async function fetchPlatformReviewsOnly(opts: {
+  platform: "Tabelog" | "Yelp";
+  name: string;
+  shopUrl: string;
+  reviewListUrl?: string;
+}): Promise<PlatformReview[]> {
+  const apiKey = process.env.PERPLEXITY_API_KEY;
+  if (!apiKey) return [];
+  const r = await pplxChat({
+    apiKey,
+    model: "sonar",
+    system: "你是评论原文摘录助手。只摘录页面上真实存在的评论原文，不翻译、不总结、不编造。",
+    user: `读取 ${opts.platform} 店铺「${opts.name}」的用户评论。店铺页 ${opts.shopUrl}${opts.reviewListUrl ? `，评论列表页 ${opts.reviewListUrl}` : ""} 。原样摘录最多 ${PLATFORM_REVIEW_LIMIT} 条评论原文（保持原语言，不翻译不总结，每条≤${REVIEW_CHAR_LIMIT}字），尽量最新、好评差评都要有，带星级和日期。只摘录这家店的评论。只输出 JSON。`,
+    schemaName: "platform_reviews",
+    schema: { type: "object", properties: { reviews: REVIEWS_JSON_SCHEMA }, required: ["reviews"] },
+    maxTokens: 1800,
+    label: `${opts.platform.toLowerCase()}-reviews`,
+  });
+  const reviews = parseReviews(safeJson(r?.content ?? null)?.reviews);
+  console.log(`[${opts.platform}/reviews-only] ${opts.name}: reviews=${reviews.length}`);
+  return reviews;
+}

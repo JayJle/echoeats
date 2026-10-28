@@ -17,7 +17,7 @@ export type TabelogInfo = {
   reviews: PlatformReview[]; // 原文评论（不翻译、不总结）
 };
 
-import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, type PlatformReview } from "./evidence.server";
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, fetchPlatformReviewsOnly, type PlatformReview } from "./evidence.server";
 
 const cache = new Map<string, TabelogInfo | null>();
 
@@ -499,6 +499,16 @@ export async function fetchTabelogInfo(
       apiKey, stage: "sonar-pro", name, address, city, area, cuisine, preUrl,
     });
     info = r2?.ok ? parseStage(name, "sonar-pro", r2.json, preUrl) : null;
+  }
+
+  if (info?.url && info.reviews.length === 0) {
+    const base = info.url.endsWith("/") ? info.url : `${info.url}/`;
+    info = {
+      ...info,
+      reviews: await fetchPlatformReviewsOnly({
+        platform: "Tabelog", name, shopUrl: base, reviewListUrl: `${base}dtlrvwlst/`,
+      }),
+    };
   }
 
   cache.set(cacheKey, info);
