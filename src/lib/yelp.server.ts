@@ -11,9 +11,11 @@ export type YelpInfo = {
   reviewCount: number | null;
   url: string | null;
   priceLevel: "$" | "$$" | "$$$" | "$$$$" | null;
-  summary: string | null;
+  summary: string | null; // legacy, always null now
+  reviews: PlatformReview[]; // raw review text, not summarized
   confidence: YelpConfidence;
 };
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, type PlatformReview } from "./evidence.server";
 
 type CacheEntry = { info: YelpInfo | null; expireAt: number };
 const cache = new Map<string, CacheEntry>();
@@ -266,7 +268,7 @@ async function callPerplexity(opts: {
 - 地区提示：${area}
 ${hintLine}
 **字段优先级（按顺序尽力读）**：
-1. **summary（评论口碑，最关键）**：基于真实 Yelp 评论文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
+1. **${REVIEWS_PROMPT_RULE}**
 2. **rating（评分）/ reviewCount（评论数）**：直接读页面字段。
 3. **priceLevel（价位）**：读到就给。
 
@@ -277,7 +279,7 @@ ${hintLine}
 - rating: 0-5 数字字符串如 "4.3"，读不到 → null。
 - reviewCount: 整数，读不到 → null。
 - priceLevel: "$" / "$$" / "$$$" / "$$$$"，读不到 → null。
-- summary: ${summaryRule}
+- reviews: 见上文，原文摘录 Yelp 评论，最多 6 条。
 
 只输出 JSON。`
       : `请在 Yelp 详情页读取这家店的字段${verifyMode ? "，**严格核验店名+地址**" : ""}。
@@ -289,7 +291,7 @@ ${hintLine}
 - 期望地区：${area || city}
 ${hintLine}
 **字段优先级（按顺序尽力读）**：
-1. **summary（评论口碑，最关键）**：基于真实 Yelp 评论文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
+1. **${REVIEWS_PROMPT_RULE}**
 2. **rating（评分）/ reviewCount（评论数）**：直接读页面字段。
 3. **priceLevel（价位）**：读到就给。
 
@@ -297,8 +299,8 @@ ${hintLine}
 - url 优先级最高：找到 Yelp 详情页（https://www.yelp.com/biz/<slug>）就返回${verifyMode ? "（核验通过的前提下）" : ""}。
 - ✗ 禁止返回搜索/列表/排行榜 URL。
 - 同名不同店：选地址最匹配该城市的那家。
-- rating / reviewCount / priceLevel / summary：读到就给，读不到 null，禁止编造。
-- summary: ${summaryRule}
+- rating / reviewCount / priceLevel / reviews：读到就给，读不到 null，禁止编造。
+- reviews: 见上文，原文摘录 Yelp 评论，最多 6 条。
 
 只输出 JSON。${verifyMode ? "核验不通过时 url 也必须为 null。" : ""}`;
 
@@ -313,7 +315,7 @@ ${hintLine}
         },
         { role: "user", content: userPrompt },
       ],
-      max_tokens: isFirst ? 400 : 700,
+      max_tokens: 1800,
       temperature: 0.1,
       response_format: {
         type: "json_schema",
@@ -326,9 +328,9 @@ ${hintLine}
               reviewCount: { type: ["number", "null"] },
               url: { type: ["string", "null"] },
               priceLevel: { type: ["string", "null"] },
-              summary: { type: ["string", "null"] },
+              reviews: REVIEWS_JSON_SCHEMA,
             },
-            required: ["rating", "reviewCount", "url", "priceLevel", "summary"],
+            required: ["rating", "reviewCount", "url", "priceLevel", "reviews"],
           },
         },
       },
@@ -380,7 +382,7 @@ function parseStage(
   const json = raw as Record<string, unknown> | null;
   if (!json) {
     return preUrl
-      ? { rating: null, reviewCount: null, url: preUrl, priceLevel: null, summary: null, confidence }
+      ? { rating: null, reviewCount: null, url: preUrl, priceLevel: null, summary: null, reviews: [], confidence }
       : null;
   }
   const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
@@ -392,7 +394,7 @@ function parseStage(
 
   if (!content) {
     const url = preUrl ?? yelpCitation;
-    return url ? { rating: null, reviewCount: null, url, priceLevel: null, summary: null, confidence } : null;
+    return url ? { rating: null, reviewCount: null, url, priceLevel: null, summary: null, reviews: [], confidence } : null;
   }
 
   let parsed: Record<string, unknown>;
@@ -400,7 +402,7 @@ function parseStage(
     parsed = JSON.parse(content);
   } catch {
     const url = preUrl ?? yelpCitation;
-    return url ? { rating: null, reviewCount: null, url, priceLevel: null, summary: null, confidence } : null;
+    return url ? { rating: null, reviewCount: null, url, priceLevel: null, summary: null, reviews: [], confidence } : null;
   }
 
   const rawUrl = typeof parsed.url === "string" ? parsed.url.trim() : null;
@@ -423,21 +425,18 @@ function parseStage(
       ? Math.round(parsed.reviewCount)
       : null;
   const priceLevel = normalizePriceLevel(parsed.priceLevel);
-  const summary =
-    typeof parsed.summary === "string" && parsed.summary.trim().length > 0
-      ? parsed.summary.trim().slice(0, 160)
-      : null;
+  const reviews = parseReviews(parsed.reviews);
 
   console.log(
-    `[Yelp/${stage}] ${name}: ok conf=${confidence} rating=${rating} reviews=${reviewCount} price=${priceLevel ?? "-"}`,
+    `[Yelp/${stage}] ${name}: ok conf=${confidence} rating=${rating} reviews=${reviewCount} price=${priceLevel ?? "-"} reviewsRaw=${reviews.length}`,
   );
 
-  return { rating, reviewCount, url, priceLevel, summary, confidence };
+  return { rating, reviewCount, url, priceLevel, summary: null, reviews, confidence };
 }
 
 function hasUsefulFields(info: YelpInfo | null): boolean {
   if (!info) return false;
-  return info.rating != null || info.reviewCount != null || info.summary != null || info.priceLevel != null;
+  return info.rating != null || info.reviewCount != null || info.reviews.length > 0 || info.priceLevel != null;
 }
 
 export async function fetchYelpInfo(
