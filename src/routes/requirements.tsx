@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Check, HelpCircle, Loader2, Mic, Sparkles, Square } from "lucide-react";
+import { Check, ChevronRight, HelpCircle, Loader2, Mic, SlidersHorizontal, Sparkles, Square } from "lucide-react";
 import { toast } from "sonner";
 import { NeedBubbles } from "@/components/NeedBubbles";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -836,9 +836,13 @@ function StepRequirements() {
                   </div>
                 )}
                 {editDraft ? (
-                  <>
+                  <div className="animate-fade-in mt-2 rounded-lg border-2 border-primary/40 bg-primary/5 p-3 space-y-3 shadow-sm">
+                    <div className="flex items-center gap-2 text-sm font-medium text-primary">
+                      <SlidersHorizontal className="h-4 w-4" />
+                      {t("weights.adjust")}
+                    </div>
                     <WeightEditor draft={editDraft} onChange={setEditDraft} />
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end gap-2 border-t border-primary/20 pt-3">
                       <Button type="button" variant="ghost" size="sm" onClick={() => setEditDraft(null)}>
                         {t("weights.cancel")}
                       </Button>
@@ -846,7 +850,8 @@ function StepRequirements() {
                         {t("weights.apply")}
                       </Button>
                     </div>
-                  </>
+                  </div>
+
                 ) : (
                 <>
                 {parsedPreview.hardFilters.length > 0 && (
@@ -882,9 +887,20 @@ function StepRequirements() {
                   </div>
                 )}
                 {(parsedPreview.hardFilters.length + parsedPreview.softPreferences.length + parsedPreview.negativeFilters.length) > 0 && (
-                  <Button type="button" variant="outline" size="sm" onClick={() => setEditDraft(parsedPreview)}>
-                    {t("weights.adjust")}
-                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setEditDraft(parsedPreview)}
+                    className="group mt-3 flex w-full items-center gap-3 rounded-lg border border-dashed border-primary/50 bg-primary/5 px-3 py-2.5 text-left transition-all hover:border-primary hover:bg-primary/10 hover:shadow-sm"
+                  >
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform group-hover:rotate-12">
+                      <SlidersHorizontal className="h-4 w-4" />
+                    </span>
+                    <span className="flex-1">
+                      <span className="block text-sm font-medium text-primary">{t("weights.adjust")}</span>
+                      <span className="block text-xs text-muted-foreground">{t("weights.adjustHint")}</span>
+                    </span>
+                    <ChevronRight className="h-4 w-4 text-primary transition-transform group-hover:translate-x-0.5" />
+                  </button>
                 )}
                 </>
                 )}
