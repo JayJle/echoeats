@@ -13,6 +13,8 @@ import { useQueryStore, type ParsedRequirements } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { useServerFn } from "@tanstack/react-start";
 import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
+import { WeightEditor } from "@/components/WeightEditor";
+import { finalizeEdited } from "@/lib/weights";
 
 export const Route = createFileRoute("/requirements")({
   head: () => ({
@@ -71,6 +73,7 @@ function StepRequirements() {
 
   // —— 提前展示解析出的需求 ——
   const [parsedPreview, setParsedPreview] = useState<ParsedRequirements | null>(null);
+  const [editDraft, setEditDraft] = useState<ParsedRequirements | null>(null);
 
   const parseFn = useServerFn(parseRequirements);
   const searchFn = useServerFn(searchRestaurants);
@@ -182,13 +185,19 @@ function StepRequirements() {
 
   useEffect(() => () => stopProgressLoop(), []);
 
-  const runSearch = async (text: string, mode: "quick" | "deep" = "deep") => {
+  const runSearch = async (
+    text: string,
+    mode: "quick" | "deep" = "deep",
+    preParsed?: ParsedRequirements,
+  ) => {
     setError(null);
     setLoading(true);
     setSearchMode(mode);
     setFreeText(text);
-    setInferredCuisines(null);
-    setParsedPreview(null);
+    if (!preParsed) {
+      setInferredCuisines(null);
+      setParsedPreview(null);
+    }
     runIdRef.current += 1;
     const myRunId = runIdRef.current;
     abortRef.current?.abort();
@@ -205,6 +214,11 @@ function StepRequirements() {
     startProgressLoop();
 
     try {
+      let parsed: ParsedRequirements;
+      if (preParsed) {
+        // 用户手动调整了权重：跳过解析，直接按编辑后的需求重新搜索
+        parsed = preParsed;
+      } else {
       setCurrentStage("parse");
       setRangeForStage(mode, "parse");
       // parse 是单次 LLM，没有子事件 → 把 target 抬到该阶段末，让动画匀速跑完
@@ -212,10 +226,11 @@ function StepRequirements() {
         targetProgressRef.current,
         STAGE_RANGES[mode].parse[1],
       );
-      const parsed = await parseFn({
+      parsed = await parseFn({
         data: { city, cuisines, autoInferCuisines, date: "", freeText: text, uiLanguage: lang },
         signal: ac.signal,
       } as Parameters<typeof parseFn>[0]);
+      }
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       const parsedWithMode = { ...parsed, mode, uiLanguage: lang };
       setParsed(parsedWithMode);
@@ -324,7 +339,17 @@ function StepRequirements() {
     }
   };
 
+  const draftChanged =
+    !!editDraft && !!parsedPreview && JSON.stringify(editDraft) !== JSON.stringify(parsedPreview);
+  const applyWeights = () => {
+    if (!editDraft) return;
+    const next = finalizeEdited(editDraft);
+    setEditDraft(null);
+    void runSearch(freeText, searchMode, next);
+  };
+
   const handleCancel = () => {
+    setEditDraft(null);
     abortRef.current?.abort();
     runIdRef.current += 1;
     clearTimers();
@@ -810,11 +835,25 @@ function StepRequirements() {
                     ))}
                   </div>
                 )}
+                {editDraft ? (
+                  <>
+                    <WeightEditor draft={editDraft} onChange={setEditDraft} />
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setEditDraft(null)}>
+                        {t("weights.cancel")}
+                      </Button>
+                      <Button type="button" size="sm" disabled={!draftChanged} onClick={applyWeights}>
+                        {t("weights.apply")}
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                <>
                 {parsedPreview.hardFilters.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {parsedPreview.hardFilters.map((f, i) => (
                       <span key={`h-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
-                        {f.text}
+                        {f.text}<span className="ml-1 opacity-70 tabular-nums">{f.weight.toFixed(1)}</span>
                       </span>
                     ))}
                   </div>
@@ -823,7 +862,7 @@ function StepRequirements() {
                   <div className="flex flex-wrap gap-1.5">
                     {parsedPreview.softPreferences.map((f, i) => (
                       <span key={`s-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground">
-                        {f.text}
+                        {f.text}<span className="ml-1 opacity-70 tabular-nums">{f.weight.toFixed(1)}</span>
                       </span>
                     ))}
                   </div>
@@ -836,11 +875,18 @@ function StepRequirements() {
                       const display = hasNeg ? t : (lang === "en" ? `Avoid ${t}` : `不要${t}`);
                       return (
                         <span key={`n-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
-                          <span aria-hidden className="mr-1">✕</span>{display}
+                          <span aria-hidden className="mr-1">✕</span>{display}<span className="ml-1 opacity-70 tabular-nums">{f.weight.toFixed(1)}</span>
                         </span>
                       );
                     })}
                   </div>
+                )}
+                {(parsedPreview.hardFilters.length + parsedPreview.softPreferences.length + parsedPreview.negativeFilters.length) > 0 && (
+                  <Button type="button" variant="outline" size="sm" onClick={() => setEditDraft(parsedPreview)}>
+                    {t("weights.adjust")}
+                  </Button>
+                )}
+                </>
                 )}
                 {parsedPreview.dishPreferences.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
