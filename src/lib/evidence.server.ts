@@ -42,7 +42,7 @@ export function parseReviews(raw: unknown): PlatformReview[] {
 }
 
 // Global in-flight limiter for Perplexity chat calls (avoids 429 bursts when platform + official run in parallel).
-const PPLX_MAX_INFLIGHT = 6;
+const PPLX_MAX_INFLIGHT = 4;
 let pplxInflight = 0;
 const pplxQueue: Array<() => void> = [];
 export async function withPplxSlot<T>(fn: () => Promise<T>): Promise<T> {

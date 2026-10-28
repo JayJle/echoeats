@@ -1,4 +1,4 @@
-import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, type PlatformReview } from "./evidence.server";
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, fetchPlatformReviewsOnly, type PlatformReview } from "./evidence.server";
 // Yelp 信息抓取层（US / CA / 西欧分支用）
 // 策略：
 //   Stage 0: 多变体并发 /search → /biz/<slug> 候选 + 打分 → top1 + confidence
@@ -501,6 +501,10 @@ export async function fetchYelpInfo(
       apiKey, stage: "sonar", name, address, city, area, isEn, preUrl: null, verifyMode: false,
     });
     info = r?.ok ? parseStage(name, "sonar", r.json, null, "low") : null;
+  }
+
+  if (info?.url && info.reviews.length === 0) {
+    info = { ...info, reviews: await fetchPlatformReviewsOnly({ platform: "Yelp", name, shopUrl: info.url }) };
   }
 
   const ttl = info ? POS_TTL_MS : NEG_TTL_MS;
