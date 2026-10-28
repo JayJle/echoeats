@@ -246,7 +246,6 @@ export const dict: Record<Lang, Dict> = {
     "errpage.retry": "Try again",
     "errpage.home": "Go home",
 
-    "needs.aria": "需求灵感",
   },
   en: {
     "brand.tagline": "AI Restaurant Discovery Agent",
@@ -486,44 +485,8 @@ export const dict: Record<Lang, Dict> = {
     "errpage.retry": "Try again",
     "errpage.home": "Go home",
 
-    "needs.aria": "Need inspiration",
   },
 };
-
-// Need bubble pool — bilingual.
-export const NEED_BUBBLES: Array<{ zh: string; en: string }> = [
-  { zh: "人均 200 元以内", en: "Under $30 / person" },
-  { zh: "高端", en: "High-end" },
-  { zh: "性价比高", en: "Great value" },
-  { zh: "谷歌评分 4.0 以上", en: "Google rating 4.0+" },
-  { zh: "必比登推荐", en: "Bib Gourmand" },
-  { zh: "米其林", en: "Michelin" },
-  { zh: "本地人爱去", en: "Locals love it" },
-  { zh: "不要游客店", en: "No tourist traps" },
-  { zh: "适合约会", en: "Date-night friendly" },
-  { zh: "安静能聊天", en: "Quiet enough to talk" },
-  { zh: "氛围有格调", en: "Stylish vibe" },
-  { zh: "适合商务", en: "Good for business" },
-  { zh: "适合带小孩", en: "Kid-friendly" },
-  { zh: "适合多人聚餐", en: "Good for groups" },
-  { zh: "靠近地铁", en: "Near metro" },
-  { zh: "在商场里", en: "Inside a mall" },
-  { zh: "步行可达", en: "Walkable" },
-  { zh: "有停车位", en: "Has parking" },
-  { zh: "有包间", en: "Private rooms" },
-  { zh: "可以预约", en: "Reservations" },
-  { zh: "不用排队", en: "No queue" },
-  { zh: "有英文菜单", en: "English menu" },
-  { zh: "有中文菜单", en: "Chinese menu" },
-  { zh: "室外座位", en: "Outdoor seating" },
-  { zh: "食材新鲜", en: "Fresh ingredients" },
-  { zh: "现做现卖", en: "Made to order" },
-  { zh: "分量足", en: "Generous portions" },
-  { zh: "摆盘精致", en: "Beautiful plating" },
-  { zh: "有素食选项", en: "Vegetarian options" },
-  { zh: "招牌菜必点", en: "Must-try signature" },
-  { zh: "适合拍照", en: "Photo-worthy" },
-];
 
 // Cuisine suggestion chips on step 2 — bilingual.
 export const CUISINE_SUGGESTIONS: Array<{ zh: string; en: string }> = [
