@@ -1,3 +1,4 @@
+import { MODELS } from "./models";
 // 料理本地化 + 同义词扩展 + 反例关键词
 // 用一次 LLM 调用把用户输入的中文 cuisine（可能很冷门，例如「猪肉饭」）
 // 扩展为目标城市语言下的主词、同义词、以及"明显不是该料理"的反例关键词。
@@ -39,7 +40,7 @@ export async function expandCuisineQueries(opts: {
 
   try {
     const gateway = createQwenProvider(opts.apiKey);
-    const model = gateway("qwen-turbo");
+    const model = gateway(MODELS.cuisineExpand);
     const { output } = await generateText({
       model,
       maxOutputTokens: 400,

@@ -46,16 +46,18 @@ AI 美食礼宾（food concierge）—— 用自然语言说清城市、料理�
 
 | 节点 | 模型 | 说明 |
 |---|---|---|
-| 需求解析 `parseRequirements` | `qwen-plus` → `qwen-max` | 抛错或只返回兜底品类时换 `qwen-max` 重试 |
+| 需求解析 `parseRequirements` | `qwen-plus` → `qwen3.8-max` | 抛错或只返回兜底品类时换 `qwen-max` 重试 |
 | 语义聚类去重 `semanticClusterMerge` | `qwen-plus` | 失败直接返回原始 parsed |
-| 品类本地化 / 同义词扩展 | `qwen-turbo` | 短输入短输出，失败回落原文 |
-| 排序 Pass 1 核验 | `qwen-plus` | raw JSON + `extractJson` + Zod 校验，失败追加严格 JSON 提示重试 1 次 |
-| 排序 Pass 2 打分 | `qwen-plus` | `Output.object` → miss-only 定向重试 → raw 兜底 → 回落 60 |
-| 排序 Pass 3 文案 | `qwen-plus` | `Output.object` → raw 兜底 → 该批空 picks |
+| 品类本地化 / 同义词扩展 | `qwen3.8-flash` | 短输入短输出，失败回落原文 |
+| 排序 Pass 1 核验 | `qwen3.7-plus` | raw JSON + `extractJson` + Zod 校验，失败追加严格 JSON 提示重试 1 次 |
+| 排序 Pass 2 打分 | `qwen3.7-plus` | `Output.object` → miss-only 定向重试 → raw 兜底 → 回落 60 |
+| 排序 Pass 3 文案 | `qwen3.7-plus` | `Output.object` → raw 兜底 → 该批空 picks |
 | Tabelog / Yelp 页面读取 | Perplexity `sonar` → `sonar-pro` | 先便宜档，字段空或核验失败再升级 |
 | 语音转写 `/api/transcribe` | ElevenLabs `scribe_v2` | 非 LLM |
 
 ---
+
+> 模型按各节点需求实测选型（2026-10-28），统一在 `src/lib/models.ts`；Qwen 3.x 一律关闭思考模式。`qwen3.7-plus` 在需求解析中会把软偏好误判为硬条件，因此解析仍用 `qwen-plus`。
 
 ## 外部服务与数据源
 
