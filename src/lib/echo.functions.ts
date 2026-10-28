@@ -2081,6 +2081,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
           console.log(
             `[Echo/places] cuisine="${r.cuisine}" pool capped ${ranked.length} → ${POOL_CAP} (dropped tail ${ranked.length - POOL_CAP})`,
           );
+          for (const p of ranked.slice(POOL_CAP)) {
+            console.log(
+              `[Echo/places/dropped] cuisine="${r.cuisine}" reason=pool-cap name="${p.name}" rating=${p.rating ?? "-"} reviews=${p.userRatingCount ?? 0}`,
+            );
+          }
         }
         return {
           cuisine: r.cuisine,
@@ -3123,6 +3128,17 @@ Schema：
         ? Math.round(top5.reduce((s, b) => s + b.finalScore, 0) / top5.length)
         : 0;
       console.log(`[score] cuisine="${cuisine}" pool=${pool.length} admitted=${builtList.filter((b) => b.admitted).length} top5-avg=${avgFinal}`);
+      // 落选明细：只写日志，便于解释“为什么某家没进前 5”
+      builtList.forEach((b, i) => {
+        const r = b.restaurant;
+        const fails = (r.matchDetails ?? [])
+          .filter((d) => d.status === "fail" || d.status === "unknown")
+          .map((d) => `${d.status}:${d.label.split(/[：:]/)[0].slice(0, 40)}`)
+          .join(" | ");
+        console.log(
+          `[score/rank] cuisine="${cuisine}" #${i + 1} ${i < 5 ? "KEPT" : "DROPPED(not top5)"} name="${r.name}" score=${b.finalScore} admitted=${b.admitted} status=${r.verificationStatus}${fails ? ` issues=[${fails}]` : ""}`,
+        );
+      });
 
       return {
         cuisine: cuisinesAutoFilled ? (isEn ? "Recommended for you" : "为你推荐") : cuisine,
