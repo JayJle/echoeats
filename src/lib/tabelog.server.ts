@@ -364,7 +364,7 @@ ${priorityBlock}
 
     const res = await (await import("./retry.server")).withRetry(
       (sig) =>
-        fetch("https://api.perplexity.ai/chat/completions", {
+        (async () => (await import("./evidence.server")).withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -373,13 +373,13 @@ ${priorityBlock}
           // 内层用 retry signal；外层 controller 仍保留 20s 兜底总超时
           signal: sig ?? controller.signal,
           body: JSON.stringify(body),
-        }).then((r) => {
+        })))()).then((r) => {
           if (!r.ok && (r.status >= 500 || r.status === 429)) {
             throw new Error(`Tabelog upstream ${r.status}`);
           }
           return r;
         }),
-      { label: `tabelog.${stage}`, retries: 1, timeoutMs: 15_000 },
+      { label: `tabelog.${stage}`, retries: 2, baseMs: 1500, timeoutMs: 25_000 },
     );
     if (!res.ok) {
       console.warn(`[Tabelog/${stage}] ${name}: HTTP ${res.status}`);

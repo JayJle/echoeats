@@ -41,6 +41,22 @@ export function parseReviews(raw: unknown): PlatformReview[] {
   return out;
 }
 
+// Global in-flight limiter for Perplexity chat calls (avoids 429 bursts when platform + official run in parallel).
+const PPLX_MAX_INFLIGHT = 6;
+let pplxInflight = 0;
+const pplxQueue: Array<() => void> = [];
+export async function withPplxSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (pplxInflight >= PPLX_MAX_INFLIGHT) await new Promise<void>((r) => pplxQueue.push(r));
+  pplxInflight++;
+  try {
+    return await fn();
+  } finally {
+    pplxInflight--;
+    pplxQueue.shift()?.();
+  }
+}
+export const PPLX_RETRY = { retries: 2, baseMs: 1500 } as const;
+
 type ChatResult = { content: string | null; citations: string[] } | null;
 
 export async function pplxChat(opts: {
@@ -68,16 +84,16 @@ export async function pplxChat(opts: {
   try {
     const res = await withRetry(
       (sig) =>
-        fetch("https://api.perplexity.ai/chat/completions", {
+        withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
           method: "POST",
           headers: { Authorization: `Bearer ${opts.apiKey}`, "Content-Type": "application/json" },
           signal: sig,
           body: JSON.stringify(body),
-        }).then((r) => {
+        })).then((r) => {
           if (!r.ok && (r.status >= 500 || r.status === 429)) throw new Error(`${opts.label} upstream ${r.status}`);
           return r;
         }),
-      { label: opts.label, retries: 1, timeoutMs: 20_000 },
+      { label: opts.label, ...PPLX_RETRY, timeoutMs: 25_000 },
     );
     if (!res.ok) {
       console.warn(`[${opts.label}] HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -180,7 +196,7 @@ export async function fetchOfficialSite(opts: {
 
   const domain = officialDomain(websiteUri);
   const where = domain
-    ? `官网：${websiteUri}（只读这个网站的页面：首页、About、Menu/Carte/お品書き、Access、Reservation 等）`
+    ? `官网：${websiteUri}（请打开并只使用这个网站本身的页面：首页、About、Menu/Carte/お品書き、Access、Reservation 等；不要用第三方网站的内容）`
     : `Google 上没有可用的官网链接。请搜索这家店**自己的官方网站**（不是 Instagram/Facebook/Yelp/Tabelog/订餐平台）。找不到就所有字段返回 null / []。`;
   const user = `读取这家餐厅官方网站上的一手信息：
 - 店名：${name}
@@ -207,7 +223,6 @@ export async function fetchOfficialSite(opts: {
     schemaName: "official_site",
     schema: OFFICIAL_SCHEMA,
     maxTokens: 1500,
-    domainFilter: domain ? [domain] : undefined,
     label: "official-site",
   });
   const j = safeJson(r?.content ?? null);
