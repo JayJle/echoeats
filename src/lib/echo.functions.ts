@@ -406,7 +406,7 @@ function inferMealPeriod(text: string): { evidence: string; hhmm: string } | nul
   return null;
 }
 
-function inferExplicitClock(text: string): string | null {
+export function inferExplicitClock(text: string): string | null {
   // 先认 12 小时制（"6:30 PM"），否则 24 小时正则会把它当成 06:30。
   const clock12 = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])/i);
   if (clock12) {
