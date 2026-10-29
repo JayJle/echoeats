@@ -19,7 +19,6 @@ export type YelpInfo = {
 
 type CacheEntry = { info: YelpInfo | null; expireAt: number };
 const cache = new Map<string, CacheEntry>();
-const NEG_TTL_MS = 30 * 60 * 1000;
 const POS_TTL_MS = 24 * 60 * 60 * 1000;
 
 const YELP_SHOP_URL_RE = /https?:\/\/(?:www\.)?yelp\.[a-z.]{2,8}\/biz\/[a-z0-9\-_%]+/i;
