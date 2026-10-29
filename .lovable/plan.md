@@ -1,16 +1,21 @@
-# Dishes no longer repeated as nice-to-haves
+# Combine dishes and preferences into one list
 
 ## What changes
-- When something is recognised as a dish (e.g. 蟹刺身, ramen), it appears only under "Dishes" and is removed from the nice-to-have list.
-- Exception: if the user said the dish is required ("必须有蟹刺身"), it stays as a must-have too, because that is a real filter that can rule out restaurants. Only nice-to-have duplicates are removed.
-- Avoid items (e.g. "不要生鱼片") are never touched.
-- Scoring still checks the dish, since dishes are already given to the ranking step separately.
+- The separate "Dishes" group goes away. Dishes show inside the preferences: nice-to-have dishes are listed under nice-to-haves, and must-have dishes ("必须有蟹刺身") under must-haves. Each dish appears once, with a weight like every other item.
+- Users can adjust a dish's weight, move it between must-have and nice-to-have, or remove it, the same as any other preference.
+- If the AI picks up the same dish as both a dish and a preference ("想吃拉面" and "ラーメン"), they merge into one item and the higher weight is kept.
+- Behind the scenes the app still knows which items are dishes, so restaurant search still looks for those dishes and the ranking still checks the menu for them.
 
 ## How
-1. Understanding prompt: change the rule "dish goes into dishes AND conditions" so that a dish wish without "must" goes only into dishes; a must-have dish still goes into both.
-2. Safety net in the merge step (which already groups similar items): it also reports which nice-to-have items mean the same thing as a listed dish ("想吃拉面" = "ラーメン"); those are dropped. A plain text match is used as a fallback if that step fails.
-3. Log how many nice-to-haves were removed this way.
+1. Understanding step: each dish becomes a weighted preference with a "dish" tag (normal wish about 0.6, "must have" 1.0), instead of a separate unweighted list.
+2. Merge step: dishes and preferences are grouped together, so a dish and its matching preference become one item.
+3. The dish list that search and ranking use is built from items tagged as dishes, so those steps keep working.
+4. Progress page and adjust-weights panel: remove the Dishes group; tagged dishes show a small dish icon inside their group.
+5. Saved searches from before this change still load correctly.
 
 ## Technical details
-- `src/lib/echo.functions.ts`: edit the parse prompt boundary rule (~line 527) and example; extend `SemanticClusterOutput` with `softDishDupIds: number[]` and the cluster prompt; in `semanticClusterMerge` drop soft entries whose id is in that list (only bucket "soft"); fallback exact/contains match against `dishPreferences` in the failure path.
-- Add a small test for the fallback rule: soft "蟹刺身" removed when dish "蟹刺身" exists; hard "必须有蟹刺身" kept; negative kept.
+- `WeightedCondition` gets optional `isDish?: boolean`; `dishPreferences` stays as a derived field (texts of `isDish` items in hard and soft) so recall routes, Tabelog/menu checks, and rank prompts are unchanged.
+- `src/lib/echo.functions.ts`: update parse prompt and schema (rule near line 527 and example), and fold the dish list into `flat` in `semanticClusterMerge` (keep `isDish` if any member in a group is a dish). Rebuild `dishPreferences` after the merge and after `finalizeEdited` (`src/lib/weights.ts`) so user edits update it too.
+- `src/routes/requirements.tsx`, `WeightEditor.tsx`: remove the dish section and add a dish icon. Old stored `dishPreferences` without `isDish` are turned into soft items at 0.6 when loaded.
+- Tests: dish and matching preference merge into one item with the max weight; `dishPreferences` comes from `isDish` items, and removing a dish in the editor removes it from that list.
+- End-to-end check: search "東京 拉面, 想吃叉烧, 必须安静" and confirm one combined list with no duplicates, and that results still mention the dish.
