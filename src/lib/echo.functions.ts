@@ -60,6 +60,7 @@ const WeightCoerced = z.preprocess((v) => {
 const WeightedConditionSchema = z.object({
   text: z.string(),
   weight: WeightCoerced.default(0.7),
+  dish: z.string().optional().catch(undefined),
 });
 
 // hhmm：允许 "7:00" / "07:00" / 不规范字符串；非法时归 null
