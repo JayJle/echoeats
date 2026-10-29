@@ -42,17 +42,31 @@ export function parseReviews(raw: unknown): PlatformReview[] {
 }
 
 // Global in-flight limiter for Perplexity chat calls (avoids 429 bursts when platform + official run in parallel).
+// Lease-based + polling on purpose: on the Worker, an aborted search can be killed mid-call so its
+// `finally` never runs. A counter/queue would then leak slots forever and the next search would wait on a
+// promise nobody resolves — the runtime cancels that request as "hung" (searches froze at the evidence step).
+// Leases expire after PPLX_LEASE_MS, and waiters poll with timers instead of cross-request promises.
 const PPLX_MAX_INFLIGHT = 3;
-let pplxInflight = 0;
-const pplxQueue: Array<() => void> = [];
+const PPLX_LEASE_MS = 35_000; // > per-call timeout (25s)
+const PPLX_POLL_MS = 150;
+const pplxLeases = new Map<number, number>(); // leaseId -> startedAt
+let pplxLeaseSeq = 0;
 export async function withPplxSlot<T>(fn: () => Promise<T>): Promise<T> {
-  if (pplxInflight >= PPLX_MAX_INFLIGHT) await new Promise<void>((r) => pplxQueue.push(r));
-  pplxInflight++;
+  let id: number | null = null;
+  while (id === null) {
+    const now = Date.now();
+    for (const [k, t] of pplxLeases) if (now - t > PPLX_LEASE_MS) pplxLeases.delete(k);
+    if (pplxLeases.size < PPLX_MAX_INFLIGHT) {
+      id = ++pplxLeaseSeq;
+      pplxLeases.set(id, now);
+    } else {
+      await new Promise<void>((r) => setTimeout(r, PPLX_POLL_MS));
+    }
+  }
   try {
     return await fn();
   } finally {
-    pplxInflight--;
-    pplxQueue.shift()?.();
+    pplxLeases.delete(id);
   }
 }
 export const PPLX_RETRY = { retries: 2, baseMs: 1500 } as const;
