@@ -148,7 +148,7 @@ Places 请求参数：`includedType: "restaurant"`，`maxResultCount ≤ 20`，`
         ▼
 [8] 时间硬筛 isOpenAt + 规则初筛（businessStatus / priceLevel / 评分阈值）
         ▼
-[9] 证据补齐（只对每品类 POOL_CAP=30 的候选）：Google reviews（基线）＋ ①Tabelog(JP)/Yelp(欧美) 原文评论 ＋ ②官网（所有地区：介绍/菜单/招牌菜/价格/营业/预约）＋ ③按需网络补充（缺菜单或缺硬条件依据，最多 15 家）
+[9] 证据补齐（两阶段漏斗：每品类按 rating×log 排序前 15 家做 Perplexity 深度补齐；第 16–30 名只用 Google 自带证据进入评分）：Google reviews（基线）＋ ①Tabelog(JP)/Yelp(欧美) 原文评论 ＋ ②官网（所有地区：介绍/菜单/招牌菜/价格/营业/预约）＋ ③按需网络补充（缺菜单或缺硬条件依据，最多 15 家）
         ▼
 [10] 候选池截断 POOL_CAP=30，按 rating × log10(reviews+10) 排序
         ▼
@@ -478,7 +478,7 @@ AiCopyPickSchema   = { placeId, aiSummary, pros[], cons[] }
 
 ## 证据补齐（2026-10-28 改版）
 - Perplexity 只做一手读取，不做摘要：Tabelog/Yelp 返回最多 6 条原文评论；官网返回原文介绍与菜单；网络补充返回原文片段 + 来源 URL。分析全部交给 Qwen 三段排序。
-- 证据补齐在 POOL_CAP 截断**之后**进行（以前对全部召回候选抓 Tabelog/Yelp），点评平台与官网并行，全局 Perplexity 并发上限 6（`withPplxSlot`），429 退避重试 2 次。
+- 证据补齐在 POOL_CAP 截断**之后**进行（以前对全部召回候选抓 Tabelog/Yelp），点评平台与官网并行，全局 Perplexity 并发上限 8（`withPplxSlot`）；每品类只有前 15 家（`DEEP_EVIDENCE_CAP`）做深度补齐，429 退避重试 2 次。
 - 有候选 URL 时不加 `search_domain_filter`（实测加了只能拿到搜索摘要，读不到评论原文）；Tabelog 额外提示口コミ列表页 `<店铺页>dtlrvwlst/`。
 - Pass 1 prompt 要求逐一查看 realWorldReviews / tabelog.reviews / yelp.reviews / officialSite / webSupplement，并在 label 中写明来源；Pass 3 的 pros/cons 只能来自评论，官网介绍/招牌菜只用于 aiSummary。
 - 5 个复杂用例前后对比：Perplexity 实际费用 $6.80 → $5.51，前 5 名 match detail 的 unknown 占比 46% → 36%，Qwen 输入 token +38%，单次搜索耗时增加约 10–70 秒。
