@@ -1,4 +1,4 @@
-import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, fetchPlatformReviewsOnly, type PlatformReview } from "./evidence.server";
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, pplxPost, fetchPlatformReviewsOnly, type PlatformReview } from "./evidence.server";
 // Yelp 信息抓取层（US / CA / 西欧分支用）
 // 策略：
 //   Stage 0: 多变体并发 /search → /biz/<slug> 候选 + 打分 → top1 + confidence
@@ -19,7 +19,6 @@ export type YelpInfo = {
 
 type CacheEntry = { info: YelpInfo | null; expireAt: number };
 const cache = new Map<string, CacheEntry>();
-const NEG_TTL_MS = 30 * 60 * 1000;
 const POS_TTL_MS = 24 * 60 * 60 * 1000;
 
 const YELP_SHOP_URL_RE = /https?:\/\/(?:www\.)?yelp\.[a-z.]{2,8}\/biz\/[a-z0-9\-_%]+/i;
@@ -246,8 +245,6 @@ async function callPerplexity(opts: {
   verifyMode: boolean; // true 时 prompt 要求先核验店名+地址
 }): Promise<{ json: unknown; ok: boolean } | null> {
   const { apiKey, stage, name, address, city, area, isEn, preUrl, verifyMode } = opts;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const isFirst = stage === "sonar";
 
@@ -335,31 +332,15 @@ ${hintLine}
     // 有候选 URL 时不加域名过滤（过滤会让模型读不到评论原文）
     if (isFirst && !preUrl) body.search_domain_filter = YELP_DOMAINS;
 
-    const res = await (await import("./retry.server")).withRetry(
-      (sig) =>
-        withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-          signal: sig ?? controller.signal,
-          body: JSON.stringify(body),
-        })).then((r) => {
-          if (!r.ok && (r.status >= 500 || r.status === 429)) {
-            throw new Error(`Yelp upstream ${r.status}`);
-          }
-          return r;
-        }),
-      { label: `yelp.${stage}`, retries: 2, baseMs: 1500, timeoutMs: 25_000 },
-    );
+    const res = await pplxPost(apiKey, body, `yelp.${stage}`);
     if (!res.ok) {
       console.warn(`[Yelp/${stage}] ${name}: HTTP ${res.status}`);
       return { json: null, ok: false };
     }
     return { json: await res.json(), ok: true };
   } catch (e) {
-    console.warn(`[Yelp/${stage}] ${name}:`, e instanceof Error ? e.message : e);
+    console.warn(`[Yelp/${stage}] ${name}: FAILED after retries:`, e instanceof Error ? e.message : e);
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -432,7 +413,7 @@ function parseStage(
   return { rating, reviewCount, url, priceLevel, summary: null, reviews, confidence };
 }
 
-function hasUsefulFields(info: YelpInfo | null): boolean {
+export function hasUsefulFields(info: YelpInfo | null): boolean {
   if (!info) return false;
   return info.rating != null || info.reviewCount != null || info.reviews.length > 0 || info.priceLevel != null;
 }
@@ -507,7 +488,10 @@ export async function fetchYelpInfo(
     info = { ...info, reviews: await fetchPlatformReviewsOnly({ platform: "Yelp", name, shopUrl: info.url }) };
   }
 
-  const ttl = info ? POS_TTL_MS : NEG_TTL_MS;
-  cache.set(cacheKey, { info, expireAt: Date.now() + ttl });
+  console.log(
+    `[Yelp/final] ${name}: ${!info ? "MISS" : hasUsefulFields(info) ? "READ" : "URL-ONLY"} rating=${info?.rating ?? "-"} reviewsRaw=${info?.reviews.length ?? 0}`,
+  );
+  // 只缓存真正读到内容的结果；失败 / 只有链接的下次搜索重新尝试（不再负缓存）。
+  if (info && hasUsefulFields(info)) cache.set(cacheKey, { info, expireAt: Date.now() + POS_TTL_MS });
   return info;
 }

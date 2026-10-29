@@ -17,9 +17,9 @@ export type TabelogInfo = {
   reviews: PlatformReview[]; // 原文评论（不翻译、不总结）
 };
 
-import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, fetchPlatformReviewsOnly, type PlatformReview } from "./evidence.server";
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, pplxPost, fetchPlatformReviewsOnly, type PlatformReview } from "./evidence.server";
 
-const cache = new Map<string, TabelogInfo | null>();
+const cache = new Map<string, TabelogInfo>();
 
 // tabelog 店铺页 URL：tabelog.com/<region>/A.../...../<digits>/
 // 例：https://tabelog.com/tokyo/A1301/A130101/13001234/
@@ -277,8 +277,6 @@ async function callPerplexity(opts: {
   preUrl: string | null;
 }): Promise<{ json: unknown; ok: boolean; status: number } | null> {
   const { apiKey, stage, name, address, city, area, cuisine, preUrl } = opts;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const isFirst = stage === "sonar";
 
@@ -365,25 +363,7 @@ ${priorityBlock}
       body.search_domain_filter = ["tabelog.com"];
     }
 
-    const res = await (await import("./retry.server")).withRetry(
-      (sig) =>
-        withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          // 内层用 retry signal；外层 controller 仍保留 20s 兜底总超时
-          signal: sig ?? controller.signal,
-          body: JSON.stringify(body),
-        })).then((r) => {
-          if (!r.ok && (r.status >= 500 || r.status === 429)) {
-            throw new Error(`Tabelog upstream ${r.status}`);
-          }
-          return r;
-        }),
-      { label: `tabelog.${stage}`, retries: 2, baseMs: 1500, timeoutMs: 25_000 },
-    );
+    const res = await pplxPost(apiKey, body, `tabelog.${stage}`);
     if (!res.ok) {
       console.warn(`[Tabelog/${stage}] ${name}: HTTP ${res.status}`);
       return { json: null, ok: false, status: res.status };
@@ -391,10 +371,8 @@ ${priorityBlock}
     const json = await res.json();
     return { json, ok: true, status: 200 };
   } catch (e) {
-    console.warn(`[Tabelog/${stage}] ${name}:`, e instanceof Error ? e.message : e);
+    console.warn(`[Tabelog/${stage}] ${name}: FAILED after retries:`, e instanceof Error ? e.message : e);
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -480,7 +458,8 @@ export async function fetchTabelogInfo(
   if (!apiKey) return null;
 
   const cacheKey = `${name}|${address}`.toLowerCase();
-  if (cache.has(cacheKey)) return cache.get(cacheKey) ?? null;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
 
   const area = extractJPArea(address);
 
@@ -493,12 +472,13 @@ export async function fetchTabelogInfo(
   });
   let info = r1?.ok ? parseStage(name, "sonar", r1.json, preUrl) : null;
 
-  // Stage 2 fallback
-  if (!info) {
+  // Stage 2：没找到，或只拿到链接（评分/评论都没读到）→ sonar-pro 再读一次
+  if (!info || !hasTabelogContent(info)) {
     const r2 = await callPerplexity({
-      apiKey, stage: "sonar-pro", name, address, city, area, cuisine, preUrl,
+      apiKey, stage: "sonar-pro", name, address, city, area, cuisine, preUrl: info?.url ?? preUrl,
     });
-    info = r2?.ok ? parseStage(name, "sonar-pro", r2.json, preUrl) : null;
+    const info2 = r2?.ok ? parseStage(name, "sonar-pro", r2.json, info?.url ?? preUrl) : null;
+    if (info2 && (!info || hasTabelogContent(info2))) info = info2;
   }
 
   if (info?.url && info.reviews.length === 0) {
@@ -511,6 +491,14 @@ export async function fetchTabelogInfo(
     };
   }
 
-  cache.set(cacheKey, info);
+  console.log(
+    `[Tabelog/final] ${name}: ${!info ? "MISS" : hasTabelogContent(info) ? "READ" : "URL-ONLY"} rating=${info?.rating ?? "-"} reviewsRaw=${info?.reviews.length ?? 0}`,
+  );
+  // 只缓存真正读到内容的结果；失败/只有链接的下次搜索会重新尝试。
+  if (info && hasTabelogContent(info)) cache.set(cacheKey, info);
   return info;
+}
+
+export function hasTabelogContent(info: TabelogInfo | null): boolean {
+  return !!info && (info.rating != null || info.reviews.length > 0 || info.reviewCount != null);
 }

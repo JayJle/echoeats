@@ -871,9 +871,9 @@ import {
   filterByCuisineRelevance,
   type CuisineExpansion,
 } from "./cuisine-expand.server";
-import { fetchTabelogInfo, type TabelogInfo } from "./tabelog.server";
-import { fetchYelpInfo, type YelpInfo } from "./yelp.server";
-import { fetchOfficialSite, fetchWebSupplement, type OfficialSiteInfo, type WebSnippet } from "./evidence.server";
+import { fetchTabelogInfo, hasTabelogContent, type TabelogInfo } from "./tabelog.server";
+import { fetchYelpInfo, hasUsefulFields as hasYelpContent, type YelpInfo } from "./yelp.server";
+import { fetchOfficialSite, fetchWebSupplement, officialDomain, type OfficialSiteInfo, type WebSnippet } from "./evidence.server";
 
 const YELP_COUNTRIES = new Set(["US", "CA", "FR", "IT", "DE", "ES", "GB"]);
 
@@ -2024,58 +2024,106 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       let platformFail = 0;
       let officialFail = 0;
       const CONCURRENCY = 8;
-      let cursor = 0;
-      const runWorker = async () => {
-        while (true) {
-          const i = cursor++;
-          if (i >= allTargets.length) return;
-          const { p, cuisine } = allTargets[i];
-          const platformTask = (async () => {
-            try {
-              if (usePlatform === "tabelog") {
-                const info = await fetchTabelogInfo(p.name, p.address, data.city, cuisine);
-                if (info) tabelogById.set(p.placeId, info);
-              } else if (usePlatform === "yelp") {
-                const info = await fetchYelpInfo(p.name, p.address, data.city, isEn, cuisine);
-                if (info) yelpById.set(p.placeId, info);
-              }
-            } catch (e) {
-              platformFail++;
-              console.warn(`[Echo/evidence] platform ${p.name} error:`, e instanceof Error ? e.message : e);
+      const platformRead = (pid: string) =>
+        usePlatform === "tabelog"
+          ? hasTabelogContent(tabelogById.get(pid) ?? null)
+          : usePlatform === "yelp"
+            ? hasYelpContent(yelpById.get(pid) ?? null)
+            : true;
+      const fetchOne = async (p: PlaceCandidate, cuisine: string, doPlatform: boolean, doOfficial: boolean) => {
+        const platformTask = (async () => {
+          if (!doPlatform) return;
+          try {
+            if (usePlatform === "tabelog") {
+              const info = await fetchTabelogInfo(p.name, p.address, data.city, cuisine);
+              if (info && (hasTabelogContent(info) || !tabelogById.has(p.placeId))) tabelogById.set(p.placeId, info);
+            } else if (usePlatform === "yelp") {
+              const info = await fetchYelpInfo(p.name, p.address, data.city, isEn, cuisine);
+              if (info && (hasYelpContent(info) || !yelpById.has(p.placeId))) yelpById.set(p.placeId, info);
             }
-          })();
-          const officialTask = (async () => {
-            try {
-              const info = await fetchOfficialSite({
-                name: p.name, address: p.address, city: data.city, websiteUri: p.websiteUri,
-              });
-              if (info) officialById.set(p.placeId, info);
-            } catch (e) {
-              officialFail++;
-              console.warn(`[Echo/evidence] official ${p.name} error:`, e instanceof Error ? e.message : e);
-            }
-          })();
-          await Promise.all([platformTask, officialTask]);
-        }
+          } catch (e) {
+            platformFail++;
+            console.warn(`[Echo/evidence] platform ${p.name} error:`, e instanceof Error ? e.message : e);
+          }
+        })();
+        const officialTask = (async () => {
+          if (!doOfficial) return;
+          try {
+            const info = await fetchOfficialSite({
+              name: p.name, address: p.address, city: data.city, websiteUri: p.websiteUri,
+            });
+            if (info) officialById.set(p.placeId, info);
+          } catch (e) {
+            officialFail++;
+            console.warn(`[Echo/evidence] official ${p.name} error:`, e instanceof Error ? e.message : e);
+          }
+        })();
+        await Promise.all([platformTask, officialTask]);
+      };
+      const runPool = async (items: { p: PlaceCandidate; cuisine: string; doPlatform: boolean; doOfficial: boolean }[]) => {
+        let cursor = 0;
+        const worker = async () => {
+          while (true) {
+            const i = cursor++;
+            if (i >= items.length) return;
+            const it = items[i];
+            await fetchOne(it.p, it.cuisine, it.doPlatform, it.doOfficial);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
       };
       yield* withHeartbeat(
-        Promise.all(Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker)),
+        runPool(allTargets.map((t) => ({ ...t, doPlatform: !!usePlatform, doOfficial: true }))),
         "evidence",
       );
-      const platformHits = usePlatform === "tabelog" ? tabelogById.size : yelpById.size;
-      const withReviews =
-        usePlatform === "tabelog"
-          ? [...tabelogById.values()].filter((t) => t.reviews.length > 0).length
-          : [...yelpById.values()].filter((t) => t.reviews.length > 0).length;
+      // 第二轮：只补第一轮没读到内容的店（平台只有链接/没找到；Google 有官网但没读到）。
+      // 失败结果不再缓存，所以这里会真正重新请求。
+      const retryTargets = allTargets
+        .map((t) => ({
+          ...t,
+          doPlatform: !!usePlatform && !platformRead(t.p.placeId),
+          doOfficial: !officialById.has(t.p.placeId) && !!officialDomain(t.p.websiteUri),
+        }))
+        .filter((t) => t.doPlatform || t.doOfficial);
+      const beforePlatformRead = allTargets.filter((t) => platformRead(t.p.placeId)).length;
+      const beforeOfficial = officialById.size;
+      if (retryTargets.length > 0) {
+        const _rtT0 = Date.now();
+        echoLog.start("evidence_retry", {
+          targets: retryTargets.length,
+          platform: retryTargets.filter((t) => t.doPlatform).length,
+          official: retryTargets.filter((t) => t.doOfficial).length,
+        });
+        yield* withHeartbeat(runPool(retryTargets), "evidence");
+        echoLog.ok("evidence_retry", Date.now() - _rtT0, {
+          platformRecovered: allTargets.filter((t) => platformRead(t.p.placeId)).length - beforePlatformRead,
+          officialRecovered: officialById.size - beforeOfficial,
+        });
+      }
+      const platformMap: Map<string, TabelogInfo | YelpInfo> = usePlatform === "tabelog" ? tabelogById : yelpById;
+      const platformHits = platformMap.size;
+      const platformReadCount = allTargets.filter((t) => platformRead(t.p.placeId)).length;
+      const withReviews = [...platformMap.values()].filter((t) => t.reviews.length > 0).length;
+      const withSite = allTargets.filter((t) => !!officialDomain(t.p.websiteUri)).length;
+      const stillMissing = allTargets
+        .filter((t) => (usePlatform && !platformRead(t.p.placeId)) || (!officialById.has(t.p.placeId) && officialDomain(t.p.websiteUri)))
+        .map((t) => `${t.p.name}[${usePlatform && !platformRead(t.p.placeId) ? (platformMap.has(t.p.placeId) ? "platform:url-only" : "platform:miss") : ""}${!officialById.has(t.p.placeId) && officialDomain(t.p.websiteUri) ? " official:miss" : ""}]`);
       echoLog.ok("evidence", Date.now() - _evT0, {
         total: allTargets.length,
-        platformHit: platformHits,
+        platformUrlFound: platformHits,
+        platformRead: usePlatform ? platformReadCount : "n/a",
+        platformUrlOnly: usePlatform ? [...platformMap.keys()].filter((k) => !platformRead(k)).length : "n/a",
+        platformMiss: usePlatform ? allTargets.length - platformHits : "n/a",
         platformWithReviews: withReviews,
-        platformFail,
-        officialHit: officialById.size,
+        platformThrow: platformFail,
+        officialRead: officialById.size,
         officialWithMenu: [...officialById.values()].filter((o) => o.menu.length > 0).length,
-        officialFail,
+        officialMissWithSite: allTargets.filter((t) => !officialById.has(t.p.placeId) && officialDomain(t.p.websiteUri)).length,
+        googleHasSite: withSite,
+        officialThrow: officialFail,
+        retried: retryTargets.length,
       });
+      if (stillMissing.length) console.log(`[Echo/evidence/missing] ${stillMissing.join(" | ")}`);
       if (usePlatform && allTargets.length > 0 && platformHits === 0) {
         pushWarn({
           stage: usePlatform,
