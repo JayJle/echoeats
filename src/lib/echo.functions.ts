@@ -1983,11 +1983,21 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const yelpById = new Map<string, YelpInfo>();
     const officialById = new Map<string, OfficialSiteInfo>();
     const webById = new Map<string, WebSnippet[]>();
+    // 两阶段漏斗：每品类只有前 DEEP_EVIDENCE_CAP 家走 Perplexity 深度补齐；
+    // 其余（到 POOL_CAP 为止）仍进入 AI 评分，但只用 Google Places 自带证据。
+    const DEEP_EVIDENCE_CAP = 15;
     if (pplxKey && data.mode !== "quick") {
       const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
       for (const r of placeResults) {
-        const capped = [...r.places].sort((x, y) => _poolRank(y) - _poolRank(x)).slice(0, POOL_CAP);
-        for (const p of capped) allTargets.push({ p, cuisine: r.cuisine });
+        const ranked = [...r.places].sort((x, y) => _poolRank(y) - _poolRank(x));
+        const deep = ranked.slice(0, DEEP_EVIDENCE_CAP);
+        for (const p of deep) allTargets.push({ p, cuisine: r.cuisine });
+        const shallow = ranked.slice(DEEP_EVIDENCE_CAP, POOL_CAP);
+        if (shallow.length) {
+          console.log(
+            `[Echo/evidence/shallow] cuisine="${r.cuisine}" deep=${deep.length} google-only=${shallow.length}: ${shallow.map((p) => p.name).join(" | ")}`,
+          );
+        }
       }
       const usePlatform: "tabelog" | "yelp" | null =
         country === "JP" ? "tabelog" : YELP_COUNTRIES.has(country) ? "yelp" : null;
