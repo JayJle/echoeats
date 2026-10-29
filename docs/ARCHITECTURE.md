@@ -93,7 +93,8 @@ createOpenAICompatible({
 | Pass 1 核验 `rankVerifyGroup` | `echo.functions.ts:2431` | `qwen-plus` | **纯文本 raw JSON + `extractJson` + `AiVerifyGroupSchema.parse`**；解析失败追加"严格 JSON"提示重试 1 次 | 10000 |
 | Pass 2 打分 `rankScoreGroup` | `echo.functions.ts:2532/2555/2577` | `qwen-plus` | `Output.object` → miss-only 定向重试 → raw JSON 兜底 → 全量回落 60 | 2000 / 重试 1000 / raw 3000 |
 | Pass 3 文案 `rankCopyGroup` | `echo.functions.ts:2729/2746` | `qwen-plus` | `Output.object` → raw JSON 兜底 → 该批返回空 picks | 4000 / raw 6000 |
-| Tabelog 抓取 | `tabelog.server.ts:329` | Perplexity `sonar` → 失败/字段空升级 `sonar-pro` | `response_format: json_schema` | `max_tokens` 400 / 700 |
+| Tabelog / Yelp 读取 | `tabelog.server.ts` / `yelp.server.ts` | Perplexity `sonar` → 失败/字段空升级 `sonar-pro`；没拿到评论原文再跑一次 reviews-only `sonar` | `response_format: json_schema` | `max_tokens` 1800 |
+| 官网读取 / 网络补充 | `evidence.server.ts` | Perplexity `sonar`（不升级） | `response_format: json_schema` | 1500 / 900 |
 | Yelp 抓取 | `yelp.server.ts:306` | 同上，且按 URL 置信度决定起始档（high→`sonar`，low→直接 `sonar-pro` 且强制核验） | `response_format: json_schema` | `max_tokens` 400 / 700 |
 | 语音转写 | `routes/api/transcribe.ts:67` | ElevenLabs `scribe_v2`（非 LLM） | multipart form | — |
 
@@ -147,7 +148,7 @@ Places 请求参数：`includedType: "restaurant"`，`maxResultCount ≤ 20`，`
         ▼
 [8] 时间硬筛 isOpenAt + 规则初筛（businessStatus / priceLevel / 评分阈值）
         ▼
-[9] 证据补充：Google 一手 reviews（基线）＋ Tabelog(JP) / Yelp(欧美)
+[9] 证据补齐（只对每品类 POOL_CAP=30 的候选）：Google reviews（基线）＋ ①Tabelog(JP)/Yelp(欧美) 原文评论 ＋ ②官网（所有地区：介绍/菜单/招牌菜/价格/营业/预约）＋ ③按需网络补充（缺菜单或缺硬条件依据，最多 15 家）
         ▼
 [10] 候选池截断 POOL_CAP=30，按 rating × log10(reviews+10) 排序
         ▼
@@ -246,7 +247,7 @@ Places 请求参数：`includedType: "restaurant"`，`maxResultCount ≤ 20`，`
    - Stage 0 多变体 `/search` 预搜（`"name" area site:tabelog.com`，可加 city+cuisine），按"店名 token 命中率 + 都道府县路径命中 + cuisine 命中 + 多变体重复出现"打分，取最高分作 `preUrl`。
    - Stage 1 `sonar` + `search_domain_filter=["tabelog.com"]`；Stage 2 `sonar-pro` + `site:` 提示（仅 Stage 1 失败时）。
    - 只接受店铺详情页 URL（正则 `tabelog.com/<pref>/A\d+/A\d+/\d+/`），列表/搜索页一律丢弃。
-   - 输出 `{rating, reviewCount, url, priceRange, priceJPY, summary}`，`priceJPY` 由 `parseTabelogPriceJPY` 解析（支持 `￥6,000〜￥7,999` / `￥10,000～` / `～￥3,000` / 单值）。
+   - 输出 `{rating, reviewCount, url, priceRange, priceJPY, reviews[]}`（reviews = 最多 6 条口コミ原文，含星级/日期，不翻译不总结；summary 字段已废弃恒为 null），`priceJPY` 由 `parseTabelogPriceJPY` 解析（支持 `￥6,000〜￥7,999` / `￥10,000～` / `～￥3,000` / 单值）。
    - 兜底：任一阶段失败或字段读不到 → `null`，不影响主流程。
 3. **Yelp（US/CA/FR/IT/DE/ES/GB）**：同构两阶段（`sonar` 补字段 → `sonar-pro` 核验），带 `confidence: high|medium|low`。
 
@@ -473,3 +474,11 @@ AiCopyPickSchema   = { placeId, aiSummary, pros[], cons[] }
 9. 用 async generator + 心跳做流式输出，前端消费 `stage/heartbeat/result`。
 10. 铺 `[Echo/<stage>] start|ok|fail` 日志与 `_currentStage` 游标。
 11. 需要对外 Agent 时，只暴露"原子快工具"，不要暴露整条流水线。
+
+
+## 证据补齐（2026-10-28 改版）
+- Perplexity 只做一手读取，不做摘要：Tabelog/Yelp 返回最多 6 条原文评论；官网返回原文介绍与菜单；网络补充返回原文片段 + 来源 URL。分析全部交给 Qwen 三段排序。
+- 证据补齐在 POOL_CAP 截断**之后**进行（以前对全部召回候选抓 Tabelog/Yelp），点评平台与官网并行，全局 Perplexity 并发上限 6（`withPplxSlot`），429 退避重试 2 次。
+- 有候选 URL 时不加 `search_domain_filter`（实测加了只能拿到搜索摘要，读不到评论原文）；Tabelog 额外提示口コミ列表页 `<店铺页>dtlrvwlst/`。
+- Pass 1 prompt 要求逐一查看 realWorldReviews / tabelog.reviews / yelp.reviews / officialSite / webSupplement，并在 label 中写明来源；Pass 3 的 pros/cons 只能来自评论，官网介绍/招牌菜只用于 aiSummary。
+- 5 个复杂用例前后对比：Perplexity 实际费用 $6.80 → $5.51，前 5 名 match detail 的 unknown 占比 46% → 36%，Qwen 输入 token +38%，单次搜索耗时增加约 10–70 秒。
