@@ -203,10 +203,11 @@ function StepRequirements() {
     const ac = new AbortController();
     abortRef.current = ac;
 
-    // 重置进度
-    targetProgressRef.current = 0;
-    displayProgressRef.current = 0;
-    setDisplayProgress(0);
+    // 重置进度；调整权重后重搜时跳过了解析，进度从解析阶段末开始，避免进度条归零却显示已完成步骤
+    const startAt = preParsed ? STAGE_RANGES[mode].parse[1] : 0;
+    targetProgressRef.current = startAt;
+    displayProgressRef.current = startAt;
+    setDisplayProgress(startAt);
     reviewMaxRef.current = 0;
     tabelogMaxRef.current = 0;
     yelpMaxRef.current = 0;
