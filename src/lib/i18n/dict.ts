@@ -104,6 +104,7 @@ export const dict: Record<Lang, Dict> = {
 
     "err.fetchFailed": "搜索失败，请重试",
     "err.rateLimited": "请求过于频繁，请稍后再试",
+    "err.searchStalled": "搜索连接中断了，请再搜索一次",
     "err.quotaExhausted": "AI 额度已用完，请在 Settings → Workspace 添加额度",
     "err.transcribe.busy": "请求过于频繁，请稍后再试",
     "err.transcribe.elevenQuota": "ElevenLabs 额度不足",
@@ -346,6 +347,7 @@ export const dict: Record<Lang, Dict> = {
 
     "err.fetchFailed": "Search failed, please retry",
     "err.rateLimited": "Too many requests, please try again shortly",
+    "err.searchStalled": "The search connection dropped. Please search again.",
     "err.quotaExhausted": "AI quota exhausted. Add credits in Settings → Workspace.",
     "err.transcribe.busy": "Too many requests, please try again shortly",
     "err.transcribe.elevenQuota": "ElevenLabs quota exhausted",
