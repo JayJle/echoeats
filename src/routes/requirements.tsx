@@ -261,11 +261,22 @@ function StepRequirements() {
         return lo + Math.min(1, frac) * (hi - lo);
       };
 
+      // 卡死看门狗：服务器每隔几秒会发心跳；连续 90 秒没有任何数据说明连接已断，结束等待并提示用户
+      let lastChunkAt = Date.now();
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastChunkAt > 90_000) {
+          clearInterval(watchdog);
+          stalledRef.current = true;
+          ac.abort();
+        }
+      }, 5_000);
+      ac.signal.addEventListener("abort", () => clearInterval(watchdog));
       const iter = await searchFn({
         data: parsedWithMode,
         signal: ac.signal,
       } as Parameters<typeof searchFn>[0]);
       const response = await consumeSearchStream(iter, (chunk) => {
+        lastChunkAt = Date.now();
         if (myRunId !== runIdRef.current || ac.signal.aborted) return;
         if (chunk.type === "stage") {
           if (chunk.stage === "places" || chunk.stage === "places-done") {
