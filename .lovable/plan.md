@@ -2,6 +2,7 @@
 
 ## What changes
 - The separate "Dishes" group goes away. Dishes show inside the preferences: nice-to-have dishes are listed under nice-to-haves, and must-have dishes ("必须有蟹刺身") under must-haves. Each dish appears once, with a weight like every other item.
+- Dish bubbles look different from other bubbles: they keep the must-have or nice-to-have color, but get a different shape and a small dish icon, so you can spot them at a glance. This applies on the progress page and in the adjust-weights panel.
 - Users can adjust a dish's weight, move it between must-have and nice-to-have, or remove it, the same as any other preference.
 - If the AI picks up the same dish as both a dish and a preference ("想吃拉面" and "ラーメン"), they merge into one item and the higher weight is kept.
 - Behind the scenes the app still knows which items are dishes, so restaurant search still looks for those dishes and the ranking still checks the menu for them.
