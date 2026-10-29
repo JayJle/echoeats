@@ -56,6 +56,7 @@ function StepRequirements() {
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef(0);
+  const stalledRef = useRef(false);
 
   // —— 平滑进度条状态 ——
   const [displayProgress, setDisplayProgress] = useState(0);
@@ -202,6 +203,7 @@ function StepRequirements() {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+    stalledRef.current = false;
 
     // 重置进度；调整权重后重搜时跳过了解析，进度从解析阶段末开始，避免进度条归零却显示已完成步骤
     const startAt = preParsed ? STAGE_RANGES[mode].parse[1] : 0;
@@ -309,6 +311,7 @@ function StepRequirements() {
         }
         // heartbeat 不再调整 target，仅作存活信号（后端用来防 edge gateway 切流）
       });
+      clearInterval(watchdog);
       if (myRunId !== runIdRef.current || ac.signal.aborted) return;
       clearTimers();
       setCurrentStage("rank");
@@ -330,6 +333,14 @@ function StepRequirements() {
       };
       requestAnimationFrame(waitAndNavigate);
     } catch (err) {
+      if (stalledRef.current && myRunId === runIdRef.current) {
+        stalledRef.current = false;
+        setError(t("err.searchStalled"));
+        clearTimers();
+        setCurrentStage(null);
+        stopProgressLoop();
+        return;
+      }
       if (ac.signal.aborted || myRunId !== runIdRef.current) return;
       const msg = err instanceof Error ? err.message : t("err.fetchFailed");
       if (msg.includes("429")) setError(t("err.rateLimited"));
