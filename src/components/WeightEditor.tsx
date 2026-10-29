@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { UtensilsCrossed, X } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import type { ParsedRequirements, WeightedCondition } from "@/lib/store";
@@ -65,9 +65,9 @@ export function WeightEditor({
                     ? "text-secondary-foreground"
                     : "text-destructive";
               return (
-              <div key={`${b}-${i}`} className={`rounded-md border p-2 space-y-1.5 transition-colors duration-200 ${rowCls}`}>
+              <div key={`${b}-${i}`} className={`rounded-md border p-2 ${c.dish ? "border-dashed" : ""} space-y-1.5 transition-colors duration-200 ${rowCls}`}>
                 <div className="flex items-start gap-2">
-                  <span className="flex-1 text-xs">{c.text}</span>
+                  <span className="flex-1 text-xs inline-flex items-start gap-1">{c.dish && <UtensilsCrossed aria-hidden className="mt-0.5 h-3 w-3 shrink-0" />}{c.text}</span>
                   <span className={`text-xs tabular-nums font-medium transition-colors duration-200 ${numCls}`}>{c.weight.toFixed(1)}</span>
                   <button type="button" aria-label={t("weights.remove")} onClick={() => update(b, i, null)} className="text-muted-foreground hover:text-destructive">
                     <X className="w-3.5 h-3.5" />

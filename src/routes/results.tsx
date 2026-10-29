@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Pencil } from "lucide-react";
+import { Pencil, UtensilsCrossed } from "lucide-react";
+import { foldDishes } from "@/lib/weights";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -145,8 +146,9 @@ function ResultsPage() {
     partial: "bg-secondary text-secondary-foreground",
   };
   const weekdayShort = t("results.weekday.short").split(",");
-  const displayedHardFilters = parsed.hardFilters;
-  const displayedSoftPreferences = parsed.softPreferences;
+  const folded = foldDishes(parsed);
+  const displayedHardFilters = folded.hardFilters;
+  const displayedSoftPreferences = folded.softPreferences;
   const NEG_PREFIX_ANY = /^(不要|不想|不喜欢|不接受|不能|别|勿|避免|排除|拒绝|讨厌|去掉|去除|杜绝|远离|禁止|avoid|no\s|not\s|non-|without|exclude|dislike|don'?t|hate|never|skip)/i;
   const renderNegText = (text: string): string => {
     const t = text.trim();
@@ -154,7 +156,6 @@ function ResultsPage() {
     return lang === "en" ? `Avoid ${t}` : `不要${t}`;
   };
   const displayedNegativeFilters = parsed.negativeFilters;
-  const displayedDishPreferences = parsed.dishPreferences;
 
   const cancelRefine = () => {
     abortRef.current?.abort();
@@ -341,8 +342,8 @@ function ResultsPage() {
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.hardFilters")}</p>
               <div className="flex flex-wrap gap-1.5">
                 {displayedHardFilters.map((f, i) => (
-                  <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
-                    {f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
+                  <span key={i} className={`inline-flex items-center px-2 py-0.5 text-xs bg-primary/15 text-primary border border-primary/30 ${f.dish ? "rounded-md border-dashed" : "rounded-full"}`}>
+                    {f.dish && <UtensilsCrossed aria-hidden className="mr-1 h-3 w-3" />}{f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
                   </span>
                 ))}
               </div>
@@ -353,8 +354,8 @@ function ResultsPage() {
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.softPrefs")}</p>
               <div className="flex flex-wrap gap-1.5">
                 {displayedSoftPreferences.map((f, i) => (
-                  <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground">
-                    {f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
+                  <span key={i} className={`inline-flex items-center px-2 py-0.5 text-xs bg-secondary text-secondary-foreground ${f.dish ? "rounded-md border border-dashed border-secondary-foreground/30" : "rounded-full"}`}>
+                    {f.dish && <UtensilsCrossed aria-hidden className="mr-1 h-3 w-3" />}{f.text} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
                   </span>
                 ))}
               </div>
@@ -367,18 +368,6 @@ function ResultsPage() {
                 {displayedNegativeFilters.map((f, i) => (
                   <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-destructive/10 text-destructive border border-destructive/30">
                     <span aria-hidden className="mr-1">✕</span>{renderNegText(f.text)} <span className="opacity-60">· {f.weight.toFixed(1)}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {displayedDishPreferences.length > 0 && (
-            <div className="mt-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{t("results.dishes")}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {displayedDishPreferences.map((f, i) => (
-                  <span key={i} className="px-2 py-0.5 text-xs rounded-full bg-accent text-accent-foreground">
-                    {f}
                   </span>
                 ))}
               </div>

@@ -5,6 +5,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 export type WeightedCondition = {
   text: string;
   weight: number; // 0.1 - 1.0
+  dish?: string; // set when this condition is a dish the user wants
 };
 
 export type ParsedRequirements = {

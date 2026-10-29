@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, HelpCircle, Loader2, Mic, SlidersHorizontal, Sparkles, Square } from "lucide-react";
+import { Check, ChevronRight, HelpCircle, Loader2, Mic, SlidersHorizontal, Sparkles, Square, UtensilsCrossed } from "lucide-react";
 import { toast } from "sonner";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StepShell } from "@/components/StepShell";
@@ -852,8 +852,8 @@ function StepRequirements() {
                 {parsedPreview.hardFilters.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {parsedPreview.hardFilters.map((f, i) => (
-                      <span key={`h-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary border border-primary/30">
-                        {f.text}<span className="ml-1 opacity-70 tabular-nums">{f.weight.toFixed(1)}</span>
+                      <span key={`h-${i}`} className={`inline-flex items-center px-2 py-0.5 text-xs bg-primary/15 text-primary border border-primary/30 ${f.dish ? "rounded-md border-dashed" : "rounded-full"}`}>
+                        {f.dish && <UtensilsCrossed aria-hidden className="mr-1 h-3 w-3" />}{f.text}<span className="ml-1 opacity-70 tabular-nums">{f.weight.toFixed(1)}</span>
                       </span>
                     ))}
                   </div>
@@ -861,8 +861,8 @@ function StepRequirements() {
                 {parsedPreview.softPreferences.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {parsedPreview.softPreferences.map((f, i) => (
-                      <span key={`s-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground">
-                        {f.text}<span className="ml-1 opacity-70 tabular-nums">{f.weight.toFixed(1)}</span>
+                      <span key={`s-${i}`} className={`inline-flex items-center px-2 py-0.5 text-xs bg-secondary text-secondary-foreground ${f.dish ? "rounded-md border border-dashed border-secondary-foreground/30" : "rounded-full"}`}>
+                        {f.dish && <UtensilsCrossed aria-hidden className="mr-1 h-3 w-3" />}{f.text}<span className="ml-1 opacity-70 tabular-nums">{f.weight.toFixed(1)}</span>
                       </span>
                     ))}
                   </div>
@@ -898,15 +898,6 @@ function StepRequirements() {
                   </button>
                 )}
                 </>
-                )}
-                {parsedPreview.dishPreferences.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {parsedPreview.dishPreferences.map((f, i) => (
-                      <span key={`d-${i}`} className="px-2 py-0.5 text-xs rounded-full bg-accent text-accent-foreground">
-                        {f}
-                      </span>
-                    ))}
-                  </div>
                 )}
               </div>
             )}

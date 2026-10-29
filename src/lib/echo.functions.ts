@@ -3,6 +3,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createQwenProvider } from "./ai-gateway";
+import { foldDishes } from "./weights";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
@@ -60,6 +61,7 @@ const WeightCoerced = z.preprocess((v) => {
 const WeightedConditionSchema = z.object({
   text: z.string(),
   weight: WeightCoerced.default(0.7),
+  dish: z.string().optional().catch(undefined),
 });
 
 // hhmm：允许 "7:00" / "07:00" / 不规范字符串；非法时归 null
@@ -183,14 +185,14 @@ function dedupeParsedConditions(parsed: z.infer<typeof ParsedSchema>): z.infer<t
     }
     return fixed === n.text ? n : { ...n, text: fixed };
   });
-  return {
+  return foldDishes({
     ...parsed,
     cuisines: uniqueStrings(parsed.cuisines),
     hardFilters: exactDedupe(parsed.hardFilters),
     softPreferences: exactDedupe(parsed.softPreferences),
     negativeFilters: negFixed,
     dishPreferences: dishDedupe(parsed.dishPreferences),
-  };
+  });
 }
 
 
@@ -212,6 +214,10 @@ const SemanticClusterOutput = z.object({
         ids: z.array(z.number().int().nonnegative()).min(1),
       }),
     )
+    .default([]),
+  // 菜品 ↔ 条件 对应：某条 hard/soft 条件说的就是某道菜（如「想吃拉面」↔「ラーメン」）
+  dishLinks: z
+    .array(z.object({ dishId: z.number().int().nonnegative(), conditionId: z.number().int().nonnegative() }))
     .default([]),
 });
 
@@ -259,6 +265,7 @@ dishPreferences（菜品）聚类原则：同义词、别名、单复数、繁�
 输出 JSON：
 - clusters：条件条目的语义簇分组，每个簇是一组 id（来自下方条件列表的第一列数字）。每个 id 必须**恰好**出现在一个簇中。单独成簇也要返回 \`{"ids":[X]}\`。
 - dishClusters：菜品聚类，结构同上，id 来自下方菜品列表。
+- dishLinks：如果某条 hard/soft 条件说的就是某道菜（如「最好有蟹刺身」↔ 菜品「蟹刺身」，「想吃拉面」↔「ラーメン」），输出 \`{"dishId":菜品id,"conditionId":条件id}\`。只连"就是在要这道菜"的条件；避雷（neg）条目不要连。没有就返回空数组。
 
 条件列表（格式：id\\t[bucket\\tweight]\\t原文）：
 ${conditionLines || "(空)"}
@@ -284,7 +291,7 @@ ${dishLines || "(空)"}`;
       "[semanticClusterMerge] 聚类失败，退回精确字符串去重：",
       e instanceof Error ? e.message : e,
     );
-    return parsed;
+    return foldDishes(parsed);
   }
 
   // 校验 & 兜底：所有未出现在 clusters 里的 id 自动成单独簇
@@ -307,6 +314,7 @@ ${dishLines || "(空)"}`;
   let mergedCount = 0;
 
   const isEnLang = uiLanguage === "en";
+  const finalById = new Map<number, { item: WeightedCondition; bucket: "hard" | "soft" | "neg" }>();
   for (const ids of clusters) {
     const entries = ids.map((id) => flat[id]);
     if (entries.length > 1) mergedCount += entries.length - 1;
@@ -335,7 +343,9 @@ ${dishLines || "(空)"}`;
       if (anyNeg) textSource = anyNeg.item.text;
       textSource = ensureNegationPrefix(textSource, isEnLang);
     }
-    const finalItem: WeightedCondition = { text: textSource, weight: maxWeight };
+    const dishTag = finalBucket === "neg" ? undefined : entries.find((e) => e.item.dish)?.item.dish;
+    const finalItem: WeightedCondition = { text: textSource, weight: maxWeight, ...(dishTag ? { dish: dishTag } : {}) };
+    for (const e of entries) finalById.set(e.id, { item: finalItem, bucket: finalBucket });
     if (finalBucket === "hard") hardFilters.push(finalItem);
     else if (finalBucket === "soft") softPreferences.push(finalItem);
     else negativeFilters.push(finalItem);
@@ -355,6 +365,15 @@ ${dishLines || "(空)"}`;
     if (!usedDishIds.has(d.id)) dishClusters.push([d.id]);
   }
   const dishPreferences = dishClusters.map((ids) => dishList[ids[0]].text);
+  // 把 AI 认定"就是这道菜"的条件打上 dish 标签（同一道菜只出现一次）
+  const dishCanon = new Map<number, string>();
+  dishClusters.forEach((ids) => ids.forEach((id) => dishCanon.set(id, dishList[ids[0]].text)));
+  for (const link of clustersOut.dishLinks) {
+    const target = finalById.get(link.conditionId);
+    const dish = dishCanon.get(link.dishId);
+    if (!target || !dish || target.bucket === "neg" || target.item.dish) continue;
+    target.item.dish = dish;
+  }
 
   if (mergedCount > 0) {
     console.log(
@@ -363,13 +382,11 @@ ${dishLines || "(空)"}`;
   }
   void isEnLang;
 
-  return {
-    ...parsed,
-    hardFilters,
-    softPreferences,
-    negativeFilters,
-    dishPreferences,
-  };
+  const folded = foldDishes({ ...parsed, hardFilters, softPreferences, negativeFilters, dishPreferences });
+  console.log(
+    `[semanticClusterMerge] dishes folded into preferences: ${folded.dishPreferences.length} (links=${clustersOut.dishLinks.length})`,
+  );
+  return folded;
 }
 
 const MEAL_PERIOD_ANCHORS: Array<{ pattern: RegExp; hhmm: string }> = [
@@ -462,7 +479,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 - city：原样回传。cuisines：若用户已选则原样回传；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-2 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
 - dateTime：直接用日期字符串，如 "2026/05/20"。
 - hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
-- dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight）。
+- dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight，只写干净的菜名）。系统会把菜品并入偏好列表：普通"想吃/最好有"的菜**不要**再写进 softPreferences（系统自动以 0.6 加入）；"必须有"的菜写进 hardFilters（带 weight）并同时列在 dishPreferences。
 - searchStrategy：3-5 条搜索策略说明。
 - cuisineLevelConstraints：**品类级约束**（对象数组，形如 \`{"text":"原话 → 翻译","weight":0.1-1.0}\`），见下节。
 
@@ -543,8 +560,7 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
     {"text":"可以预约 → 支持预约","weight":0.8}
   ]
 - softPreferences: [
-    {"text":"适合聊天（安静、便于交谈）","weight":0.7},
-    {"text":"最好有蟹刺身","weight":0.6}
+    {"text":"适合聊天（安静、便于交谈）","weight":0.7}
   ]
 - negativeFilters: [{"text":"不要游客店 → 排除游客扎堆的店","weight":0.7}]
 
