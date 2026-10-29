@@ -2251,11 +2251,21 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     const KIND_TAG_ZH: Record<string, string> = { preference: "【偏好】", avoidance: "【避雷】", dish: "【菜品】" };
     const KIND_TAG_EN: Record<string, string> = { preference: "[PREFER]", avoidance: "[AVOID]", dish: "[DISH]" };
     const tagFor = (kind: string) => (isEn ? KIND_TAG_EN[kind] : KIND_TAG_ZH[kind]) ?? "";
+    // Dishes already live inside hard/soft conditions (tagged `dish`), so each dish
+    // gets exactly one match-detail slot: the condition the user sees.
+    const lc = (s: string) => s.toLocaleLowerCase();
+    const dishCovered = (dish: string) =>
+      [...data.hardFilters, ...data.softPreferences].some(
+        (c) => (c.dish && lc(c.dish) === lc(dish)) || lc(c.text).includes(lc(dish)),
+      );
     const nonHardFilters = [
-      ...data.softPreferences.map((item) => ({ kind: "preference", text: `${tagFor("preference")} ${item.text}`.trim() })),
+      ...data.softPreferences.map((item) => {
+        const kind = item.dish ? "dish" : "preference";
+        return { kind, text: `${tagFor(kind)} ${item.text}`.trim() };
+      }),
       ...data.negativeFilters.map((item) => ({ kind: "avoidance", text: `${tagFor("avoidance")} ${item.text}`.trim() })),
       ...data.dishPreferences
-        .filter((dish) => !data.hardFilters.some((filter) => filter.text.includes(dish)))
+        .filter((dish) => !dishCovered(dish))
         .map((text) => ({ kind: "dish", text: `${tagFor("dish")} ${text}`.trim() })),
     ];
 
