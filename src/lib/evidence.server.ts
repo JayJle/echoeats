@@ -69,7 +69,36 @@ export async function withPplxSlot<T>(fn: () => Promise<T>): Promise<T> {
     pplxLeases.delete(id);
   }
 }
-export const PPLX_RETRY = { retries: 2, baseMs: 1500 } as const;
+// 3 retries with 2.5s/5s/10s backoff: Tier-1 429 windows are often longer than the old 1.5s/3s.
+export const PPLX_RETRY = { retries: 3, baseMs: 2500 } as const;
+const PPLX_CALL_TIMEOUT_MS = 25_000;
+
+// One Perplexity chat POST: acquire a slot FIRST, then start the timeout, so queue time never eats the
+// request's own budget (queued calls used to time out before being sent). Timeouts / 429 / 5xx retry.
+export async function pplxPost(apiKey: string, body: unknown, label: string): Promise<Response> {
+  return withRetry(
+    () =>
+      withPplxSlot(async () => {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(new Error(`timeout ${PPLX_CALL_TIMEOUT_MS}ms`)), PPLX_CALL_TIMEOUT_MS);
+        try {
+          const r = await fetch("https://api.perplexity.ai/chat/completions", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+            signal: ac.signal,
+            body: JSON.stringify(body),
+          });
+          if (!r.ok && (r.status >= 500 || r.status === 429)) throw new Error(`${label} upstream ${r.status}`);
+          // Read body inside the slot + timer so a stalled body read is also bounded.
+          const text = await r.text();
+          return new Response(text, { status: r.status, headers: r.headers });
+        } finally {
+          clearTimeout(t);
+        }
+      }),
+    { label, ...PPLX_RETRY },
+  );
+}
 
 type ChatResult = { content: string | null; citations: string[] } | null;
 
@@ -96,19 +125,7 @@ export async function pplxChat(opts: {
   };
   if (opts.domainFilter?.length) body.search_domain_filter = opts.domainFilter;
   try {
-    const res = await withRetry(
-      (sig) =>
-        withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${opts.apiKey}`, "Content-Type": "application/json" },
-          signal: sig,
-          body: JSON.stringify(body),
-        })).then((r) => {
-          if (!r.ok && (r.status >= 500 || r.status === 429)) throw new Error(`${opts.label} upstream ${r.status}`);
-          return r;
-        }),
-      { label: opts.label, ...PPLX_RETRY, timeoutMs: 25_000 },
-    );
+    const res = await pplxPost(opts.apiKey, body, opts.label);
     if (!res.ok) {
       console.warn(`[${opts.label}] HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
       return null;
@@ -120,7 +137,7 @@ export async function pplxChat(opts: {
       : [];
     return { content: choices?.[0]?.message?.content ?? null, citations };
   } catch (e) {
-    console.warn(`[${opts.label}]`, e instanceof Error ? e.message : e);
+    console.warn(`[${opts.label}] FAILED after retries:`, e instanceof Error ? e.message : e);
     return null;
   }
 }
@@ -285,9 +302,10 @@ export async function fetchOfficialSite(opts: {
     }
   }
   console.log(
-    `[OfficialSite] ${name}: ${info ? `ok menu=${info.menu.length} sig=${info.signatureDishes.length} intro=${info.intro ? "y" : "n"}` : "miss"} domain=${domain ?? "search"}`,
+    `[OfficialSite] ${name}: ${info ? `ok menu=${info.menu.length} sig=${info.signatureDishes.length} intro=${info.intro ? "y" : "n"}` : r ? "miss(no-content)" : "miss(request-failed)"} domain=${domain ?? "search"}`,
   );
-  officialCache.set(cacheKey, info);
+  // Only cache real hits: a miss (429 / timeout / unreadable page) must be retried by the next search.
+  if (info) officialCache.set(cacheKey, info);
   return info;
 }
 

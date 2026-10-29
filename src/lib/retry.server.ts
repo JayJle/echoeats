@@ -17,8 +17,8 @@ const DEFAULT_RETRYABLE = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   // HTTP 5xx / 429
   if (/\b(5\d\d|429)\b/.test(msg)) return true;
-  // AbortError（我们的超时）
-  if (/abort/i.test(msg)) return true;
+  // AbortError / 我们自己抛出的 "timeout Nms"
+  if (/abort|timeout/i.test(msg)) return true;
   // 网络层（DNS / TLS / 连接重置）
   if (/fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|network/i.test(msg)) return true;
   return false;
