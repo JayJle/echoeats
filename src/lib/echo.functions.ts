@@ -3,6 +3,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createQwenProvider } from "./ai-gateway";
+import { foldDishes } from "./weights";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
