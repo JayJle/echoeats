@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
+import type { ParsedRequirements } from "./store";
 import { clampWeight, finalizeEdited, foldDishes } from "./weights";
 
-const base = {
+const base: ParsedRequirements = {
   city: "Tokyo", cuisines: [], dateTime: "", dishPreferences: [], searchStrategy: [],
   hardFilters: [], softPreferences: [], negativeFilters: [],
 };
