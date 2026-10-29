@@ -2112,7 +2112,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
         total: allTargets.length,
         platformUrlFound: platformHits,
         platformRead: usePlatform ? platformReadCount : "n/a",
-        platformUrlOnly: usePlatform ? platformHits - platformMap.size + [...platformMap.keys()].filter((k) => !platformRead(k)).length : "n/a",
+        platformUrlOnly: usePlatform ? [...platformMap.keys()].filter((k) => !platformRead(k)).length : "n/a",
         platformMiss: usePlatform ? allTargets.length - platformHits : "n/a",
         platformWithReviews: withReviews,
         platformThrow: platformFail,
