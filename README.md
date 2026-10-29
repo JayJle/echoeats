@@ -14,7 +14,8 @@ AI 美食礼宾（food concierge）—— 用自然语言说清城市、料理�
 - **语义聚类去重**：合并语义重复的需求意图，保留最高权重；负向需求保留否定语气（`[AVOID]`）
 - **多路召回**：每个品类最多 8 路查询（primary / synonym / dish / scene / time / budget），跨品类按 `placeId` 做最佳归属去重，候选池上限 30
 - **零幻觉真实数据**：店名、地址、营业时间、Google 评分、照片全部来自 Google Places API
-- **区域差异化点评源**：日本店追加 Tabelog，US/CA/GB/FR/IT/DE/ES 追加 Yelp（均通过 Perplexity 分级读取公开页面 + 结果缓存）
+- **区域差异化点评源**：日本店追加 Tabelog，US/CA/GB/FR/IT/DE/ES 追加 Yelp，返回最多 6 条评论原文（Perplexity 只读取、不摘要）
+- **官网读取**：所有地区读取餐厅官网的介绍、菜单与价格、招牌菜、营业时间、预约方式；前两步仍缺菜单或硬条件依据时再做一次网络补充
 - **三段式 AI 排序**：Pass 1 核验与硬条件检查 → Pass 2 匹配分 → Pass 3 文案（亮点 / 槽点 / 推荐理由）
 - **三层打分**：基础分（贝叶斯评分等）+ AI 匹配分 + 因子调整，能用代码算的绝不交给模型
 - **流式结果**：`AsyncGenerator` 边算边推，长任务带心跳，避免边缘网关切流
@@ -64,7 +65,7 @@ AI 美食礼宾（food concierge）—— 用自然语言说清城市、料理�
 > 除 Google Places 之外，**Tabelog、Yelp 都没有使用官方 API**，而是通过 Perplexity 让模型读公开页面并给出可核验 URL。
 
 - **Google Places API (New)** — 唯一的官方店铺数据源：`places:autocomplete`（城市）、`places:searchText`（餐厅召回，含 rating / reviews / periods / photos）、Photo media（图片 URL 解析）
-- **Perplexity** — Tabelog / Yelp 页面检索与字段补全
+- **Perplexity** — Tabelog / Yelp 评论原文、官网信息、按需网络补充的一手读取
 - **ElevenLabs** — 需求页语音输入转写
 
 所有外部 fetch 统一走 `src/lib/retry.server.ts#withRetry`：只对 5xx / 429 / abort / 网络错误重试，指数退避 + 抖动，4xx 不重试。

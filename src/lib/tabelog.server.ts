@@ -13,8 +13,11 @@ export type TabelogInfo = {
   url: string | null; // tabelog 店铺页 URL（必须包含 tabelog.com）
   priceRange: string | null; // 例 "￥6,000〜￥7,999"（原文）
   priceJPY: TabelogPriceJPY | null; // 解析后的数字区间（JPY）
-  summary: string | null; // 1-2 句中文摘要
+  summary: string | null; // legacy, no longer requested (always null)
+  reviews: PlatformReview[]; // 原文评论（不翻译、不总结）
 };
+
+import { REVIEWS_JSON_SCHEMA, REVIEWS_PROMPT_RULE, parseReviews, withPplxSlot, fetchPlatformReviewsOnly, type PlatformReview } from "./evidence.server";
 
 const cache = new Map<string, TabelogInfo | null>();
 
@@ -252,7 +255,9 @@ async function preSearchTabelog(opts: {
   console.log(
     `[Tabelog/search] ${name}: top=${top.url} score=${top.score} appearances=${top.appearances} (${scored.length} candidates, ${queries.length} variants)`,
   );
-  return top.url;
+  // 归一到店铺根页（搜索结果常命中 /dtlrvwlst/... 或 /dtlmenu/... 子页）
+  const base = top.url.match(TABELOG_SHOP_URL_RE)?.[0] ?? top.url;
+  return base.endsWith("/") ? base : `${base}/`;
 }
 
 // =========================================================================
@@ -278,12 +283,12 @@ async function callPerplexity(opts: {
     const isFirst = stage === "sonar";
 
     const priorityBlock = `**字段优先级（按顺序尽力读）**：
-1. **summary（评论口碑，最关键）**：基于真实 Tabelog 口コミ 文本归纳具体菜品/服务/氛围；能读到一定要写，宁可短不要空，禁止编造。
+1. **${REVIEWS_PROMPT_RULE}**
 2. **rating（综合评分）/ reviewCount（口コミ件数）**：直接读页面字段。
 3. **priceRange（夜の予算/ランチ予算）**：读到就给。`;
 
     const hintLine = preUrl
-      ? `\n候选 Tabelog 店铺页 URL：${preUrl}\n请优先打开该页面核验店名+地址是否吻合，吻合则原样返回 url 并读取字段。\n`
+      ? `\n候选 Tabelog 店铺页 URL：${preUrl}\n口コミ列表页：${preUrl}dtlrvwlst/\n请优先打开店铺页核验店名+地址是否吻合，吻合则原样返回店铺页 url 并读取字段；口コミ原文请从口コミ列表页摘录。\n`
       : "";
 
     const cuisineLine = cuisine ? `- 料理类型：${cuisine}\n` : "";
@@ -300,14 +305,14 @@ ${priorityBlock}
 其它要求：
 - 必须是 tabelog.com 上**真实存在**的店铺页（URL 形如 https://tabelog.com/<pref>/A.../...../<数字>/，例 tabelog.com/tokyo/A1301/A130101/13001234/）。**绝对不要返回搜索页/分类页/列表页 URL**。
 - 店名和地址必须能合理对应；同名不同店一律算找不到，宁可返回 null。
-- url: 找到即返回；即使评分/口コミ件数/价位/摘要暂时读取不到，也照常返回 url。
+- url: 找到即返回；即使评分/口コミ件数/价位/评论暂时读取不到，也照常返回 url。
 - rating: Tabelog 综合评分（数字字符串如 "3.62"）。读不到 → null。
 - reviewCount: 口コミ件数（整数）。读不到 → null。
 - priceRange: "夜の予算" 或 "ランチ予算" 字段原文（如 "￥6,000〜￥7,999"）。读不到 → null。
-- summary: 1-2 句简体中文，归纳口碑（具体菜品/服务/氛围），≤ 60 字。读不到 → null。
+- reviews: 见上文，原文摘录口コミ，最多 6 条。
 
 只输出 JSON。找不到任何匹配店铺时，所有字段返回 null。`
-      : `请用 Google 搜索 \`site:tabelog.com "${name}" "${area || city}"\` 找到该店在 Tabelog 的店铺页，然后读取评分/口コミ件数/价位/摘要。
+      : `请用 Google 搜索 \`site:tabelog.com "${name}" "${area || city}"\` 找到该店在 Tabelog 的店铺页，然后读取评分/口コミ件数/价位/原文口コミ。
 
 店铺信息：
 - 店名：${name}
@@ -321,7 +326,7 @@ ${priorityBlock}
 - 必须返回**店铺详情页** URL（形如 https://tabelog.com/<pref>/A.../...../<数字>/）。**禁止返回搜索/列表/排行榜页**。
 - 该店铺页的地址必须落在「${area || city}」内；落在其它行政区的同名店一律视为不匹配。
 - 即便没有评分/价位也要返回 url；只在确认 Tabelog 上没有这家店时全部返回 null。
-- rating / reviewCount / priceRange / summary 同第一轮规则；读不到原样返回 null，禁止编造。
+- rating / reviewCount / priceRange / reviews 同第一轮规则；读不到原样返回 null，禁止编造。
 
 只输出 JSON。`;
 
@@ -335,7 +340,7 @@ ${priorityBlock}
         },
         { role: "user", content: userPrompt },
       ],
-      max_tokens: isFirst ? 400 : 700,
+      max_tokens: 1800,
       temperature: 0.1,
       response_format: {
         type: "json_schema",
@@ -348,20 +353,21 @@ ${priorityBlock}
               reviewCount: { type: ["number", "null"] },
               url: { type: ["string", "null"] },
               priceRange: { type: ["string", "null"] },
-              summary: { type: ["string", "null"] },
+              reviews: REVIEWS_JSON_SCHEMA,
             },
-            required: ["rating", "reviewCount", "url", "priceRange", "summary"],
+            required: ["rating", "reviewCount", "url", "priceRange", "reviews"],
           },
         },
       },
     };
-    if (isFirst) {
+    // 有候选 URL 时不加域名过滤：实测过滤会让模型只拿到搜索摘要、读不到口コミ原文。
+    if (isFirst && !preUrl) {
       body.search_domain_filter = ["tabelog.com"];
     }
 
     const res = await (await import("./retry.server")).withRetry(
       (sig) =>
-        fetch("https://api.perplexity.ai/chat/completions", {
+        withPplxSlot(() => fetch("https://api.perplexity.ai/chat/completions", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -370,13 +376,13 @@ ${priorityBlock}
           // 内层用 retry signal；外层 controller 仍保留 20s 兜底总超时
           signal: sig ?? controller.signal,
           body: JSON.stringify(body),
-        }).then((r) => {
+        })).then((r) => {
           if (!r.ok && (r.status >= 500 || r.status === 429)) {
             throw new Error(`Tabelog upstream ${r.status}`);
           }
           return r;
         }),
-      { label: `tabelog.${stage}`, retries: 1, timeoutMs: 15_000 },
+      { label: `tabelog.${stage}`, retries: 2, baseMs: 1500, timeoutMs: 25_000 },
     );
     if (!res.ok) {
       console.warn(`[Tabelog/${stage}] ${name}: HTTP ${res.status}`);
@@ -415,6 +421,7 @@ function parseStage(name: string, stage: Stage, raw: unknown, preUrl: string | n
         priceRange: null,
         priceJPY: null,
         summary: null,
+        reviews: [],
       };
     }
     console.warn(`[Tabelog/${stage}] ${name}: empty content & no shop-page url`);
@@ -454,16 +461,13 @@ function parseStage(name: string, stage: Stage, raw: unknown, preUrl: string | n
       ? parsed.priceRange.trim().slice(0, 60)
       : null;
   const priceJPY = parseTabelogPriceJPY(priceRange);
-  const summary =
-    typeof parsed.summary === "string" && parsed.summary.trim().length > 0
-      ? parsed.summary.trim().slice(0, 120)
-      : null;
+  const reviews = parseReviews(parsed.reviews);
 
   console.log(
-    `[Tabelog/${stage}] ${name}: ok rating=${rating} reviews=${reviewCount} price=${priceRange ?? "-"} priceJPY=${priceJPY ? `${priceJPY.low ?? "-"}~${priceJPY.high ?? "-"}` : "-"}`,
+    `[Tabelog/${stage}] ${name}: ok rating=${rating} reviews=${reviewCount} price=${priceRange ?? "-"} priceJPY=${priceJPY ? `${priceJPY.low ?? "-"}~${priceJPY.high ?? "-"}` : "-"} reviewsRaw=${reviews.length}`,
   );
 
-  return { rating, reviewCount, url, priceRange, priceJPY, summary };
+  return { rating, reviewCount, url, priceRange, priceJPY, summary: null, reviews };
 }
 
 export async function fetchTabelogInfo(
@@ -495,6 +499,16 @@ export async function fetchTabelogInfo(
       apiKey, stage: "sonar-pro", name, address, city, area, cuisine, preUrl,
     });
     info = r2?.ok ? parseStage(name, "sonar-pro", r2.json, preUrl) : null;
+  }
+
+  if (info?.url && info.reviews.length === 0) {
+    const base = info.url.endsWith("/") ? info.url : `${info.url}/`;
+    info = {
+      ...info,
+      reviews: await fetchPlatformReviewsOnly({
+        platform: "Tabelog", name, shopUrl: base, reviewListUrl: `${base}dtlrvwlst/`,
+      }),
+    };
   }
 
   cache.set(cacheKey, info);

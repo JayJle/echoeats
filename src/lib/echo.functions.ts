@@ -857,6 +857,7 @@ import {
 } from "./cuisine-expand.server";
 import { fetchTabelogInfo, type TabelogInfo } from "./tabelog.server";
 import { fetchYelpInfo, type YelpInfo } from "./yelp.server";
+import { fetchOfficialSite, fetchWebSupplement, type OfficialSiteInfo, type WebSnippet } from "./evidence.server";
 
 const YELP_COUNTRIES = new Set(["US", "CA", "FR", "IT", "DE", "ES", "GB"]);
 
@@ -980,6 +981,15 @@ const RestaurantSchema = z.object({
       priceLevel: z.string().nullable(),
       summary: z.string().nullable(),
       confidence: z.enum(["high", "medium", "low"]).optional().default("high"),
+    })
+    .nullable()
+    .optional()
+    .default(null),
+  officialSite: z
+    .object({
+      url: z.string(),
+      signatureDishes: z.array(z.string()),
+      menu: z.array(z.object({ name: z.string(), price: z.string().nullable() })),
     })
     .nullable()
     .optional()
@@ -1899,107 +1909,6 @@ export const searchRestaurants = createServerFn({ method: "POST" })
     }
 
 
-    // JP 分支补充：用 Perplexity 代抓 Tabelog 评分+摘要+价位，作为 Google 之外的独立信号。
-    // 覆盖所有候选（已经过料理保真过滤），并发上限 8 防止 Perplexity 限流。
-    const tabelogById = new Map<string, TabelogInfo>();
-    if (pplxKey && country === "JP" && data.mode !== "quick") {
-      const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
-      for (const r of placeResults) {
-        for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
-      }
-      yield { type: "stage", stage: "tabelog", total: allTargets.length };
-      _currentStage = "tabelog";
-      const _tabT0 = Date.now();
-      echoLog.start("tabelog", { total: allTargets.length, concurrency: 8 });
-      const CONCURRENCY = 8;
-      let cursor = 0;
-      const runWorker = async () => {
-        while (true) {
-          const i = cursor++;
-          if (i >= allTargets.length) return;
-          const { p, cuisine } = allTargets[i];
-          try {
-            const info = await fetchTabelogInfo(p.name, p.address, data.city, cuisine);
-            if (info) tabelogById.set(p.placeId, info);
-          } catch (e) {
-            console.warn(`[Tabelog] ${p.name} task error:`, e instanceof Error ? e.message : e);
-          }
-        }
-      };
-      // 心跳包裹：抓取期间每 4s yield 一次，避免边缘网关因为长时间静默切断响应。
-      yield* withHeartbeat(
-        Promise.all(
-          Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
-        ),
-        "tabelog",
-      );
-      console.log(`[Tabelog] hit ${tabelogById.size}/${allTargets.length}`);
-      echoLog.ok("tabelog", Date.now() - _tabT0, {
-        hit: tabelogById.size,
-        total: allTargets.length,
-        miss: allTargets.length - tabelogById.size,
-      });
-      if (allTargets.length > 0 && tabelogById.size === 0) {
-        pushWarn({
-          stage: "tabelog",
-          message: isEn
-            ? "Tabelog data is unavailable for this search. Other sources are still shown."
-            : "本次未能取到 Tabelog 数据，其它来源照常展示。",
-          retryable: true,
-        });
-      }
-    }
-
-    // US/CA/西欧 分支补充：用 Perplexity 代抓 Yelp 评分+评论数+价位+摘要，与 Tabelog 同构。
-    // 仅展示用、不参与硬过滤；无数据则前端不展示名片行。
-    const yelpById = new Map<string, YelpInfo>();
-    if (pplxKey && YELP_COUNTRIES.has(country) && data.mode !== "quick") {
-      const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
-      for (const r of placeResults) {
-        for (const p of r.places) allTargets.push({ p, cuisine: r.cuisine });
-      }
-      yield { type: "stage", stage: "yelp", total: allTargets.length };
-      _currentStage = "yelp";
-      const _yelpT0 = Date.now();
-      echoLog.start("yelp", { total: allTargets.length, concurrency: 8 });
-      const CONCURRENCY = 8;
-      let cursor = 0;
-      const runWorker = async () => {
-        while (true) {
-          const i = cursor++;
-          if (i >= allTargets.length) return;
-          const { p, cuisine } = allTargets[i];
-          try {
-            const info = await fetchYelpInfo(p.name, p.address, data.city, isEn, cuisine);
-            if (info) yelpById.set(p.placeId, info);
-          } catch (e) {
-            console.warn(`[Yelp] ${p.name} task error:`, e instanceof Error ? e.message : e);
-          }
-        }
-      };
-      yield* withHeartbeat(
-        Promise.all(
-          Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker),
-        ),
-        "yelp",
-      );
-      console.log(`[Yelp] hit ${yelpById.size}/${allTargets.length}`);
-      echoLog.ok("yelp", Date.now() - _yelpT0, {
-        hit: yelpById.size,
-        total: allTargets.length,
-        miss: allTargets.length - yelpById.size,
-      });
-      if (allTargets.length > 0 && yelpById.size === 0) {
-        pushWarn({
-          stage: "yelp",
-          message: isEn
-            ? "Yelp data is unavailable for this search. Other sources are still shown."
-            : "本次未能取到 Yelp 数据，其它来源照常展示。",
-          retryable: true,
-        });
-      }
-    }
-
     // ===== 跨品类去重：按 placeId 全局唯一，分配到"最适合"的品类 =====
     // 评分：1) 该品类多路召回命中的 route 数（越多越贴合）
     //       2) 该品类内按 rating×log10(reviews+10) 排序的位次（越靠前越合适）
@@ -2063,10 +1972,157 @@ export const searchRestaurants = createServerFn({ method: "POST" })
 
 
 
+
+    // ===== 证据补齐（三步）：仅对进入 AI 阶段的候选（每品类 POOL_CAP）执行 =====
+    //   第 1 步 点评平台原文评论（Tabelog=JP / Yelp=YELP_COUNTRIES）
+    //   第 2 步 官网一手信息（所有地区）
+    //   第 3 步 网络补充（按需：缺菜单或缺硬条件依据时）
+    const POOL_CAP = 30;
+    const _poolRank = (p: PlaceCandidate) => (p.rating ?? 0) * Math.log10((p.userRatingCount ?? 0) + 10);
+    const tabelogById = new Map<string, TabelogInfo>();
+    const yelpById = new Map<string, YelpInfo>();
+    const officialById = new Map<string, OfficialSiteInfo>();
+    const webById = new Map<string, WebSnippet[]>();
+    if (pplxKey && data.mode !== "quick") {
+      const allTargets: { p: PlaceCandidate; cuisine: string }[] = [];
+      for (const r of placeResults) {
+        const capped = [...r.places].sort((x, y) => _poolRank(y) - _poolRank(x)).slice(0, POOL_CAP);
+        for (const p of capped) allTargets.push({ p, cuisine: r.cuisine });
+      }
+      const usePlatform: "tabelog" | "yelp" | null =
+        country === "JP" ? "tabelog" : YELP_COUNTRIES.has(country) ? "yelp" : null;
+      yield { type: "stage", stage: usePlatform ?? "evidence", total: allTargets.length };
+      _currentStage = "evidence";
+      const _evT0 = Date.now();
+      echoLog.start("evidence", { total: allTargets.length, platform: usePlatform ?? "none", concurrency: 8 });
+      let platformFail = 0;
+      let officialFail = 0;
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const runWorker = async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= allTargets.length) return;
+          const { p, cuisine } = allTargets[i];
+          const platformTask = (async () => {
+            try {
+              if (usePlatform === "tabelog") {
+                const info = await fetchTabelogInfo(p.name, p.address, data.city, cuisine);
+                if (info) tabelogById.set(p.placeId, info);
+              } else if (usePlatform === "yelp") {
+                const info = await fetchYelpInfo(p.name, p.address, data.city, isEn, cuisine);
+                if (info) yelpById.set(p.placeId, info);
+              }
+            } catch (e) {
+              platformFail++;
+              console.warn(`[Echo/evidence] platform ${p.name} error:`, e instanceof Error ? e.message : e);
+            }
+          })();
+          const officialTask = (async () => {
+            try {
+              const info = await fetchOfficialSite({
+                name: p.name, address: p.address, city: data.city, websiteUri: p.websiteUri,
+              });
+              if (info) officialById.set(p.placeId, info);
+            } catch (e) {
+              officialFail++;
+              console.warn(`[Echo/evidence] official ${p.name} error:`, e instanceof Error ? e.message : e);
+            }
+          })();
+          await Promise.all([platformTask, officialTask]);
+        }
+      };
+      yield* withHeartbeat(
+        Promise.all(Array.from({ length: Math.min(CONCURRENCY, allTargets.length) }, runWorker)),
+        "evidence",
+      );
+      const platformHits = usePlatform === "tabelog" ? tabelogById.size : yelpById.size;
+      const withReviews =
+        usePlatform === "tabelog"
+          ? [...tabelogById.values()].filter((t) => t.reviews.length > 0).length
+          : [...yelpById.values()].filter((t) => t.reviews.length > 0).length;
+      echoLog.ok("evidence", Date.now() - _evT0, {
+        total: allTargets.length,
+        platformHit: platformHits,
+        platformWithReviews: withReviews,
+        platformFail,
+        officialHit: officialById.size,
+        officialWithMenu: [...officialById.values()].filter((o) => o.menu.length > 0).length,
+        officialFail,
+      });
+      if (usePlatform && allTargets.length > 0 && platformHits === 0) {
+        pushWarn({
+          stage: usePlatform,
+          message: isEn
+            ? `${usePlatform === "tabelog" ? "Tabelog" : "Yelp"} data is unavailable for this search. Other sources are still shown.`
+            : `本次未能取到 ${usePlatform === "tabelog" ? "Tabelog" : "Yelp"} 数据，其它来源照常展示。`,
+          retryable: true,
+        });
+      }
+
+      // 第 3 步：按需网络补充（最多 15 家，按 rating×log(reviews) 取前 15）
+      const facilityHard = data.hardFilters
+        .map((h) => h.text)
+        .filter((t) => !/\d/.test(t)); // 数值类（评分/价格/时间）由确定性字段判断，不需要补充
+      const evidenceText = (pid: string) => {
+        const parts: string[] = [];
+        const o = officialById.get(pid);
+        if (o) parts.push(o.intro ?? "", ...o.menu.map((m) => m.name), ...o.signatureDishes);
+        for (const rv of tabelogById.get(pid)?.reviews ?? []) parts.push(rv.text);
+        for (const rv of yelpById.get(pid)?.reviews ?? []) parts.push(rv.text);
+        for (const t of reviewById.get(pid)?.reviewHighlights ?? []) parts.push(t);
+        return parts.join(" ").toLowerCase();
+      };
+      const supplementTargets = [...allTargets]
+        .sort((x, y) => _poolRank(y.p) - _poolRank(x.p))
+        .map(({ p }) => {
+          const official = officialById.get(p.placeId);
+          const text = evidenceText(p.placeId);
+          const topics: string[] = [];
+          if (!official || official.menu.length === 0) {
+            for (const d of data.dishPreferences) {
+              if (!text.includes(d.toLowerCase())) topics.push(isEn ? `Does the menu have ${d}? price?` : `菜单上是否有「${d}」，价格多少`);
+            }
+          }
+          if (!official) {
+            for (const h of facilityHard) topics.push(isEn ? `Is this true: ${h}?` : `是否满足：${h}`);
+          }
+          return { p, topics };
+        })
+        .filter((t) => t.topics.length > 0)
+        .slice(0, 15);
+      if (supplementTargets.length > 0) {
+        const _wsT0 = Date.now();
+        _currentStage = "web_supplement";
+        echoLog.start("web_supplement", { targets: supplementTargets.length });
+        let wsFail = 0;
+        yield* withHeartbeat(
+          Promise.all(
+            supplementTargets.map(async ({ p, topics }) => {
+              try {
+                const snippets = await fetchWebSupplement({ name: p.name, address: p.address, city: data.city, topics });
+                if (snippets.length) webById.set(p.placeId, snippets);
+              } catch (e) {
+                wsFail++;
+                console.warn(`[Echo/web_supplement] ${p.name} error:`, e instanceof Error ? e.message : e);
+              }
+            }),
+          ),
+          "web_supplement",
+        );
+        echoLog.ok("web_supplement", Date.now() - _wsT0, {
+          targets: supplementTargets.length,
+          hit: webById.size,
+          fail: wsFail,
+        });
+      } else {
+        echoLog.ok("web_supplement", 0, { targets: 0, skipped: "no-gaps" });
+      }
+    }
+
     // 全量候选按每批 8 家核验，避免固定前 25 截断，同时控制单次模型输入输出体积。
     const AI_BATCH_SIZE = 8;
-    // 每个 cuisine 进入 AI 阶段的硬上限，按 rating×log(reviews) 截断尾部，省 token。
-    const POOL_CAP = 30;
+    // 每个 cuisine 进入 AI 阶段的硬上限（POOL_CAP，定义在证据补齐前），按 rating×log(reviews) 截断尾部。
     const candidateGroups = placeResults
       .filter((r) => r.places.length)
       .map((r) => {
@@ -2119,7 +2175,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
                     reviewCount: tabelog.reviewCount,
                     priceRange: tabelog.priceRange,
                     priceJPY: tabelog.priceJPY,
-                    summary: tabelog.summary,
+                    reviews: tabelog.reviews,
                   }
                 : null,
               yelp: yelp
@@ -2127,9 +2183,11 @@ export const searchRestaurants = createServerFn({ method: "POST" })
                     rating: yelp.rating,
                     reviewCount: yelp.reviewCount,
                     priceLevel: yelp.priceLevel,
-                    summary: yelp.summary,
+                    reviews: yelp.reviews,
                   }
                 : null,
+              officialSite: officialById.get(p.placeId) ?? null,
+              webSupplement: webById.get(p.placeId) ?? null,
             };
           }),
         };
@@ -2231,7 +2289,14 @@ ${JSON.stringify(group.candidates, null, 2)}
    - 0–39：基本是猜测或资料严重不足
 6. **Google 评分是确定性事实**：遇到 Google 评分阈值条件，直接拿候选的 rating/googleRating 做数值比较；有数值时不允许 unknown，也不要用评论文本推断评分。
 7. **料理保真**：检查 name / primaryType / editorialSummary / realWorldReviews。命中反例关键词且未命中主词/同义词 → 该硬条件判 fail。
-8. **避雷条目（\`matchDetails\` 中 kind="avoidance" / 文本以【避雷】或 [AVOID] 开头的）语义方向**：
+8. **证据来源（必须逐一查看）**：每家候选可能带有以下一手证据，核验时全部都要读：
+   - \`realWorldReviews\`：Google 评论；\`editorialSummary\`：Google 官方简介
+   - \`tabelog.reviews\` / \`yelp.reviews\`：点评平台**原文评论**（带星级、日期；原语言，需要你自己理解）
+   - \`officialSite\`：餐厅官网（intro 介绍、menu 菜单与价格、signatureDishes 招牌菜、priceRange、hours、reservation）
+   - \`webSupplement\`：网络补充片段（topic + 原文 + 来源）
+   - **菜品类条件优先看 officialSite.menu / signatureDishes**；环境/服务类优先看原文评论；价格优先看 officialSite.priceRange / menu 价格，再看 tabelog.priceRange / yelp.priceLevel。
+   - label / note 的依据要写明来源，如"官网菜单有海胆"、"Tabelog 评论提到吧台安静"、"Yelp 多条评论称可带狗"、"网络资料显示有包间"。
+9. **避雷条目（\`matchDetails\` 中 kind="avoidance" / 文本以【避雷】或 [AVOID] 开头的）语义方向**：
    - \`status="ok"\` 表示**餐厅不具备**该负面特征（成功避雷，是好事）；
    - \`status="fail"\` 表示**餐厅命中**了该负面特征（踩雷，是坏事）；
    - \`label\` 必须**保留否定语气**，句式如"避免路边摊：装修精致，未见街摊风格"、"未命中吵闹：多条评论提到环境安静"。
@@ -2240,10 +2305,10 @@ ${JSON.stringify(group.candidates, null, 2)}
 ## 禁止做（DON'T）
 1. **禁止横向比较**：任何字段里都不允许出现"相比之下""比同批其他店""在本批中""更胜一筹"等措辞。
 2. **禁止跨条引用**：每家店的判定只能引用**它自己**的 candidate 数据，禁止引用同批其他店的评论 / 地址 / 菜单。
-3. **禁止幻觉**：realWorldReviews 为空时严禁编造评价；没有数据就标 unknown。
+3. **禁止幻觉**：所有证据字段（Google 评论 / 平台原文评论 / 官网 / 网络补充）都没有依据时严禁编造；没有数据就标 unknown。
 4. **禁止同义重复**：\`hardFilterChecks\` 已覆盖的主题，\`matchDetails\` 不得换种说法再写一遍。
 5. **禁止输出文案 / 打分字段**：不要写 aiSummary、不要写 pros/cons、**不要写 matchScore / score / rating** —— 这一步只做核验。
-6. **禁止泄露内部字段名**：note 和 label 里不要出现 "primaryType" / "editorialSummary" / "realWorldReviews" 等字段名。
+6. **禁止泄露内部字段名**：note 和 label 里不要出现 "primaryType" / "editorialSummary" / "realWorldReviews" / "officialSite" / "webSupplement" 等字段名（用"官网""评论""网络资料"等自然说法）。
 7. **note / label 控制在 20–40 字**，简短结论 + 简短依据即可。
 8. **每条 matchDetail 只核验它对应的那一个条件**：label 里只能就"当前这一条软偏好/避雷"给结论 + 依据；**严禁**在同一条 label 里同时评价其他软偏好、菜品偏好（dishPreferences）、硬条件或时段/菜名等无关维度。**严禁**出现"…，但未说明是否…（另一个条件）"、"…，然而没有提及…（无关话题）"这种把多个条件杂交进一句的写法——那属于结构性错误，必须拆成各自的槽位或直接省略无关部分。菜品偏好如需评价，只可放进它对应的槽位（如列在 nonHardFilters 中），不得挂到别的软偏好 label 上。
 
@@ -2609,8 +2674,10 @@ ${JSON.stringify(group.candidates, null, 2)}
       name: string;
       address: string;
       googleReviews: string[];
-      tabelogSummary: string | null;
-      yelpSummary: string | null;
+      tabelogReviews: string[];
+      yelpReviews: string[];
+      officialIntro: string | null;
+      signatureDishes: string[];
     };
     type CopyGroupInput = { cuisine: string; picks: CopyPickInput[] };
 
@@ -2628,7 +2695,7 @@ ${langDirective}
 - 本批候选（仅评论与基本信息，本批共 ${group.picks.length} 家）：
 ${JSON.stringify(group.picks, null, 2)}
 
-每家店字段：placeId / name / address / googleReviews（≤3 条） / tabelogSummary / yelpSummary（可能为空）
+每家店字段：placeId / name / address / googleReviews（≤3 条） / tabelogReviews / yelpReviews（平台原文评论，原语言，可能为空） / officialIntro / signatureDishes（官网介绍与招牌菜，可能为空）
 
 ---
 
@@ -2636,7 +2703,7 @@ ${JSON.stringify(group.picks, null, 2)}
 
 ## 必须做（DO）
 1. **逐家独立撰写**：一家一家独立写，每家店的文案**只引用它自己的**评论字段。
-2. **数据源限定**：pros/cons 的每一条**必须**来自 googleReviews / tabelogSummary / yelpSummary 的真实评论文本。
+2. **数据源限定**：pros/cons 的每一条**必须**来自 googleReviews / tabelogReviews / yelpReviews 的真实评论文本。officialIntro / signatureDishes 只能用于 aiSummary（例如点出招牌菜），不能当作 pros/cons。
 3. **来源标注**：每条 pros/cons 的 \`source\` 字段填平台名（Google / Tabelog / Yelp）。
 4. **aiSummary ≤ 80 字**：客观描述这家店的特色、菜品强项、氛围、价位段。
 5. **宁缺毋滥**：评论里找不到足够支撑（同一主题 < 2 条评论提及）→ pros 或 cons 直接返回 \`[]\`，不要硬凑。
@@ -3099,6 +3166,10 @@ Schema：
           photoUrls: [],
           tabelog: tabelogInfo,
           yelp: yelpInfo,
+          officialSite: (() => {
+            const o = officialById.get(p.placeId);
+            return o ? { url: o.url, signatureDishes: o.signatureDishes, menu: o.menu.slice(0, 8) } : null;
+          })(),
           weekdayDescriptions: p.weekdayDescriptions ?? null,
           visitTimeMatch: visitMatchById.get(p.placeId) ?? null,
           scoreBreakdown: breakdown,
@@ -3173,8 +3244,10 @@ Schema：
               name: r.name,
               address: r.address,
               googleReviews: (review?.reviewHighlights ?? []).slice(0, 3),
-              tabelogSummary: r.tabelog?.summary ?? null,
-              yelpSummary: r.yelp?.summary ?? null,
+              tabelogReviews: (place ? tabelogById.get(place.placeId)?.reviews ?? [] : []).map((x) => x.text),
+              yelpReviews: (place ? yelpById.get(place.placeId)?.reviews ?? [] : []).map((x) => x.text),
+              officialIntro: place ? officialById.get(place.placeId)?.intro ?? null : null,
+              signatureDishes: place ? officialById.get(place.placeId)?.signatureDishes ?? [] : [],
             };
           }),
         };

@@ -64,6 +64,11 @@ export type Restaurant = {
     summary: string | null;
     confidence?: "high" | "medium" | "low";
   } | null;
+  officialSite?: {
+    url: string;
+    signatureDishes: string[];
+    menu: { name: string; price: string | null }[];
+  } | null;
   weekdayDescriptions?: string[] | null;
   visitTimeMatch?: "open" | "unknown" | null;
   scoreBreakdown?: { label: string; delta: number }[];
