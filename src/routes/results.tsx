@@ -594,13 +594,14 @@ function ResultsPage() {
   );
 }
 
-type SourceKey = "Google" | "Tabelog" | "Yelp" | "TripAdvisor";
+type SourceKey = "Google" | "Tabelog" | "Yelp" | "TripAdvisor" | "Official";
 
 const SOURCE_BADGE_STYLE: Record<SourceKey, string> = {
   Google: "bg-blue-500/10 text-blue-600 border-blue-500/30 dark:text-blue-400",
   Tabelog: "bg-orange-500/10 text-orange-600 border-orange-500/30 dark:text-orange-400",
   Yelp: "bg-rose-500/10 text-rose-600 border-rose-500/30 dark:text-rose-400",
   TripAdvisor: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30 dark:text-emerald-400",
+  Official: "bg-primary/10 text-primary border-primary/30",
 };
 
 function getRestaurantSources(r: Restaurant): { key: SourceKey; url?: string }[] {
@@ -611,6 +612,8 @@ function getRestaurantSources(r: Restaurant): { key: SourceKey; url?: string }[]
   if (r.tabelog) sources.push({ key: "Tabelog", url: r.tabelog.url ?? undefined });
   // Yelp
   if (r.yelp) sources.push({ key: "Yelp", url: r.yelp.url ?? undefined });
+  // 官网：只在来源标签里标注，不单独展示官网区块
+  if (r.officialSite?.url) sources.push({ key: "Official", url: r.officialSite.url });
   // 从 ratings 找其他平台（仅当 score 非 null）
   for (const rt of r.ratings) {
     const platform = rt.platform as SourceKey;
@@ -657,12 +660,13 @@ function DataSourcesStrip({ r }: { r: Restaurant }) {
       </span>
       {sources.map((s) => {
         const cls = `inline-flex items-center px-1.5 py-0.5 rounded-full border ${SOURCE_BADGE_STYLE[s.key]}`;
+        const label = s.key === "Official" ? t("results.official.title") : s.key;
         return s.url ? (
           <a key={s.key} href={s.url} target="_blank" rel="noreferrer" className={`${cls} hover:opacity-80 transition`}>
-            {s.key}
+            {label}
           </a>
         ) : (
-          <span key={s.key} className={cls}>{s.key}</span>
+          <span key={s.key} className={cls}>{label}</span>
         );
       })}
     </div>
@@ -865,32 +869,6 @@ function RestaurantCard({ index, r, tierLabel, tierClass }: { index: number; r: 
         </div>
       )}
 
-      {r.officialSite && (r.officialSite.signatureDishes.length > 0 || r.officialSite.menu.length > 0) && (
-        <div className="px-6 py-4 border-t border-border">
-          <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            {t("results.official.title")}
-          </h4>
-          {r.officialSite.signatureDishes.length > 0 && (
-            <p className="text-sm mb-2">
-              <span className="text-muted-foreground">{t("results.official.signature")}：</span>
-              {r.officialSite.signatureDishes.join(" · ")}
-            </p>
-          )}
-          {r.officialSite.menu.length > 0 && (
-            <ul className="text-sm space-y-0.5 mb-2">
-              {r.officialSite.menu.slice(0, 6).map((m, i) => (
-                <li key={i} className="flex justify-between gap-3">
-                  <span>{m.name}</span>
-                  {m.price && <span className="text-muted-foreground shrink-0">{m.price}</span>}
-                </li>
-              ))}
-            </ul>
-          )}
-          <a href={r.officialSite.url} target="_blank" rel="noreferrer" className="inline-block text-xs text-primary hover:underline">
-            {t("results.official.view")}
-          </a>
-        </div>
-      )}
 
       <div className="px-6 py-4 border-t border-border bg-muted/30">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
