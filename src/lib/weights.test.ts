@@ -33,7 +33,7 @@ describe("dishes folded into preferences", () => {
   });
   it("never tags an avoid item", () => {
     const r = foldDishes({ ...base, negativeFilters: [{ text: "不要生鱼片", weight: 0.7 }], dishPreferences: ["生鱼片"] });
-    expect(r.negativeFilters[0].dish).toBeUndefined();
+    expect("dish" in r.negativeFilters[0]).toBe(false);
     expect(r.softPreferences[0].dish).toBe("生鱼片");
   });
   it("removing a dish row in the editor removes the dish", () => {
