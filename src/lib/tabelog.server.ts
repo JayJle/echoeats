@@ -478,7 +478,7 @@ export async function fetchTabelogInfo(
       apiKey, stage: "sonar-pro", name, address, city, area, cuisine, preUrl: info?.url ?? preUrl,
     });
     const info2 = r2?.ok ? parseStage(name, "sonar-pro", r2.json, info?.url ?? preUrl) : null;
-    if (info2 && (!info || hasTabelogContent(info2) || info2.url)) info = info2.url ? info2 : info;
+    if (info2 && (!info || hasTabelogContent(info2))) info = info2;
   }
 
   if (info?.url && info.reviews.length === 0) {
