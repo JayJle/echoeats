@@ -2020,7 +2020,7 @@ export const searchRestaurants = createServerFn({ method: "POST" })
       yield { type: "stage", stage: usePlatform ?? "evidence", total: allTargets.length };
       _currentStage = "evidence";
       const _evT0 = Date.now();
-      echoLog.start("evidence", { total: allTargets.length, platform: usePlatform ?? "none", concurrency: 6 });
+      echoLog.start("evidence", { total: allTargets.length, platform: usePlatform ?? "none", concurrency: 3 });
       let platformFail = 0;
       let officialFail = 0;
       const CONCURRENCY = 8;
