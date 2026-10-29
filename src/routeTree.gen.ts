@@ -19,7 +19,6 @@ import { Route as ResultsRouteImport } from './routes/results'
 import { Route as Char91DotmcpChar93ListToolsRouteImport } from './routes/[.mcp]/list-tools'
 import { Route as Char91DotwellKnownChar93OauthProtectedResourceRouteImport } from './routes/[.well-known]/oauth-protected-resource'
 import { Route as AdminFeedbackRouteImport } from './routes/admin.feedback'
-import { Route as ApiBenchRouteImport } from './routes/api/bench'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
 import { Route as DotlovableOauthConsentRouteImport } from './routes/[.]lovable.oauth.consent'
 import { Route as Char91DotmcpChar93InvokeToolToolRouteImport } from './routes/[.mcp]/invoke-tool/$tool'
@@ -76,11 +75,6 @@ const AdminFeedbackRoute = AdminFeedbackRouteImport.update({
   path: '/admin/feedback',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiBenchRoute = ApiBenchRouteImport.update({
-  id: '/api/bench',
-  path: '/api/bench',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
   id: '/api/transcribe',
   path: '/api/transcribe',
@@ -109,7 +103,6 @@ export interface FileRoutesByFullPath {
   '/.mcp/list-tools': typeof Char91DotmcpChar93ListToolsRoute
   '/.well-known/oauth-protected-resource': typeof Char91DotwellKnownChar93OauthProtectedResourceRoute
   '/admin/feedback': typeof AdminFeedbackRoute
-  '/api/bench': typeof ApiBenchRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/.mcp/invoke-tool/$tool': typeof Char91DotmcpChar93InvokeToolToolRoute
@@ -125,7 +118,6 @@ export interface FileRoutesByTo {
   '/.mcp/list-tools': typeof Char91DotmcpChar93ListToolsRoute
   '/.well-known/oauth-protected-resource': typeof Char91DotwellKnownChar93OauthProtectedResourceRoute
   '/admin/feedback': typeof AdminFeedbackRoute
-  '/api/bench': typeof ApiBenchRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/.mcp/invoke-tool/$tool': typeof Char91DotmcpChar93InvokeToolToolRoute
@@ -142,7 +134,6 @@ export interface FileRoutesById {
   '/.mcp/list-tools': typeof Char91DotmcpChar93ListToolsRoute
   '/.well-known/oauth-protected-resource': typeof Char91DotwellKnownChar93OauthProtectedResourceRoute
   '/admin/feedback': typeof AdminFeedbackRoute
-  '/api/bench': typeof ApiBenchRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/.mcp/invoke-tool/$tool': typeof Char91DotmcpChar93InvokeToolToolRoute
@@ -160,7 +151,6 @@ export interface FileRouteTypes {
     | '/.mcp/list-tools'
     | '/.well-known/oauth-protected-resource'
     | '/admin/feedback'
-    | '/api/bench'
     | '/api/transcribe'
     | '/.lovable/oauth/consent'
     | '/.mcp/invoke-tool/$tool'
@@ -176,7 +166,6 @@ export interface FileRouteTypes {
     | '/.mcp/list-tools'
     | '/.well-known/oauth-protected-resource'
     | '/admin/feedback'
-    | '/api/bench'
     | '/api/transcribe'
     | '/.lovable/oauth/consent'
     | '/.mcp/invoke-tool/$tool'
@@ -192,7 +181,6 @@ export interface FileRouteTypes {
     | '/.mcp/list-tools'
     | '/.well-known/oauth-protected-resource'
     | '/admin/feedback'
-    | '/api/bench'
     | '/api/transcribe'
     | '/.lovable/oauth/consent'
     | '/.mcp/invoke-tool/$tool'
@@ -209,7 +197,6 @@ export interface RootRouteChildren {
   Char91DotmcpChar93ListToolsRoute: typeof Char91DotmcpChar93ListToolsRoute
   Char91DotwellKnownChar93OauthProtectedResourceRoute: typeof Char91DotwellKnownChar93OauthProtectedResourceRoute
   AdminFeedbackRoute: typeof AdminFeedbackRoute
-  ApiBenchRoute: typeof ApiBenchRoute
   ApiTranscribeRoute: typeof ApiTranscribeRoute
   DotlovableOauthConsentRoute: typeof DotlovableOauthConsentRoute
   Char91DotmcpChar93InvokeToolToolRoute: typeof Char91DotmcpChar93InvokeToolToolRoute
@@ -287,13 +274,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminFeedbackRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/bench': {
-      id: '/api/bench'
-      path: '/api/bench'
-      fullPath: '/api/bench'
-      preLoaderRoute: typeof ApiBenchRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/api/transcribe': {
       id: '/api/transcribe'
       path: '/api/transcribe'
@@ -330,7 +310,6 @@ const rootRouteChildren: RootRouteChildren = {
   Char91DotwellKnownChar93OauthProtectedResourceRoute:
     Char91DotwellKnownChar93OauthProtectedResourceRoute,
   AdminFeedbackRoute: AdminFeedbackRoute,
-  ApiBenchRoute: ApiBenchRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
   DotlovableOauthConsentRoute: DotlovableOauthConsentRoute,
   Char91DotmcpChar93InvokeToolToolRoute: Char91DotmcpChar93InvokeToolToolRoute,
