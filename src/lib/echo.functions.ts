@@ -4,7 +4,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createQwenProvider } from "./ai-gateway";
 import { foldDishes } from "./weights";
-import { applyCuisineCorrections, MAX_CUISINES } from "./cuisine-correct";
+import { MAX_CUISINES } from "./cuisine-correct";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
@@ -478,12 +478,14 @@ export const parseRequirements = createServerFn({ method: "POST" })
       const lang = data.uiLanguage === "en" ? "English" : "简体中文";
       const p = userC.length
         ? `你是餐厅品类确定器。用户在表单里填写的品类：${userC.join("、")}。用户原话：「${text || "（无）"}」。
-结合填写的品类和原话，给出更完善的最终品类。默认**保留**原品类；只在原话明确支持时才改：
-- typo：原品类是明显错字（如「团丼」→「豚丼」），evidence 填 ""。写得对的绝不改。
-- refine：原话用硬性词（必须/一定/只要/only/must）限定**整家店的形态**（回转、立食、放题、居酒屋、食堂、屋台），to 必须包含原品类词。例：「寿司」+「一定要回转」→「回转寿司」。
-- expand：原话明确还想吃**另一个不同的品类**，在原品类之外补充（总数最多 2 个）。
-**菜品/口味不是品类**：「拉面」+「鱼介拉面/豚骨/味噌」→ 不改；「寿司」+「大腹」→ 不改。软性说法（最好/想要）不 refine。拿不准一律返回 []。
-evidence 必须逐字摘自用户原话。只输出 JSON：{"corrections":[{"from":"原品类","to":"新品类","kind":"typo|refine|expand","evidence":"原文片段"}]}`
+结合填写的品类和原话，输出**最终要搜索的品类**（1-2 个，用规范、具体、能直接拿去地图搜索的品类名）。
+- 原品类写得对、和原话不冲突 → 原样保留。
+- 原品类有错字、多余字符或不规范（如「团丼」→「豚丼」、「早饭2」→「早餐」）→ 替换为规范写法（kind=typo）。
+- 原话把**整家店的形态**说得更具体（回转、立食、放题、居酒屋等）或与原品类矛盾 → 替换为更贴合的品类（kind=refine）。例：「寿司」+「一定要回转」→「回转寿司」；「早饭」+「想吃早午餐」→「早午餐」。
+- 原话明确还想吃另一个不同品类 → 补充（kind=expand），总数最多 2 个。
+**菜品/口味不是品类**：「拉面」+「鱼介拉面/豚骨」→ 保留「拉面」；「寿司」+「大腹」→ 保留「寿司」。
+corrections 记录每一处改动，evidence 尽量摘自用户原话（错字可为 ""）。没改动时 corrections 为 []。
+只输出 JSON：{"cuisines":["最终品类"],"corrections":[{"from":"原品类","to":"新品类","kind":"typo|refine|expand","evidence":"原文片段"}]}`
         : `你是餐厅品类推断器。用户没有填品类，原话：「${text}」。推断 1-2 个最贴合用户需求的**具体**料理品类（用 ${lang}），禁止「餐厅/restaurants」等通用词；推不出来返回 []。只输出 JSON：{"cuisines":["..."]}`;
       try {
         const { output } = await generateText({
@@ -517,16 +519,18 @@ evidence 必须逐字摘自用户原话。只输出 JSON：{"corrections":[{"fro
           )
           .catch([])
           .parse(output.corrections ?? []);
-        const r = applyCuisineCorrections(userC, props, text);
+        // 品类以模型输出为准（用户要求），只做通用词过滤与数量截断；模型没给则保留原品类
+        const finalC = [...new Set((output.cuisines ?? []).map((c) => c.trim()).filter((c) => c && !["餐厅", "restaurants", "restaurant", "レストラン"].includes(c.toLowerCase())))].slice(0, MAX_CUISINES);
+        const r = {
+          cuisines: finalC.length ? finalC : userC,
+          applied: finalC.length ? props.filter((c) => finalC.includes(c.to.trim())) : [],
+        };
         for (const a of r.applied)
           console.log(`[Echo/cuisine-resolve] APPLIED ${a.kind} "${a.from}" → "${a.to}" evidence="${a.evidence}"`);
-        for (const x of r.rejected)
-          console.log(`[Echo/cuisine-resolve] REJECTED ${x.c.kind} "${x.c.from}" → "${x.c.to}" reason=${x.reason}`);
         echoLog.ok("cuisine-resolve", Date.now() - t0, {
-          result: r.applied.length ? "changed" : "kept",
+          result: r.cuisines.join("|") !== userC.join("|") ? "changed" : "kept",
           cuisines: r.cuisines.join("|"),
           applied: r.applied.length,
-          rejected: r.rejected.length,
         });
         return { cuisines: r.cuisines, corrections: r.applied, inferred: false };
       } catch (e) {
