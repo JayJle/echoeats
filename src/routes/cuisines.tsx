@@ -22,6 +22,10 @@ export const Route = createFileRoute("/cuisines")({
     meta: [
       { title: "Echo Eats — Pick a cuisine" },
       { name: "description", content: "Choose the cuisine you're in the mood for." },
+      { property: "og:title", content: "Echo Eats — Pick a cuisine" },
+      { property: "og:description", content: "Choose the cuisine you're in the mood for." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
   component: StepCuisines,
