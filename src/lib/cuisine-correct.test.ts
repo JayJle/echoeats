@@ -33,3 +33,19 @@ describe("applyCuisineCorrections", () => {
     expect(r.applied).toHaveLength(0);
   });
 });
+
+describe("expand", () => {
+  it("adds a distinct cuisine backed by the text", () => {
+    const text = "寿司之外也想吃天妇罗";
+    const r = applyCuisineCorrections(["寿司"], [{ from: "寿司", to: "天妇罗", kind: "expand", evidence: "也想吃天妇罗" }], text);
+    expect(r.cuisines).toEqual(["寿司", "天妇罗"]);
+  });
+  it("rejects 拉面 → 鱼介拉面 as expand (dish branch)", () => {
+    const r = applyCuisineCorrections(["拉面"], [{ from: "拉面", to: "鱼介拉面", kind: "expand", evidence: "想吃鱼介拉面" }], "想吃鱼介拉面");
+    expect(r.cuisines).toEqual(["拉面"]);
+  });
+  it("never exceeds 2 cuisines", () => {
+    const r = applyCuisineCorrections(["寿司", "天妇罗"], [{ from: "寿司", to: "烧鸟", kind: "expand", evidence: "烧鸟" }], "烧鸟");
+    expect(r.cuisines).toHaveLength(2);
+  });
+});

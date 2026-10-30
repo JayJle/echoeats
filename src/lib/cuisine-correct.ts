@@ -4,7 +4,7 @@
 export type CuisineCorrection = {
   from: string;
   to: string;
-  kind: "typo" | "refine";
+  kind: "typo" | "refine" | "expand";
   evidence: string;
 };
 
@@ -49,8 +49,18 @@ export function validateCuisineCorrection(
     if (!HARD_WORD_RE.test(c.evidence)) return { ok: false, reason: "evidence-not-hard" };
     return { ok: true };
   }
+  if (c.kind === "expand") {
+    // Extend: add a second, distinct cuisine the text clearly asks for. A "拉面 → 鱼介拉面" style
+    // sub-branch is a dish, not a new cuisine, so it is rejected here.
+    if (to.includes(from) && !SHOP_FORMAT_RE.test(c.to)) return { ok: false, reason: "expand-is-dish-branch" };
+    const ev = norm(c.evidence ?? "");
+    if (!ev || !norm(rawText).includes(ev)) return { ok: false, reason: "evidence-not-in-text" };
+    return { ok: true };
+  }
   return { ok: false, reason: "unknown-kind" };
 }
+
+export const MAX_CUISINES = 2;
 
 // Applies validated corrections to the user's cuisine list (order preserved, no duplicates).
 export function applyCuisineCorrections(
@@ -72,7 +82,13 @@ export function applyCuisineCorrections(
       rejected.push({ c, reason: v.reason });
       continue;
     }
-    out[idx] = c.to.trim();
+    if (c.kind === "expand") {
+      if (out.length >= MAX_CUISINES) {
+        rejected.push({ c, reason: "max-cuisines" });
+        continue;
+      }
+      out.push(c.to.trim());
+    } else out[idx] = c.to.trim();
     applied.push(c);
   }
   return { cuisines: [...new Set(out)], applied, rejected };

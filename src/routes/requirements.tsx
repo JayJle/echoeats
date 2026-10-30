@@ -833,7 +833,9 @@ function StepRequirements() {
                     <span className="text-foreground">
                       {c.kind === "typo"
                         ? t("step3.cuisineTypo", { from: c.from, to: c.to })
-                        : t("step3.cuisineRefine", { from: c.from, to: c.to, evidence: c.evidence })}
+                        : c.kind === "expand"
+                          ? t("step3.cuisineExpand", { from: c.from, to: c.to, evidence: c.evidence })
+                          : t("step3.cuisineRefine", { from: c.from, to: c.to, evidence: c.evidence })}
                     </span>
                     <Button
                       type="button"
@@ -844,7 +846,10 @@ function StepRequirements() {
                         const p = parsedPreview;
                         const next = {
                           ...p,
-                          cuisines: p.cuisines.map((x) => (x === c.to ? c.from : x)),
+                          cuisines:
+                            c.kind === "expand"
+                              ? p.cuisines.filter((x) => x !== c.to)
+                              : p.cuisines.map((x) => (x === c.to ? c.from : x)),
                           cuisineCorrections: (p.cuisineCorrections ?? []).filter((x) => x !== c),
                         };
                         setEditDraft(null);
