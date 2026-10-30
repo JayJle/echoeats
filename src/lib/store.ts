@@ -211,11 +211,13 @@ export const useQueryStore = create<QueryState>()(
 );
 
 export function useStoreHydrated(): boolean {
-  const [hydrated, setHydrated] = useState(() => useQueryStore.persist.hasHydrated());
+  const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    const unsubFinish = useQueryStore.persist.onFinishHydration(() => setHydrated(true));
-    const unsubHydrate = useQueryStore.persist.onHydrate(() => setHydrated(false));
-    setHydrated(useQueryStore.persist.hasHydrated());
+    const persistence = useQueryStore.persist;
+    if (!persistence) { setHydrated(true); return; }
+    const unsubFinish = persistence.onFinishHydration(() => setHydrated(true));
+    const unsubHydrate = persistence.onHydrate(() => setHydrated(false));
+    setHydrated(persistence.hasHydrated());
     return () => {
       unsubFinish();
       unsubHydrate();
