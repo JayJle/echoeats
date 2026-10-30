@@ -4,6 +4,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createQwenProvider } from "./ai-gateway";
 import { foldDishes } from "./weights";
+import { applyCuisineCorrections } from "./cuisine-correct";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
@@ -105,6 +106,17 @@ const ParsedSchema = z.object({
   dishPreferences: z.array(z.string()).catch([]).default([]),
   cuisineLevelConstraints: z.array(WeightedConditionSchema).catch([]).default([]),
   cuisinesInferred: z.boolean().catch(false).default(false),
+  cuisineCorrections: z
+    .array(
+      z.object({
+        from: z.string(),
+        to: z.string(),
+        kind: z.enum(["typo", "refine"]),
+        evidence: z.string().catch("").default(""),
+      }),
+    )
+    .catch([])
+    .default([]),
   searchStrategy: z.array(z.string()).catch([]).default([]),
   country: z.string().default(""), // ISO 3166-1 alpha-2
   language: z.string().default(""), // BCP 47
@@ -458,6 +470,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
       negativeFilters: z.array(z.unknown()).optional(),
       dishPreferences: z.array(z.string()).optional(),
       cuisineLevelConstraints: z.array(z.unknown()).optional(),
+      cuisineCorrections: z.array(z.unknown()).optional(),
       searchStrategy: z.array(z.string()).optional(),
       country: z.string().optional(),
       language: z.string().optional(),
@@ -476,7 +489,11 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 ## 字段说明
 
-- city：原样回传。cuisines：若用户已选则原样回传；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-2 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
+- city：原样回传。cuisines：若用户已选则**原样回传**（不要在这里改，修改建议只写进 cuisineCorrections）；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-2 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
+- cuisineCorrections：对**用户已选品类**的修正建议，对象数组 \`{"from":"用户原品类","to":"修正后品类","kind":"typo"|"refine","evidence":"用户原文片段"}\`。**默认返回 []，拿不准一律 []**。只允许两种：
+  1. **typo（明显错字）**：原品类不是常见可识别的品类，且与某个真实品类只差一两个字/同音字。例：「团丼」→「豚丼」、「拉麺」不算错字（可识别，不改）。用户写得对的绝不改。evidence 填 ""。
+  2. **refine（店铺形态细化）**：用户原话用**硬性词**（必须/一定/只要…）限定了**整家店的形态**，to 必须包含原品类词。例：「寿司」+「一定要有回转」→「回转寿司」；「寿司」+「必须是立食」→「立食寿司」。evidence 必须逐字摘自用户原话。
+  **判断标准：这个词描述的是整家店的类型，还是店里的一道菜/一种口味？** 店铺形态（回转、立食、自助/放题、食堂、屋台、居酒屋）才可 refine；**菜品或口味（鱼介拉面、豚骨拉面、味噌拉面、大腹寿司、厚切牛舌、烤鸡串）一律不改品类**，按菜品规则放进 dishPreferences / hardFilters。软性说法（「最好是回转」「想要回转」）不 refine，只作偏好。不得换成别的菜系（「寿司」→「海鲜」禁止）。
 - dateTime：直接用日期字符串，如 "2026/05/20"。
 - hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
 - dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight，只写干净的菜名）。系统会把菜品并入偏好列表：普通"想吃/最好有"的菜**不要**再写进 softPreferences（系统自动以 0.6 加入）；"必须有"的菜写进 hardFilters（带 weight）并同时列在 dishPreferences。
@@ -819,6 +836,18 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         // 跨模型重试，避免同模型以同样方式再次失败
         const second = await runOnce(MODELS.parseRetry);
         parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(second)));
+      }
+      // 品类修正：只认用户原品类 + validateCuisineCorrection 通过的 typo/refine，其余一律退回原词
+      if (data.cuisines.length > 0) {
+        const r = applyCuisineCorrections(data.cuisines, parsed.cuisineCorrections ?? [], data.freeText ?? "");
+        for (const a of r.applied)
+          console.log(`[Echo/parse/cuisine-correct] APPLIED ${a.kind} "${a.from}" → "${a.to}" evidence="${a.evidence}"`);
+        for (const x of r.rejected)
+          console.log(`[Echo/parse/cuisine-correct] REJECTED ${x.c.kind} "${x.c.from}" → "${x.c.to}" reason=${x.reason}`);
+        parsed.cuisines = r.cuisines;
+        parsed.cuisineCorrections = r.applied;
+      } else {
+        parsed.cuisineCorrections = [];
       }
       const beforeCluster = {
         hard: parsed.hardFilters.length,

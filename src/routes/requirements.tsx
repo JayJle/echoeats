@@ -826,6 +826,37 @@ function StepRequirements() {
                 );
               })}
             </ul>
+            {parsedPreview && (parsedPreview.cuisineCorrections?.length ?? 0) > 0 && (
+              <div className="animate-fade-in rounded-md border border-primary/30 bg-primary/5 px-3 py-2 space-y-1.5">
+                {parsedPreview.cuisineCorrections!.map((c) => (
+                  <div key={`${c.from}-${c.to}`} className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-foreground">
+                      {c.kind === "typo"
+                        ? t("step3.cuisineTypo", { from: c.from, to: c.to })
+                        : t("step3.cuisineRefine", { from: c.from, to: c.to, evidence: c.evidence })}
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => {
+                        const p = parsedPreview;
+                        const next = {
+                          ...p,
+                          cuisines: p.cuisines.map((x) => (x === c.to ? c.from : x)),
+                          cuisineCorrections: (p.cuisineCorrections ?? []).filter((x) => x !== c),
+                        };
+                        setEditDraft(null);
+                        void runSearch(freeText, searchMode, next);
+                      }}
+                    >
+                      {t("step3.cuisineRevert")}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
             {parsedPreview && (
               <div className="animate-fade-in border-t border-border/60 pt-3 space-y-2">
                 <p className="text-[11px] uppercase tracking-wider text-muted-foreground">

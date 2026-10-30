@@ -12,6 +12,7 @@ export type ParsedRequirements = {
   city: string;
   cuisines: string[];
   cuisinesInferred?: boolean;
+  cuisineCorrections?: { from: string; to: string; kind: "typo" | "refine"; evidence: string }[];
   cuisineLevelConstraints?: WeightedCondition[];
   dateTime: string;
   hardFilters: WeightedCondition[];
