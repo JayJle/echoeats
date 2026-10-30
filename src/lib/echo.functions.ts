@@ -3052,7 +3052,14 @@ Schema：
     _currentStage = "score";
     const _scoreT0 = Date.now();
     const groups = data.cuisines.map((cuisine) => {
-      const pool = placeResults.find((r) => r.cuisine === cuisine)?.places ?? [];
+      // Only candidates that were actually sent to AI verify (POOL_CAP) may be ranked; the
+      // pool-cap tail has no verify result and would otherwise surface as all-"核验未完成".
+      const verifiedIds = new Set(
+        candidateGroups.find((g) => g.cuisine === cuisine)?.candidates.map((c) => c.placeId) ?? [],
+      );
+      const pool = (placeResults.find((r) => r.cuisine === cuisine)?.places ?? []).filter((p) =>
+        verifiedIds.has(p.placeId),
+      );
       const aiGroup = ranking.groups.find((g) => g.cuisine.toLowerCase() === cuisine.toLowerCase());
       const pickById = new Map((aiGroup?.picks ?? []).map((pick) => [pick.placeId, pick]));
       type Built = {
