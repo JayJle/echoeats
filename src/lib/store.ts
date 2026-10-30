@@ -202,9 +202,10 @@ export const useQueryStore = create<QueryState>()(
         }
         return state as QueryState;
       },
-      storage: createJSONStorage(() =>
-        typeof window !== "undefined" ? sessionStorage : (undefined as unknown as Storage),
-      ),
+      storage: createJSONStorage(() => {
+        if (typeof window === "undefined") throw new Error("Session storage is browser-only");
+        return sessionStorage;
+      }),
     },
   ),
 );
