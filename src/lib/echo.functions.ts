@@ -4,6 +4,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createQwenProvider } from "./ai-gateway";
 import { foldDishes } from "./weights";
+import { applyCuisineCorrections } from "./cuisine-correct";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
