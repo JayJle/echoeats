@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createQwenProvider } from "./ai-gateway";
 import { foldDishes } from "./weights";
 import { MAX_CUISINES } from "./cuisine-correct";
+import { cuisineResolutionPrompt } from "./cuisine-prompts";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
@@ -460,7 +461,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
     // ── 第一步：品类确定（独立调用）。两种情况：
     //   1) 用户没填品类 → 推断 1-2 个（不允许自动识别时不推断）
     //   2) 用户填了品类 → 结合原文保留 / 替代(typo|refine) / 扩展(expand)，最多 2 个
-    // 所有改动都经 applyCuisineCorrections 校验；失败则回落用户原品类。
+    // 模型保留完整的菜系限定；程序只过滤通用词并限制数量，失败则回落用户原品类。
     const resolveCuisine = async (): Promise<{
       cuisines: string[];
       corrections: z.infer<typeof ParsedSchema>["cuisineCorrections"];
@@ -475,18 +476,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
         echoLog.ok("cuisine-resolve", Date.now() - t0, { result: "skip" });
         return { cuisines: [], corrections: [], inferred: false };
       }
-      const lang = data.uiLanguage === "en" ? "English" : "简体中文";
-      const p = userC.length
-        ? `你是餐厅品类确定器。用户在表单里填写的品类：${userC.join("、")}。用户原话：「${text || "（无）"}」。
-结合填写的品类和原话，输出**最终要搜索的品类**（1-2 个，用规范、具体、能直接拿去地图搜索的品类名）。
-- 原品类写得对、和原话不冲突 → 原样保留。
-- 原品类有错字、多余字符或不规范（如「团丼」→「豚丼」、「早饭2」→「早餐」）→ 替换为规范写法（kind=typo）。
-- 原话把**整家店的形态**说得更具体（回转、立食、放题、居酒屋等）或与原品类矛盾 → 替换为更贴合的品类（kind=refine）。例：「寿司」+「一定要回转」→「回转寿司」；「早饭」+「想吃早午餐」→「早午餐」。
-- 原话明确还想吃另一个不同品类 → 补充（kind=expand），总数最多 2 个。
-**菜品/口味不是品类**：「拉面」+「鱼介拉面/豚骨」→ 保留「拉面」；「寿司」+「大腹」→ 保留「寿司」。
-corrections 记录每一处改动，evidence 尽量摘自用户原话（错字可为 ""）。没改动时 corrections 为 []。
-只输出 JSON：{"cuisines":["最终品类"],"corrections":[{"from":"原品类","to":"新品类","kind":"typo|refine|expand","evidence":"原文片段"}]}`
-        : `你是餐厅品类推断器。用户没有填品类，原话：「${text}」。推断 1-2 个最贴合用户需求的**具体**料理品类（用 ${lang}），禁止「餐厅/restaurants」等通用词；推不出来返回 []。只输出 JSON：{"cuisines":["..."]}`;
+      const p = cuisineResolutionPrompt({ cuisines: userC, freeText: text, uiLanguage: data.uiLanguage });
       try {
         const { output } = await generateText({
           model: gateway(MODELS.cuisineResolve),
