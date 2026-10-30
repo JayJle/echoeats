@@ -1,0 +1,2 @@
+- [ ] Preserve old results during re-search and stage complete new results for explicit switching.
+- [ ] Verify completion prompt, deferred entry, cancellation and failure behavior.
