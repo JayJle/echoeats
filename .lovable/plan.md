@@ -57,7 +57,8 @@
 ## 技术细节
 - `src/lib/echo.functions.ts` 解析提示词第 5 条现为「已显式提供 cuisines 时不要覆盖」，改为上述两类例外，并要求输出 `cuisineCorrections: [{from, to, kind: "typo"|"refine", evidence}]`。`evidence` 必须是用户原文片段。
 - 新增纯函数 `validateCuisineCorrection(from, to, kind, evidence, rawText)`，放在 `src/lib/weights.ts` 旁的新文件 `src/lib/cuisine-correct.ts`，附带测试：
-  - refine 需满足 `to` 包含 `from`，`evidence` 出现在原文中且含强制词。
+  - refine 需满足 `to` 包含 `from`，`evidence` 出现在原文中且含强制词，并且 `to` 命中店铺形态词表。词表包括：回转/回転/conveyor、立食/立ち食い/standing、自助/buffet、食堂、屋台等等，可扩充。未命中的细化一律退回，例如「鱼介拉面」，改为菜品条件。
+  - 解析提示词里写明「店铺类型 vs 菜品」的判断标准和上表的正反例。
   - typo 需满足编辑距离不超过 2，且长度相近。
   - 不通过则保留原词并输出 `[Echo/parse/cuisine-correct] REJECTED` 日志；通过则输出 `APPLIED` 日志。
 - `ParsedRequirements` 增加可选字段 `cuisineCorrections`；`src/routes/requirements.tsx` 显示提示和「改回原词」按钮，`src/lib/i18n/dict.ts` 加文案。
