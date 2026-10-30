@@ -1,6 +1,5 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
-import { useServerFn } from "@tanstack/react-start";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Pencil, UtensilsCrossed } from "lucide-react";
@@ -20,13 +19,16 @@ import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { Restaurant, useQueryStore } from "@/lib/store";
 import { useT } from "@/lib/i18n/context";
 import { LanguageToggle } from "@/components/LanguageToggle";
-import { parseRequirements, searchRestaurants, consumeSearchStream } from "@/lib/echo.functions";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
     meta: [
       { title: "Echo Eats — Results" },
       { name: "description", content: "Restaurant picks from an AI cross-platform search." },
+      { property: "og:title", content: "Echo Eats — Results" },
+      { property: "og:description", content: "Restaurant picks from an AI cross-platform search." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
   component: ResultsPage,
@@ -95,25 +97,13 @@ function ResultsPage() {
   const parsed = useQueryStore((s) => s.parsed);
   const results = useQueryStore((s) => s.results);
   const freeText = useQueryStore((s) => s.freeText);
-  const setResults = useQueryStore((s) => s.setResults);
-  const setParsed = useQueryStore((s) => s.setParsed);
-  const setFreeText = useQueryStore((s) => s.setFreeText);
-
-  const searchFn = useServerFn(searchRestaurants);
-  const parseFn = useServerFn(parseRequirements);
+  const startResearch = useQueryStore((s) => s.startResearch);
+  const refining = useQueryStore((s) => !!s.researchJob);
+  const pendingResults = useQueryStore((s) => s.pendingResults);
 
   const [editing, setEditing] = useState(false);
   const [draftText, setDraftText] = useState(freeText);
   const conditionsRef = useRef<HTMLDivElement>(null);
-
-  const [refining, setRefining] = useState(false);
-  const [refineError, setRefineError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const runIdRef = useRef(0);
-
-  useEffect(() => () => {
-    abortRef.current?.abort();
-  }, []);
 
   if (!results || !parsed) {
     return (
@@ -157,36 +147,8 @@ function ResultsPage() {
   };
   const displayedNegativeFilters = parsed.negativeFilters;
 
-  const cancelRefine = () => {
-    abortRef.current?.abort();
-    runIdRef.current += 1;
-    setRefining(false);
-    setRefineError(null);
-  };
-
-  const buildParsedForSearch = () => ({ ...parsed, uiLanguage: lang });
-
-  const runSearchAgain = async () => {
-    setRefineError(null);
-    setRefining(true);
-    runIdRef.current += 1;
-    const myRunId = runIdRef.current;
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-    try {
-      const iter = await searchFn({ data: buildParsedForSearch(), signal: ac.signal } as Parameters<typeof searchFn>[0]);
-      const response = await consumeSearchStream(iter);
-      if (myRunId !== runIdRef.current || ac.signal.aborted) return;
-      setResults(response);
-    } catch (err) {
-      if (ac.signal.aborted || myRunId !== runIdRef.current) return;
-      const msg = err instanceof Error ? err.message : t("err.fetchFailed");
-      setRefineError(msg.includes("429") ? t("err.rateLimited") : msg);
-    } finally {
-      if (myRunId === runIdRef.current) setRefining(false);
-    }
-  };
+  const cancelRefine = () => useQueryStore.getState().cancelResearch();
+  const runSearchAgain = () => startResearch({ parsed, freeText, language: lang });
 
   const openEditor = () => {
     setDraftText(freeText);
@@ -196,58 +158,9 @@ function ResultsPage() {
     }, 50);
   };
 
-  const applyEdit = async () => {
-    if (!parsed) return;
-    const text = draftText.trim();
-    setRefineError(null);
-    setRefining(true);
-    runIdRef.current += 1;
-    const myRunId = runIdRef.current;
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-    try {
-      const newParsed = await parseFn({
-        data: { city: parsed.city, cuisines: parsed.cuisines, date: "", freeText: text, uiLanguage: lang },
-        signal: ac.signal,
-      } as Parameters<typeof parseFn>[0]);
-      if (myRunId !== runIdRef.current || ac.signal.aborted) return;
-
-      const newTotal =
-        (newParsed.hardFilters?.length ?? 0) +
-        (newParsed.softPreferences?.length ?? 0) +
-        (newParsed.negativeFilters?.length ?? 0) +
-        (newParsed.dishPreferences?.length ?? 0);
-      const oldTotal =
-        parsed.hardFilters.length + parsed.softPreferences.length +
-        parsed.negativeFilters.length + parsed.dishPreferences.length;
-      const parseLikelyEmpty = newTotal === 0 && oldTotal > 0;
-
-      const merged = parseLikelyEmpty
-        ? { ...parsed, mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep", uiLanguage: lang }
-        : {
-            ...newParsed,
-            city: newParsed.city || parsed.city,
-            cuisines: newParsed.cuisines?.length ? newParsed.cuisines : parsed.cuisines,
-            mode: (parsed as { mode?: "quick" | "deep" }).mode ?? "deep",
-            uiLanguage: lang,
-          };
-      setFreeText(text);
-      setParsed(merged);
-      const iter = await searchFn({ data: merged, signal: ac.signal } as Parameters<typeof searchFn>[0]);
-      const response = await consumeSearchStream(iter);
-      if (myRunId !== runIdRef.current || ac.signal.aborted) return;
-      setResults(response);
-      setEditing(false);
-    } catch (err) {
-      if (ac.signal.aborted || myRunId !== runIdRef.current) return;
-      const msg = err instanceof Error ? err.message : t("err.fetchFailed");
-      if (msg.includes("429")) setRefineError(t("err.rateLimited"));
-      else if (msg.includes("402")) setRefineError(t("err.quotaExhausted"));
-      else setRefineError(msg);
-    } finally {
-      if (myRunId === runIdRef.current) setRefining(false);
-    }
+  const applyEdit = () => {
+    startResearch({ parsed, freeText: draftText.trim(), language: lang, reparse: true });
+    setEditing(false);
   };
 
   const restartFlow = () => {
@@ -256,8 +169,8 @@ function ResultsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="px-6 py-5 flex items-center justify-between border-b border-border/60">
+    <div className="min-h-screen bg-background pb-28">
+      <header className="px-4 py-5 flex flex-wrap items-center justify-between gap-3 border-b border-border/60">
         <Link to="/" className="font-semibold tracking-tight">
           Echo <span className="text-primary">Eats</span>
         </Link>
@@ -267,7 +180,7 @@ function ResultsPage() {
             variant="outline"
             size="sm"
             onClick={runSearchAgain}
-            disabled={refining}
+            disabled={refining || !!pendingResults}
           >
             {t("results.header.refetch")}
           </Button>
@@ -288,17 +201,6 @@ function ResultsPage() {
           </AlertDialog>
         </div>
       </header>
-
-      {refining && (
-        <div className="fixed inset-0 z-50 bg-background/70 backdrop-blur-sm flex items-center justify-center">
-          <div className="bg-card border border-border rounded-2xl px-6 py-5 shadow-lg text-sm flex flex-col items-center gap-3">
-            <p>{t("results.refining")}</p>
-            <Button type="button" variant="ghost" size="sm" onClick={cancelRefine}>
-              {t("results.cancelSearch")}
-            </Button>
-          </div>
-        </div>
-      )}
 
       <main className="max-w-3xl mx-auto px-4 py-10">
         <div ref={conditionsRef} className="mb-6 bg-card border border-border rounded-2xl p-6">
@@ -384,7 +286,7 @@ function ResultsPage() {
               type="button"
               variant="outline"
               onClick={openEditor}
-              disabled={refining}
+              disabled={refining || !!pendingResults}
               className="mt-5 w-full"
             >
               <Pencil className="w-4 h-4 mr-2" />
@@ -401,7 +303,7 @@ function ResultsPage() {
                 value={draftText}
                 onChange={(e) => setDraftText(e.target.value)}
                 maxLength={1000}
-                disabled={refining}
+                disabled={refining || !!pendingResults}
                 className="min-h-[120px] text-sm resize-none"
                 placeholder={t("results.editPlaceholder")}
               />
@@ -415,7 +317,7 @@ function ResultsPage() {
                     setEditing(false);
                     setDraftText(freeText);
                   }}
-                  disabled={refining}
+                  disabled={refining || !!pendingResults}
                 >
                   {t("common.cancel")}
                 </Button>
@@ -438,12 +340,6 @@ function ResultsPage() {
           )}
         </div>
 
-        {refineError && (
-          <div className="mb-6 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
-            {refineError}
-          </div>
-        )}
-
         {results.warnings && results.warnings.length > 0 && (
           <div className="mb-6 bg-warning/10 border border-warning/30 rounded-2xl p-4">
             <p className="text-sm font-medium text-foreground mb-2">
@@ -463,7 +359,7 @@ function ResultsPage() {
               size="sm"
               className="mt-3"
               onClick={runSearchAgain}
-              disabled={refining}
+              disabled={refining || !!pendingResults}
             >
               {t("results.warnings.retry")}
             </Button>

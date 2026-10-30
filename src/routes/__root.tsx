@@ -8,6 +8,8 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 
+import { ResearchNotice } from "@/components/ResearchNotice";
+
 import appCss from "../styles.css?url";
 import { LanguageProvider, useT } from "@/lib/i18n/context";
 
@@ -81,8 +83,6 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "twitter:site", content: "@Lovable" },
       { name: "twitter:title", content: "Echo Eats — AI Restaurant Discovery Agent" },
       { name: "twitter:description", content: "Describe what you want in one sentence — Echo Eats searches across platforms and finds the best restaurants for you." },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/ed59a58f-7d43-46c0-b441-329a8841f417/id-preview-785f37c7--f6a96c0f-0e09-4ec3-93e9-3dd33d29c59e.lovable.app-1778767777947.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/ed59a58f-7d43-46c0-b441-329a8841f417/id-preview-785f37c7--f6a96c0f-0e09-4ec3-93e9-3dd33d29c59e.lovable.app-1778767777947.png" },
     ],
     links: [
       {
@@ -119,6 +119,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <LanguageProvider>
         <Outlet />
+        <ResearchNotice />
       </LanguageProvider>
     </QueryClientProvider>
   );

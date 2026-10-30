@@ -20,6 +20,10 @@ export const Route = createFileRoute("/requirements")({
     meta: [
       { title: "Echo Eats — Tell us your needs" },
       { name: "description", content: "Describe budget, vibe, dish preferences and dealbreakers in natural language. Optional." },
+      { property: "og:title", content: "Echo Eats — Tell us your needs" },
+      { property: "og:description", content: "Describe budget, vibe, dish preferences and dealbreakers in natural language. Optional." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
   component: StepRequirements,
@@ -190,6 +194,20 @@ function StepRequirements() {
     mode: "quick" | "deep" = "deep",
     preParsed?: ParsedRequirements,
   ) => {
+    const previous = useQueryStore.getState();
+    if (previous.results && previous.parsed) {
+      abortRef.current?.abort();
+      runIdRef.current += 1;
+      clearTimers();
+      stopProgressLoop();
+      setLoading(false);
+      previous.startResearch({
+        parsed: { ...(preParsed ?? previous.parsed), city, cuisines: preParsed?.cuisines ?? cuisines, mode } as ParsedRequirements,
+        freeText: text, language: lang, reparse: !preParsed, autoInferCuisines,
+      });
+      void navigate({ to: "/results" });
+      return;
+    }
     setError(null);
     setLoading(true);
     setSearchMode(mode);
@@ -828,7 +846,7 @@ function StepRequirements() {
             </ul>
             {parsedPreview && (parsedPreview.cuisineCorrections?.length ?? 0) > 0 && (
               <div className="animate-fade-in rounded-md border border-primary/30 bg-primary/5 px-3 py-2 space-y-1.5">
-                {parsedPreview.cuisineCorrections!.map((c) => (
+                {(parsedPreview.cuisineCorrections ?? []).map((c) => (
                   <div key={`${c.from}-${c.to}`} className="flex flex-wrap items-center gap-2 text-xs">
                     <span className="text-foreground">
                       {c.kind === "typo"
