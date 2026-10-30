@@ -111,7 +111,7 @@ const ParsedSchema = z.object({
       z.object({
         from: z.string(),
         to: z.string(),
-        kind: z.enum(["typo", "refine"]),
+        kind: z.enum(["typo", "refine", "expand"]),
         evidence: z.string().catch("").default(""),
       }),
     )
