@@ -99,7 +99,24 @@ export type SearchResults = {
   warnings?: SearchWarning[];
 };
 
+export type SearchSnapshot = { parsed: ParsedRequirements; results: SearchResults; freeText: string };
+export type ResearchJob = {
+  parsed: ParsedRequirements;
+  freeText: string;
+  language: "zh" | "en";
+  reparse?: boolean;
+  autoInferCuisines?: boolean;
+};
+
 type QueryState = {
+  researchJob: ResearchJob | null;
+  pendingResults: SearchSnapshot | null;
+  researchError: string | null;
+  startResearch: (job: ResearchJob) => void;
+  finishResearch: (job: ResearchJob, snapshot: SearchSnapshot) => void;
+  failResearch: (job: ResearchJob, error: string) => void;
+  cancelResearch: () => void;
+  viewPendingResults: () => void;
   city: string;
   cuisines: string[];
   autoInferCuisines: boolean;
@@ -120,6 +137,17 @@ type QueryState = {
 export const useQueryStore = create<QueryState>()(
   persist(
     (set) => ({
+      researchJob: null,
+      pendingResults: null,
+      researchError: null,
+      startResearch: (job) => set({ researchJob: job, researchError: null }),
+      finishResearch: (job, snapshot) => set((s) => s.researchJob === job
+        ? { researchJob: null, pendingResults: snapshot, researchError: null } : {}),
+      failResearch: (job, error) => set((s) => s.researchJob === job
+        ? { researchJob: null, researchError: error } : {}),
+      cancelResearch: () => set({ researchJob: null, researchError: null }),
+      viewPendingResults: () => set((s) => s.pendingResults
+        ? { ...s.pendingResults, pendingResults: null, researchError: null } : {}),
       city: "",
       cuisines: [],
       autoInferCuisines: true,
@@ -136,6 +164,9 @@ export const useQueryStore = create<QueryState>()(
       setResults: (v) => set({ results: v }),
       reset: () =>
         set({
+          researchJob: null,
+          pendingResults: null,
+          researchError: null,
           city: "",
           cuisines: [],
           autoInferCuisines: true,
@@ -149,6 +180,7 @@ export const useQueryStore = create<QueryState>()(
     {
       name: "echo-eats-query",
       version: 2,
+      partialize: ({ researchJob: _job, researchError: _error, ...state }) => state,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as { parsed?: ParsedRequirements | null } | undefined;
         if (version < 2 && state?.parsed) {
