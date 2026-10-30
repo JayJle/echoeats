@@ -44,6 +44,7 @@ function StepCity() {
   const [isChecking, setIsChecking] = useState(false);
   const [error, setError] = useState("");
   const [candidates, setCandidates] = useState<CityValidationCandidate[]>([]);
+  const [notCity, setNotCity] = useState(false);
   const validateCityFn = useServerFn(validateCity);
   const { t } = useT();
 
@@ -55,10 +56,12 @@ function StepCity() {
 
   const handleResult = (result: CityValidationResult) => {
     if (result.status === "confirmed") {
-      continueWithCity(result.candidate);
+      setNotCity(false);
+      setCandidates([result.candidate]);
       return;
     }
     if (result.status === "choose") {
+      setNotCity(Boolean(result.notCity));
       setCandidates(result.candidates);
       return;
     }
@@ -122,6 +125,11 @@ function StepCity() {
           <AlertDialogHeader>
             <AlertDialogTitle>{t("step1.chooseTitle")}</AlertDialogTitle>
             <AlertDialogDescription>{t("step1.chooseDesc", { city: value.trim() })}</AlertDialogDescription>
+            {notCity ? (
+              <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
+                {t("step1.notCity", { city: value.trim() })}
+              </p>
+            ) : null}
           </AlertDialogHeader>
           <div className="grid gap-2">
             {candidates.map((candidate) => (

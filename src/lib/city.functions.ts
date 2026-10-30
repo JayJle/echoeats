@@ -20,7 +20,7 @@ export type CityValidationCandidate = {
 
 export type CityValidationResult =
   | { status: "confirmed"; candidate: CityValidationCandidate }
-  | { status: "choose"; candidates: CityValidationCandidate[] }
+  | { status: "choose"; candidates: CityValidationCandidate[]; notCity?: boolean }
   | { status: "not_found" }
   | { status: "invalid" }
   | { status: "unsupported_region" }
@@ -52,14 +52,13 @@ export const validateCity = createServerFn({ method: "POST" })
       );
       if (filtered.length === 0) return { status: "unsupported_region" };
 
+      // 永不自动确认：用户必须亲自从候选中选择。
+      // 若输入与某候选的国家/地区同名（如“日本”），提示这不是城市。
       const normalizedInput = normalizeCity(data.city);
-      const exactCandidates = filtered.filter(
-        (candidate) => normalizeCity(candidate.city) === normalizedInput,
-      );
-      if (exactCandidates.length === 1) {
-        return { status: "confirmed", candidate: exactCandidates[0] };
-      }
-      return { status: "choose", candidates: filtered };
+      const notCity = filtered.some(
+        (c) => c.countryOrRegion && normalizeCity(c.countryOrRegion) === normalizedInput,
+      ) || !filtered.some((c) => normalizeCity(c.city) === normalizedInput);
+      return { status: "choose", candidates: filtered, notCity };
     } catch (error) {
       console.warn(
         "[city.validation] unavailable",

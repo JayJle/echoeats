@@ -37,6 +37,7 @@ export const dict: Record<Lang, Dict> = {
     "step1.notFound": "没有找到这个城市，请检查拼写，或补充国家/地区。",
     "step1.unavailable": "城市校验服务暂时不可用，请稍后重试。",
     "step1.unsupportedRegion": "暂不支持查找中国大陆地区的城市，请尝试其它城市。",
+    "step1.notCity": "“{city}”看起来不是一个城市（可能是国家或地区）。请输入具体城市，或从下面确认你要的城市。",
     "step1.chooseTitle": "请选择正确的城市",
     "step1.chooseDesc": "没有直接确认“{city}”。请选择你想搜索的地点，我们不会自动替换。",
 
@@ -284,6 +285,7 @@ export const dict: Record<Lang, Dict> = {
     "step1.notFound": "We couldn't find that city. Check the spelling or add a country or region.",
     "step1.unavailable": "City validation is temporarily unavailable. Please try again.",
     "step1.unsupportedRegion": "Cities in Mainland China are not supported. Please try another city.",
+    "step1.notCity": "“{city}” doesn't look like a city (it may be a country or region). Enter a specific city, or confirm one below.",
     "step1.chooseTitle": "Choose the correct city",
     "step1.chooseDesc": "We couldn't directly confirm “{city}”. Choose the location you meant; we won't replace it automatically.",
 
