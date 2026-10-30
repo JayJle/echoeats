@@ -4,7 +4,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { createQwenProvider } from "./ai-gateway";
 import { foldDishes } from "./weights";
-import { applyCuisineCorrections } from "./cuisine-correct";
+import { applyCuisineCorrections, MAX_CUISINES } from "./cuisine-correct";
 
 const PLATFORMS = ["Google Maps", "Tabelog", "Yelp"];
 
@@ -457,6 +457,87 @@ export const parseRequirements = createServerFn({ method: "POST" })
     if (!key) throw new Error("Missing QWEN_API_KEY");
     const gateway = createQwenProvider(key);
 
+    // ── 第一步：品类确定（独立调用）。两种情况：
+    //   1) 用户没填品类 → 推断 1-2 个（不允许自动识别时不推断）
+    //   2) 用户填了品类 → 结合原文保留 / 替代(typo|refine) / 扩展(expand)，最多 2 个
+    // 所有改动都经 applyCuisineCorrections 校验；失败则回落用户原品类。
+    const resolveCuisine = async (): Promise<{
+      cuisines: string[];
+      corrections: z.infer<typeof ParsedSchema>["cuisineCorrections"];
+      inferred: boolean;
+    }> => {
+      const t0 = Date.now();
+      const userC = data.cuisines;
+      const text = data.freeText ?? "";
+      const allowInfer = data.autoInferCuisines !== false;
+      echoLog.start("cuisine-resolve", { user: userC.join("|") || "(none)", allowInfer });
+      if (!userC.length && (!allowInfer || !text.trim())) {
+        echoLog.ok("cuisine-resolve", Date.now() - t0, { result: "skip" });
+        return { cuisines: [], corrections: [], inferred: false };
+      }
+      const lang = data.uiLanguage === "en" ? "English" : "简体中文";
+      const p = userC.length
+        ? `你是餐厅品类确定器。用户在表单里填写的品类：${userC.join("、")}。用户原话：「${text || "（无）"}」。
+结合填写的品类和原话，给出更完善的最终品类。默认**保留**原品类；只在原话明确支持时才改：
+- typo：原品类是明显错字（如「团丼」→「豚丼」），evidence 填 ""。写得对的绝不改。
+- refine：原话用硬性词（必须/一定/只要/only/must）限定**整家店的形态**（回转、立食、放题、居酒屋、食堂、屋台），to 必须包含原品类词。例：「寿司」+「一定要回转」→「回转寿司」。
+- expand：原话明确还想吃**另一个不同的品类**，在原品类之外补充（总数最多 2 个）。
+**菜品/口味不是品类**：「拉面」+「鱼介拉面/豚骨/味噌」→ 不改；「寿司」+「大腹」→ 不改。软性说法（最好/想要）不 refine。拿不准一律返回 []。
+evidence 必须逐字摘自用户原话。只输出 JSON：{"corrections":[{"from":"原品类","to":"新品类","kind":"typo|refine|expand","evidence":"原文片段"}]}`
+        : `你是餐厅品类推断器。用户没有填品类，原话：「${text}」。推断 1-2 个最贴合用户需求的**具体**料理品类（用 ${lang}），禁止「餐厅/restaurants」等通用词；推不出来返回 []。只输出 JSON：{"cuisines":["..."]}`;
+      try {
+        const { output } = await generateText({
+          model: gateway(MODELS.cuisineResolve),
+          prompt: p,
+          maxOutputTokens: 400,
+          output: Output.object({
+            schema: z.object({
+              cuisines: z.array(z.string()).optional(),
+              corrections: z.array(z.unknown()).optional(),
+            }),
+            name: "cuisine_resolution",
+          }),
+        });
+        if (!userC.length) {
+          const inf = (output.cuisines ?? [])
+            .map((c) => c.trim())
+            .filter((c) => c && !["餐厅", "restaurants", "restaurant", "レストラン"].includes(c.toLowerCase()))
+            .slice(0, MAX_CUISINES);
+          echoLog.ok("cuisine-resolve", Date.now() - t0, { result: inf.length ? "inferred" : "none", cuisines: inf.join("|") });
+          return { cuisines: inf, corrections: [], inferred: inf.length > 0 };
+        }
+        const props = z
+          .array(
+            z.object({
+              from: z.string(),
+              to: z.string(),
+              kind: z.enum(["typo", "refine", "expand"]),
+              evidence: z.string().catch("").default(""),
+            }),
+          )
+          .catch([])
+          .parse(output.corrections ?? []);
+        const r = applyCuisineCorrections(userC, props, text);
+        for (const a of r.applied)
+          console.log(`[Echo/cuisine-resolve] APPLIED ${a.kind} "${a.from}" → "${a.to}" evidence="${a.evidence}"`);
+        for (const x of r.rejected)
+          console.log(`[Echo/cuisine-resolve] REJECTED ${x.c.kind} "${x.c.from}" → "${x.c.to}" reason=${x.reason}`);
+        echoLog.ok("cuisine-resolve", Date.now() - t0, {
+          result: r.applied.length ? "changed" : "kept",
+          cuisines: r.cuisines.join("|"),
+          applied: r.applied.length,
+          rejected: r.rejected.length,
+        });
+        return { cuisines: r.cuisines, corrections: r.applied, inferred: false };
+      } catch (e) {
+        echoLog.fail("cuisine-resolve", Date.now() - t0, e, { fallback: "user-cuisines" });
+        return { cuisines: userC, corrections: [], inferred: false };
+      }
+    };
+    const resolved = await resolveCuisine();
+    // 下游解析统一使用第一步的品类；用户没填且第一步推不出时，沿用原解析里的推断逻辑
+    const cuisinesForParse = resolved.cuisines.length ? resolved.cuisines : data.cuisines;
+
     // 松散 schema：让 AI SDK 转出的 JSON Schema 极宽松，避免模型偶尔返回
     // weight:"0.8" / hhmm:"7:00" 之类被 SDK 内部 zod 直接判失败。
     // 拿到松散对象后再用严格 ParsedSchema（含 WeightCoerced / HhmmCoerced /
@@ -481,7 +562,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
     const prompt = `你是 Echo Eats 的需求结构化引擎。用户填写了餐厅搜索表单：
 
 - 城市：${data.city}
-- 料理类型：${data.cuisines.length ? data.cuisines.join("、") : data.autoInferCuisines ? "（用户跳过了料理选择并要求 AI 自动识别，请从「其它需求」推断 1-2 个料理候选；推断不出来再填 [\"餐厅\"]）" : "（用户跳过了料理选择并要求按所有品类搜索，cuisines 字段直接填 [\"餐厅\"]）"}
+- 料理类型：${cuisinesForParse.length ? cuisinesForParse.join("、") : data.autoInferCuisines ? "（用户跳过了料理选择并要求 AI 自动识别，请从「其它需求」推断 1-2 个料理候选；推断不出来再填 [\"餐厅\"]）" : "（用户跳过了料理选择并要求按所有品类搜索，cuisines 字段直接填 [\"餐厅\"]）"}
 - 日期：${data.date || (data.uiLanguage === "en" ? "（用户未指定，dateTime 字段必须填英文字符串 \"Unspecified\"，不要填中文，也不要把日期/营业时间当 hardFilter）" : "（用户未指定，dateTime 字段填 \"未指定\"，不要把日期/营业时间当 hardFilter）")}
 - 其它需求（自然语言）：${data.freeText || "（无）"}
 
@@ -489,11 +570,7 @@ export const parseRequirements = createServerFn({ method: "POST" })
 
 ## 字段说明
 
-- city：原样回传。cuisines：若用户已选则**原样回传**（不要在这里改，修改建议只写进 cuisineCorrections）；若用户跳过（输入为空），从「其它需求」自由文本中推断 1-2 个最相关的料理类型（如 freeText 提到「想吃辣的」→ ["川菜","湘菜"]；提到「轻食」→ ["沙拉","三明治"]）；都推不出来填 ["餐厅"]。
-- cuisineCorrections：对**用户已选品类**的修正建议，对象数组 \`{"from":"用户原品类","to":"修正后品类","kind":"typo"|"refine","evidence":"用户原文片段"}\`。**默认返回 []，拿不准一律 []**。只允许两种：
-  1. **typo（明显错字）**：原品类不是常见可识别的品类，且与某个真实品类只差一两个字/同音字。例：「团丼」→「豚丼」、「拉麺」不算错字（可识别，不改）。用户写得对的绝不改。evidence 填 ""。
-  2. **refine（店铺形态细化）**：用户原话用**硬性词**（必须/一定/只要…）限定了**整家店的形态**，to 必须包含原品类词。例：「寿司」+「一定要有回转」→「回转寿司」；「寿司」+「必须是立食」→「立食寿司」。evidence 必须逐字摘自用户原话。
-  **判断标准：这个词描述的是整家店的类型，还是店里的一道菜/一种口味？** 店铺形态（回转、立食、自助/放题、食堂、屋台、居酒屋）才可 refine；**菜品或口味（鱼介拉面、豚骨拉面、味噌拉面、大腹寿司、厚切牛舌、烤鸡串）一律不改品类**，按菜品规则放进 dishPreferences / hardFilters。软性说法（「最好是回转」「想要回转」）不 refine，只作偏好。不得换成别的菜系（「寿司」→「海鲜」禁止）。
+- city：原样回传。cuisines：上面「料理类型」已由前一步确定，**原样回传，不要修改**；仅当它是跳过提示时，从「其它需求」推断 1-2 个最相关的料理类型，都推不出来填 ["餐厅"]。原话里限定店铺形态或菜品的那句话（如「一定要回转」）仍按规则写进 hardFilters / dishPreferences。
 - dateTime：直接用日期字符串，如 "2026/05/20"。
 - hardFilters / softPreferences / negativeFilters：**对象数组**，每条形如 \`{"text": "原话片段 → 标准化条件", "weight": 0.0-1.0}\`。
 - dishPreferences：用户希望吃到的具体菜品名（字符串数组，无 weight，只写干净的菜名）。系统会把菜品并入偏好列表：普通"想吃/最好有"的菜**不要**再写进 softPreferences（系统自动以 0.6 加入）；"必须有"的菜写进 hardFilters（带 weight）并同时列在 dishPreferences。
@@ -837,18 +914,12 @@ dishPreferences 同理：把用户提到的所有菜品都列出来，不在这�
         const second = await runOnce(MODELS.parseRetry);
         parsed = applyHalfPeriodFix(sanitizeVisitTime(await enforceInferIfRequested(second)));
       }
-      // 品类修正：只认用户原品类 + validateCuisineCorrection 通过的 typo/refine，其余一律退回原词
-      if (data.cuisines.length > 0) {
-        const r = applyCuisineCorrections(data.cuisines, parsed.cuisineCorrections ?? [], data.freeText ?? "");
-        for (const a of r.applied)
-          console.log(`[Echo/parse/cuisine-correct] APPLIED ${a.kind} "${a.from}" → "${a.to}" evidence="${a.evidence}"`);
-        for (const x of r.rejected)
-          console.log(`[Echo/parse/cuisine-correct] REJECTED ${x.c.kind} "${x.c.from}" → "${x.c.to}" reason=${x.reason}`);
-        parsed.cuisines = r.cuisines;
-        parsed.cuisineCorrections = r.applied;
-      } else {
-        parsed.cuisineCorrections = [];
+      // 品类以第一步（cuisine-resolve）为准
+      if (resolved.cuisines.length) {
+        parsed.cuisines = resolved.cuisines;
+        if (resolved.inferred) parsed.cuisinesInferred = true;
       }
+      parsed.cuisineCorrections = resolved.corrections;
       const beforeCluster = {
         hard: parsed.hardFilters.length,
         soft: parsed.softPreferences.length,
