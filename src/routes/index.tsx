@@ -26,6 +26,10 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Echo Eats — AI Restaurant Discovery Agent" },
+      { property: "og:title", content: "Echo Eats — AI Restaurant Discovery Agent" },
+      { property: "og:description", content: "Choose your city to find restaurants matched to your needs." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
       {
         name: "description",
         content:

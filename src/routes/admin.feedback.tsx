@@ -30,6 +30,11 @@ export const Route = createFileRoute("/admin/feedback")({
   head: () => ({
     meta: [
       { title: "Echo Eats — Feedback Admin" },
+      { name: "description", content: "Review restaurant search feedback in Echo Eats." },
+      { property: "og:title", content: "Echo Eats — Feedback Admin" },
+      { property: "og:description", content: "Review restaurant search feedback in Echo Eats." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
       { name: "robots", content: "noindex, nofollow" },
     ],
   }),
