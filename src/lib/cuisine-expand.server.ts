@@ -1,4 +1,5 @@
 import { MODELS } from "./models";
+import { CUISINE_IDENTITY_RULES } from "./cuisine-prompts";
 // 料理本地化 + 同义词扩展 + 反例关键词
 // 用一次 LLM 调用把用户输入的中文 cuisine（可能很冷门，例如「猪肉饭」）
 // 扩展为目标城市语言下的主词、同义词、以及"明显不是该料理"的反例关键词。
@@ -51,6 +52,9 @@ export async function expandCuisineQueries(opts: {
       }),
       prompt: `用户在「${opts.city}」搜索一个中文料理类型：「${opts.cuisine}」。
 目标搜索语言代码是 "${opts.language}"。
+
+${CUISINE_IDENTITY_RULES}
+以上规则同样适用于 primary 和每一个 synonym：只能本地化/换写法，不得扩大搜索范围。风格变体必须保留基础菜系；不是同一完整品类的相邻菜系或泛化风格不属于 synonyms。没有准确同义词时返回 []，不要为了凑数量删去限定。
 
 请把这个料理类型本地化，输出 3 个字段：
 
