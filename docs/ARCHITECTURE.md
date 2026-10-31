@@ -223,7 +223,7 @@ Places 请求参数：`includedType: "restaurant"`，`maxResultCount ≤ 20`，`
 
 `quick` 模式只跑 `primary` 一路。
 
-- **合并**：`Promise.allSettled` → `placeId` 去重；每个 placeId 记录命中它的 tag 集合（`recallSources`，后续多路召回加分）。
+- **合并**：`Promise.allSettled` → `placeId` 去重；每个 placeId 记录命中它的 tag 集合（`recallSources`，仅作记录，不参与打分）。
 - **失败**：某路失败只记 `firstError`；某 cuisine 全空才 push warning；所有 cuisine 全空才整体返回错误 + `fallbackSuggestions`。
 
 ### 6.6 跨品类 best-fit 去重
@@ -374,7 +374,6 @@ AiCopyPickSchema   = { placeId, aiSummary, pros[], cons[] }
 | 软偏好未中 | fail `−w × 4` | — |
 | 避雷命中 | fail `−w × 13.3` | — |
 | 菜品命中 | 每条 ok `+5.3` | +16 |
-| 多路召回 | 路数 0/1/2/3/4+ → `0/0/4/8/13` | +13 |
 
 `finalScore = clamp(baseScore + clamp(matchScore,0,80), 0, 100)`，未准入再 `min(finalScore, 30)`。
 
