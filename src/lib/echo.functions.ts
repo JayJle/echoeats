@@ -3295,16 +3295,7 @@ Schema：
           matchScore += dishBonus;
           breakdown.push({ label: isEn ? "Dish matches" : "菜品命中", delta: Math.round(dishBonus) });
         }
-        // Recall bonus non-linear
-        const recallTable = [0, 0, 4, 8, 13];
-        const recallBonus = recallTable[Math.min(recallSources.length, 4)];
-        if (recallBonus > 0) {
-          matchScore += recallBonus;
-          breakdown.push({
-            label: isEn ? `Multi-route recall (${recallSources.length})` : `多路召回 (${recallSources.length} 路)`,
-            delta: recallBonus,
-          });
-        }
+        // Multi-route recall is intentionally not scored (user decision).
         matchScore = Math.max(0, Math.min(80, matchScore));
 
 
